@@ -59,7 +59,7 @@ public final class STTSiteDropdownWidget extends AbstractWidget {
                 .filter(site -> site.id().equals(this.selectedSiteId))
                 .findFirst()
                 .map(STTSiteDropdownWidget::siteName)
-                .orElseGet(() -> Component.translatable("gui.touhou_stepfun.stt_site.empty")));
+                .orElseGet(() -> Component.translatable("gui.touhou_aifun.stt_site.empty")));
     }
 
     private static Component siteName(STTSite site) {

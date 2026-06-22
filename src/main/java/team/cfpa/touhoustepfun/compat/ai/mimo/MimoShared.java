@@ -5,7 +5,7 @@ import org.apache.commons.lang3.StringUtils;
 
 public final class MimoShared {
     public static final String API_TYPE = "mimo";
-    public static final ResourceLocation ICON = new ResourceLocation("touhou_stepfun", "textures/gui/ai_chat/mimo.png");
+    public static final ResourceLocation ICON = new ResourceLocation("touhou_aifun", "textures/gui/ai_chat/mimo.png");
 
     private MimoShared() {
     }

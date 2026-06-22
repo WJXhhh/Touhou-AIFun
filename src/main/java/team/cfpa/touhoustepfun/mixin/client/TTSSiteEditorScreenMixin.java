@@ -124,14 +124,14 @@ public abstract class TTSSiteEditorScreenMixin {
 
             int index = 0;
             this.touhouStepFun$addModeButton(row, state, idBox, buttonX, buttonY, index++,
-                    VoicePresetSpec.Mode.DIRECT_ID, "ID", "gui.touhou_stepfun.voice_mode.id");
+                    VoicePresetSpec.Mode.DIRECT_ID, "ID", "gui.touhou_aifun.voice_mode.id");
             if (capabilities.supportsVoiceDesign()) {
                 this.touhouStepFun$addModeButton(row, state, idBox, buttonX, buttonY, index++,
-                        VoicePresetSpec.Mode.VOICE_DESIGN, "设", "gui.touhou_stepfun.voice_mode.design");
+                        VoicePresetSpec.Mode.VOICE_DESIGN, "设", "gui.touhou_aifun.voice_mode.design");
             }
             if (capabilities.supportsReferenceVoice()) {
                 this.touhouStepFun$addModeButton(row, state, idBox, buttonX, buttonY, index++,
-                        VoicePresetSpec.Mode.REFERENCE_SAMPLE, "样", "gui.touhou_stepfun.voice_mode.reference");
+                        VoicePresetSpec.Mode.REFERENCE_SAMPLE, "样", "gui.touhou_aifun.voice_mode.reference");
             }
             if (capabilities.supportsSynthesisInstruction()) {
                 this.touhouStepFun$addInstructionButton(state, idBox, buttonX, buttonY, index++);
@@ -202,7 +202,7 @@ public abstract class TTSSiteEditorScreenMixin {
     private void touhouStepFun$addStreamingButton(VoicePresetRowState state, EditBox idBox,
                                                    int startX, int y, int index) {
         String tooltipKey = state.streaming()
-                ? "gui.touhou_stepfun.voice_stream.on" : "gui.touhou_stepfun.voice_stream.off";
+                ? "gui.touhou_aifun.voice_stream.on" : "gui.touhou_aifun.voice_stream.off";
         FlatColorButton button = new FlatColorButton(
                 startX + index * (MODE_BUTTON_WIDTH + MODE_BUTTON_GAP), y,
                 MODE_BUTTON_WIDTH, 18, Component.literal("流"), pressed -> {
@@ -230,7 +230,7 @@ public abstract class TTSSiteEditorScreenMixin {
             ));
         });
         button.setSelect(StringUtils.isNotBlank(state.instruction()));
-        button.setTooltips("gui.touhou_stepfun.tts_instruction.tooltip");
+        button.setTooltips("gui.touhou_aifun.tts_instruction.tooltip");
         ((TTSSiteEditorScreen) (Object) this).addRenderableWidget(button);
     }
 

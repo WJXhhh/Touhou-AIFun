@@ -36,7 +36,7 @@ text-to-speech (TTS) and speech-to-text (STT) — and adds extra voice-customiza
 ## Building
 
 ```powershell
-.\gradlew.bat build          # output: build/libs/touhou_stepfun-<version>.jar
+.\gradlew.bat build          # output: build/libs/Touhou-AIFun-<version>.jar
 .\gradlew.bat runClient      # launch a dev client
 .\gradlew.bat genIntellijRuns
 ```

@@ -27,7 +27,7 @@ public class CustomVoiceScreen extends Screen {
 
     public CustomVoiceScreen(Screen parent, String initialAudioPath, String initialRefText,
                              BiConsumer<String, String> onSave) {
-        super(Component.translatable("gui.touhou_stepfun.custom_voice.title"));
+        super(Component.translatable("gui.touhou_aifun.custom_voice.title"));
         this.parent = parent;
         this.initialAudioPath = StringUtils.defaultString(initialAudioPath);
         this.initialRefText = StringUtils.defaultString(initialRefText);
@@ -48,22 +48,22 @@ public class CustomVoiceScreen extends Screen {
         int top = (this.height - PANEL_HEIGHT) / 2;
 
         this.audioPathBox = new EditBox(this.font, left + 12, top + 43, PANEL_WIDTH - 116, 18,
-                Component.translatable("gui.touhou_stepfun.custom_voice.audio_path"));
+                Component.translatable("gui.touhou_aifun.custom_voice.audio_path"));
         this.audioPathBox.setMaxLength(1024);
         this.audioPathBox.setValue(this.initialAudioPath);
         this.addRenderableWidget(this.audioPathBox);
 
         this.addRenderableWidget(new FlatColorButton(left + PANEL_WIDTH - 96, top + 42, 84, 20,
-                Component.translatable("gui.touhou_stepfun.custom_voice.browse"), button -> this.chooseAudioFile()));
+                Component.translatable("gui.touhou_aifun.custom_voice.browse"), button -> this.chooseAudioFile()));
 
         this.refTextBox = new EditBox(this.font, left + 12, top + 86, PANEL_WIDTH - 24, 18,
-                Component.translatable("gui.touhou_stepfun.custom_voice.ref_text"));
+                Component.translatable("gui.touhou_aifun.custom_voice.ref_text"));
         this.refTextBox.setMaxLength(2048);
         this.refTextBox.setValue(this.initialRefText);
         this.addRenderableWidget(this.refTextBox);
 
         this.addRenderableWidget(new FlatColorButton(left + 12, top + PANEL_HEIGHT - 28, 72, 20,
-                Component.translatable("gui.touhou_stepfun.custom_voice.clear"), button -> {
+                Component.translatable("gui.touhou_aifun.custom_voice.clear"), button -> {
             this.onSave.accept(StringUtils.EMPTY, StringUtils.EMPTY);
             this.onClose();
         }));
@@ -89,7 +89,7 @@ public class CustomVoiceScreen extends Screen {
                     ? Path.of(".").toAbsolutePath().normalize().toString()
                     : currentPath;
             String selected = TinyFileDialogs.tinyfd_openFileDialog(
-                    Component.translatable("gui.touhou_stepfun.custom_voice.choose_file").getString(),
+                    Component.translatable("gui.touhou_aifun.custom_voice.choose_file").getString(),
                     defaultPath,
                     filters,
                     "WAV/MP3",
@@ -109,10 +109,10 @@ public class CustomVoiceScreen extends Screen {
         graphics.fill(left, top, left + PANEL_WIDTH, top + PANEL_HEIGHT, 0xEE181818);
         graphics.drawCenteredString(this.font, this.title, this.width / 2, top + 10, 0xFFF3EFE0);
         graphics.drawString(this.font,
-                Component.translatable("gui.touhou_stepfun.custom_voice.audio_path"),
+                Component.translatable("gui.touhou_aifun.custom_voice.audio_path"),
                 left + 12, top + 31, LABEL_COLOR, false);
         graphics.drawString(this.font,
-                Component.translatable("gui.touhou_stepfun.custom_voice.ref_text_optional"),
+                Component.translatable("gui.touhou_aifun.custom_voice.ref_text_optional"),
                 left + 12, top + 74, LABEL_COLOR, false);
         super.render(graphics, mouseX, mouseY, partialTick);
     }

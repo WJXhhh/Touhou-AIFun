@@ -33,8 +33,8 @@ public abstract class AIChatSettingsTTSSiteScreenMixin {
                 accessor.touhouStepFun$invokeGetContentX(), (int) listArea.bottom() + 4,
                 accessor.touhouStepFun$invokeGetContentWidth(), 20,
                 Component.translatable(enabled
-                        ? "gui.touhou_stepfun.tts_sentence_stream.on"
-                        : "gui.touhou_stepfun.tts_sentence_stream.off"), pressed -> {
+                        ? "gui.touhou_aifun.tts_sentence_stream.on"
+                        : "gui.touhou_aifun.tts_sentence_stream.off"), pressed -> {
             boolean next = !TouhouStepFunConfig.TTS_SENTENCE_STREAMING.get();
             TouhouStepFunConfig.setSentenceStreaming(next);
             StepFunNetwork.sendSettingsToServer(next);

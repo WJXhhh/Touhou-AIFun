@@ -20,7 +20,7 @@ public final class TTSInstructionScreen extends Screen {
     private EditBox instructionBox;
 
     public TTSInstructionScreen(Screen parent, String initialInstruction, Consumer<String> onSave) {
-        super(Component.translatable("gui.touhou_stepfun.tts_instruction.title"));
+        super(Component.translatable("gui.touhou_aifun.tts_instruction.title"));
         this.parent = parent;
         this.initialInstruction = StringUtils.defaultString(initialInstruction);
         this.onSave = onSave;
@@ -36,13 +36,13 @@ public final class TTSInstructionScreen extends Screen {
         int left = (this.width - PANEL_WIDTH) / 2;
         int top = (this.height - PANEL_HEIGHT) / 2;
         this.instructionBox = new EditBox(this.font, left + 12, top + 43, PANEL_WIDTH - 24, 18,
-                Component.translatable("gui.touhou_stepfun.tts_instruction.input"));
+                Component.translatable("gui.touhou_aifun.tts_instruction.input"));
         this.instructionBox.setMaxLength(200);
         this.instructionBox.setValue(this.initialInstruction);
         this.addRenderableWidget(this.instructionBox);
 
         this.addRenderableWidget(new FlatColorButton(left + 12, top + PANEL_HEIGHT - 28, 72, 20,
-                Component.translatable("gui.touhou_stepfun.custom_voice.clear"), button -> {
+                Component.translatable("gui.touhou_aifun.custom_voice.clear"), button -> {
             this.onSave.accept(StringUtils.EMPTY);
             this.onClose();
         }));
@@ -63,7 +63,7 @@ public final class TTSInstructionScreen extends Screen {
         graphics.fill(left, top, left + PANEL_WIDTH, top + PANEL_HEIGHT, 0xEE181818);
         graphics.drawCenteredString(this.font, this.title, this.width / 2, top + 10, 0xFFF3EFE0);
         graphics.drawString(this.font,
-                Component.translatable("gui.touhou_stepfun.tts_instruction.label"),
+                Component.translatable("gui.touhou_aifun.tts_instruction.label"),
                 left + 12, top + 31, LABEL_COLOR, false);
         super.render(graphics, mouseX, mouseY, partialTick);
     }

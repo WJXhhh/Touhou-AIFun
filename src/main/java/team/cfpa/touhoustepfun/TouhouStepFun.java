@@ -10,7 +10,7 @@ import team.cfpa.touhoustepfun.network.StepFunNetwork;
 
 @Mod(TouhouStepFun.MOD_ID)
 public final class TouhouStepFun {
-    public static final String MOD_ID = "touhou_stepfun";
+    public static final String MOD_ID = "touhou_aifun";
     public static final Logger LOGGER = LogUtils.getLogger();
 
     public TouhouStepFun() {

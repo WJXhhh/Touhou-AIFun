@@ -6,7 +6,7 @@ import java.net.URI;
 
 public final class StepFunShared {
     public static final String API_TYPE = "stepfun";
-    public static final ResourceLocation ICON = new ResourceLocation("touhou_stepfun", "textures/gui/ai_chat/stepfun.png");
+    public static final ResourceLocation ICON = new ResourceLocation("touhou_aifun", "textures/gui/ai_chat/stepfun.png");
 
     public static boolean isStepFunApi(String url) {
         try {

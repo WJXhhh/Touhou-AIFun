@@ -3,7 +3,7 @@
   "minVersion": "0.8",
   "package": "team.cfpa.touhoustepfun.mixin",
   "compatibilityLevel": "JAVA_17",
-  "refmap": "touhou_stepfun.refmap.json",
+  "refmap": "touhou_aifun.refmap.json",
   "mixins": [
     "ChatBubbleManagerMixin",
     "LLMCallbackMixin",

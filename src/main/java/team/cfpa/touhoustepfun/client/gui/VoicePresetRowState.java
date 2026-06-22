@@ -85,9 +85,9 @@ public final class VoicePresetRowState {
     public void applyToBox(EditBox box) {
         box.setValue(this.values.get(this.mode));
         box.setSuggestion(switch (this.mode) {
-            case DIRECT_ID -> Component.translatable("gui.touhou_stepfun.voice_mode.id.hint").getString();
-            case VOICE_DESIGN -> Component.translatable("gui.touhou_stepfun.voice_mode.design.hint").getString();
-            case REFERENCE_SAMPLE -> Component.translatable("gui.touhou_stepfun.voice_mode.reference.hint").getString();
+            case DIRECT_ID -> Component.translatable("gui.touhou_aifun.voice_mode.id.hint").getString();
+            case VOICE_DESIGN -> Component.translatable("gui.touhou_aifun.voice_mode.design.hint").getString();
+            case REFERENCE_SAMPLE -> Component.translatable("gui.touhou_aifun.voice_mode.reference.hint").getString();
         });
     }
 
