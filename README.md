@@ -43,13 +43,13 @@ text-to-speech (TTS) and speech-to-text (STT) — and adds extra voice-customiza
 
 ## Project layout
 
-- `team.cfpa.touhoustepfun.TouhouStepFun` — mod entrypoint
-- `team.cfpa.touhoustepfun.compat` — `@LittleMaidExtension` hookup and per-provider integrations
+- `com.wjx.touhou_aifun.TouhouStepFun` — mod entrypoint
+- `com.wjx.touhou_aifun.compat` — `@LittleMaidExtension` hookup and per-provider integrations
   (`compat/ai/{stepfun,mimo,minimax,siliconflow,fishaudio,openai}`)
-- `team.cfpa.touhoustepfun.client.gui` — custom screens and widgets
-- `team.cfpa.touhoustepfun.mixin` — Touhou Little Maid / Minecraft mixins
-- `team.cfpa.touhoustepfun.config` — client config
-- `team.cfpa.touhoustepfun.network` — settings sync packets
+- `com.wjx.touhou_aifun.client.gui` — custom screens and widgets
+- `com.wjx.touhou_aifun.mixin` — Touhou Little Maid / Minecraft mixins
+- `com.wjx.touhou_aifun.config` — client config
+- `com.wjx.touhou_aifun.network` — settings sync packets
 
 ## License
 

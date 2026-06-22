@@ -43,13 +43,13 @@
 
 ## 项目结构
 
-- `team.cfpa.touhoustepfun.TouhouStepFun` —— 模组入口
-- `team.cfpa.touhoustepfun.compat` —— `@LittleMaidExtension` 挂载与各服务商集成
+- `com.wjx.touhou_aifun.TouhouStepFun` —— 模组入口
+- `com.wjx.touhou_aifun.compat` —— `@LittleMaidExtension` 挂载与各服务商集成
   (`compat/ai/{stepfun,mimo,minimax,siliconflow,fishaudio,openai}`)
-- `team.cfpa.touhoustepfun.client.gui` —— 自定义界面与控件
-- `team.cfpa.touhoustepfun.mixin` —— 车万女仆 / Minecraft 的 Mixin
-- `team.cfpa.touhoustepfun.config` —— 客户端配置
-- `team.cfpa.touhoustepfun.network` —— 设置同步网络包
+- `com.wjx.touhou_aifun.client.gui` —— 自定义界面与控件
+- `com.wjx.touhou_aifun.mixin` —— 车万女仆 / Minecraft 的 Mixin
+- `com.wjx.touhou_aifun.config` —— 客户端配置
+- `com.wjx.touhou_aifun.network` —— 设置同步网络包
 
 ## 许可证
 
