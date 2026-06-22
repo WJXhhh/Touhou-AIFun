@@ -8,12 +8,12 @@ import net.minecraftforge.api.distmarker.Dist;
 import net.minecraftforge.event.TickEvent;
 import net.minecraftforge.eventbus.api.SubscribeEvent;
 import net.minecraftforge.fml.common.Mod;
-import com.wjx.touhou_aifun.TouhouStepFun;
+import com.wjx.touhou_aifun.TouhouAIFun;
 
 import java.util.ArrayDeque;
 import java.util.Deque;
 
-@Mod.EventBusSubscriber(modid = TouhouStepFun.MOD_ID, value = Dist.CLIENT)
+@Mod.EventBusSubscriber(modid = TouhouAIFun.MOD_ID, value = Dist.CLIENT)
 public final class QueuedTTSPlaybackManager {
     private static final Deque<SoundInstance> QUEUE = new ArrayDeque<>();
     private static SoundInstance current;

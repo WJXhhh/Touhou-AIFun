@@ -3,7 +3,7 @@ package com.wjx.touhou_aifun.compat.ai.tts;
 import com.github.tartaricacid.touhoulittlemaid.ai.manager.entity.TTSCallback;
 import com.github.tartaricacid.touhoulittlemaid.ai.service.tts.TTSClient;
 import com.github.tartaricacid.touhoulittlemaid.ai.service.tts.TTSConfig;
-import com.wjx.touhou_aifun.config.TouhouStepFunConfig;
+import com.wjx.touhou_aifun.config.TouhouAIFunConfig;
 
 import java.net.http.HttpRequest;
 import java.util.List;
@@ -15,7 +15,7 @@ public final class TTSProgressiveSynthesis {
     }
 
     public static void play(TTSClient client, String message, TTSConfig config, TTSCallback callback) {
-        if (!TouhouStepFunConfig.TTS_SENTENCE_STREAMING.get()) {
+        if (!TouhouAIFunConfig.TTS_SENTENCE_STREAMING.get()) {
             client.play(message, config, callback);
             return;
         }

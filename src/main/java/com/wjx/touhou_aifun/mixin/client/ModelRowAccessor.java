@@ -7,14 +7,14 @@ import org.spongepowered.asm.mixin.gen.Accessor;
 @Mixin(targets = "com.github.tartaricacid.touhoulittlemaid.client.gui.entity.maid.ai.editor.TTSSiteEditorScreen$ModelRow", remap = false)
 public interface ModelRowAccessor {
     @Accessor("id")
-    String touhouStepFun$getId();
+    String touhouAIFun$getId();
 
     @Accessor("name")
-    String touhouStepFun$getName();
+    String touhouAIFun$getName();
 
     @Accessor("idBox")
-    EditBox touhouStepFun$getIdBox();
+    EditBox touhouAIFun$getIdBox();
 
     @Accessor("nameBox")
-    EditBox touhouStepFun$getNameBox();
+    EditBox touhouAIFun$getNameBox();
 }

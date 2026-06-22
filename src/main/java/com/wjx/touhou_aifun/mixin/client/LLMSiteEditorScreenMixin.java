@@ -25,7 +25,7 @@ public abstract class LLMSiteEditorScreenMixin {
     private boolean createMode;
 
     @Inject(method = "buildSite", at = @At("RETURN"), cancellable = true)
-    private void touhouStepFun$preserveSiteApiType(CallbackInfoReturnable<LLMSite> cir) {
+    private void touhouAIFun$preserveSiteApiType(CallbackInfoReturnable<LLMSite> cir) {
         if (createMode) {
             return;
         }

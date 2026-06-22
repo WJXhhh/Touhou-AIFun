@@ -4,7 +4,7 @@ import com.github.tartaricacid.touhoulittlemaid.ai.manager.entity.TTSCallback;
 import com.github.tartaricacid.touhoulittlemaid.entity.passive.EntityMaid;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
-import com.wjx.touhou_aifun.TouhouStepFun;
+import com.wjx.touhou_aifun.TouhouAIFun;
 
 import java.lang.reflect.Field;
 
@@ -26,7 +26,7 @@ final class StepFunTTSCallbackBridge {
             MinecraftServer server = serverLevel.getServer();
             server.submit(() -> maid.getChatBubbleManager().addLLMChatText(chatText, waitingChatBubbleId));
         } catch (ReflectiveOperationException e) {
-            TouhouStepFun.LOGGER.error("Failed to complete streamed TTS chat bubble", e);
+            TouhouAIFun.LOGGER.error("Failed to complete streamed TTS chat bubble", e);
         }
     }
 

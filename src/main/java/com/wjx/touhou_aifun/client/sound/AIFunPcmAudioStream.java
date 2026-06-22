@@ -10,7 +10,7 @@ import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
 
-public final class StepFunPcmAudioStream implements AudioStream {
+public final class AIFunPcmAudioStream implements AudioStream {
     private static final long CHUNK_TIMEOUT_SECONDS = 15;
 
     private final AudioFormat format;
@@ -20,7 +20,7 @@ public final class StepFunPcmAudioStream implements AudioStream {
     private byte[] currentChunk;
     private int currentOffset;
 
-    public StepFunPcmAudioStream(int sampleRate) {
+    public AIFunPcmAudioStream(int sampleRate) {
         this.format = new AudioFormat(sampleRate, 16, 1, true, false);
     }
 

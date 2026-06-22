@@ -10,7 +10,7 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 @Mixin(value = PapiReplacer.class, remap = false)
 public abstract class PapiReplacerMixin {
     @Inject(method = "replaceSetting", at = @At("RETURN"), cancellable = true)
-    private static void touhouStepFun$strengthenSameLanguages(String input, EntityMaid maid, String language,
+    private static void touhouAIFun$strengthenSameLanguages(String input, EntityMaid maid, String language,
                                                                CallbackInfoReturnable<String> cir) {
         String result = cir.getReturnValue();
         if (result == null) {

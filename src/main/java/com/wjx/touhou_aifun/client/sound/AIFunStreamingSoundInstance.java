@@ -10,10 +10,10 @@ import net.minecraft.sounds.SoundSource;
 
 import java.util.concurrent.CompletableFuture;
 
-public final class StepFunStreamingSoundInstance extends EntityBoundSoundInstance {
-    private final StepFunPcmAudioStream stream;
+public final class AIFunStreamingSoundInstance extends EntityBoundSoundInstance {
+    private final AIFunPcmAudioStream stream;
 
-    public StepFunStreamingSoundInstance(EntityMaid maid, StepFunPcmAudioStream stream) {
+    public AIFunStreamingSoundInstance(EntityMaid maid, AIFunPcmAudioStream stream) {
         super(InitSounds.MAID_AI_CHAT.get(), SoundSource.NEUTRAL, 1.0f, 1.0f, maid, maid.getId());
         this.stream = stream;
     }

@@ -9,17 +9,17 @@ import org.spongepowered.asm.mixin.gen.Invoker;
 @Mixin(value = AIChatSettingsHubScreen.class, remap = false)
 public interface AIChatSettingsHubAccessor {
     @Accessor("state")
-    AIChatSettingsHubScreen.SharedState touhouStepFun$getState();
+    AIChatSettingsHubScreen.SharedState touhouAIFun$getState();
 
     @Accessor("listArea")
-    Rectangle touhouStepFun$getListArea();
+    Rectangle touhouAIFun$getListArea();
 
     @Accessor("insufficientPermissions")
-    boolean touhouStepFun$hasInsufficientPermissions();
+    boolean touhouAIFun$hasInsufficientPermissions();
 
     @Invoker("getContentX")
-    int touhouStepFun$invokeGetContentX();
+    int touhouAIFun$invokeGetContentX();
 
     @Invoker("getContentWidth")
-    int touhouStepFun$invokeGetContentWidth();
+    int touhouAIFun$invokeGetContentWidth();
 }

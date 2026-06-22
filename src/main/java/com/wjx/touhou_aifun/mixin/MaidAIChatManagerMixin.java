@@ -14,7 +14,7 @@ public abstract class MaidAIChatManagerMixin {
     @Redirect(method = "tts",
             at = @At(value = "INVOKE",
                     target = "Lcom/github/tartaricacid/touhoulittlemaid/ai/service/tts/TTSClient;play(Ljava/lang/String;Lcom/github/tartaricacid/touhoulittlemaid/ai/service/tts/TTSConfig;Lcom/github/tartaricacid/touhoulittlemaid/ai/manager/entity/TTSCallback;)V"))
-    private void touhouStepFun$playBySentence(TTSClient client, String message,
+    private void touhouAIFun$playBySentence(TTSClient client, String message,
                                               TTSConfig config, TTSCallback callback) {
         TTSProgressiveSynthesis.play(client, message, config, callback);
     }

@@ -12,7 +12,7 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 @Mixin(value = LLMCallback.class, remap = false)
 public abstract class LLMCallbackMixin {
     @Inject(method = "onSuccess", at = @At("HEAD"))
-    private void touhouStepFun$showTextBeforeTts(ResponseChat responseChat, CallbackInfo ci) {
+    private void touhouAIFun$showTextBeforeTts(ResponseChat responseChat, CallbackInfo ci) {
         String chatText = responseChat.getChatText();
         if (chatText.isBlank() || responseChat.getTtsText().isBlank()) {
             return;

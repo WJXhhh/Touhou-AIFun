@@ -14,7 +14,7 @@ import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 import com.wjx.touhou_aifun.client.gui.STTSiteDropdownWidget;
-import com.wjx.touhou_aifun.config.TouhouStepFunConfig;
+import com.wjx.touhou_aifun.config.TouhouAIFunConfig;
 
 import java.util.List;
 
@@ -33,45 +33,45 @@ public abstract class AIChatSettingsSTTConfigScreenMixin {
     private EditBox proxyInput;
 
     @Unique
-    private boolean touhouStepFun$hideMicWhenOpen;
+    private boolean touhouAIFun$hideMicWhenOpen;
     @Unique
-    private boolean touhouStepFun$hideSliderWhenOpen;
+    private boolean touhouAIFun$hideSliderWhenOpen;
     @Unique
-    private boolean touhouStepFun$hideProxyWhenOpen;
+    private boolean touhouAIFun$hideProxyWhenOpen;
 
     @Inject(method = "initContent", at = @At("TAIL"))
-    private void touhouStepFun$replaceTypeButtonWithSiteList(CallbackInfo ci) {
+    private void touhouAIFun$replaceTypeButtonWithSiteList(CallbackInfo ci) {
         AIChatSettingsSTTConfigScreen screen = (AIChatSettingsSTTConfigScreen) (Object) this;
-        AIChatSettingsHubScreen.SharedState state = ((AIChatSettingsHubAccessor) this).touhouStepFun$getState();
+        AIChatSettingsHubScreen.SharedState state = ((AIChatSettingsHubAccessor) this).touhouAIFun$getState();
         List<STTSite> enabledSites = state.sttSites.values().stream().filter(STTSite::enabled).toList();
-        String selectedId = this.touhouStepFun$resolveSelectedSite(enabledSites, state);
+        String selectedId = this.touhouAIFun$resolveSelectedSite(enabledSites, state);
 
         this.typeBtn.visible = false;
         this.typeBtn.active = false;
         STTSiteDropdownWidget dropdown = new STTSiteDropdownWidget(
                 this.typeBtn.getX(), this.typeBtn.getY(), this.typeBtn.getWidth(), enabledSites, selectedId,
                 siteId -> {
-                    TouhouStepFunConfig.setSelectedSttSite(siteId);
+                    TouhouAIFunConfig.setSelectedSttSite(siteId);
                     for (STTApiType type : STTApiType.values()) {
                         if (type.getName().equals(siteId)) {
                             state.sttType = type;
                             break;
                         }
                     }
-                }, open -> this.touhouStepFun$setOtherInputsActive(!open));
+                }, open -> this.touhouAIFun$setOtherInputsActive(!open));
         screen.addRenderableWidget(dropdown);
 
         // Decide which widgets the expanded list will overlap, so we can hide only those while it is open.
         int dropdownBottom = this.typeBtn.getY()
                 + STTSiteDropdownWidget.ROW_HEIGHT * (enabledSites.size() + 1);
-        this.touhouStepFun$hideMicWhenOpen = this.microphoneBtn.getY() < dropdownBottom;
-        this.touhouStepFun$hideSliderWhenOpen = this.distanceSlider.getY() < dropdownBottom;
-        this.touhouStepFun$hideProxyWhenOpen = this.proxyInput.getY() < dropdownBottom;
+        this.touhouAIFun$hideMicWhenOpen = this.microphoneBtn.getY() < dropdownBottom;
+        this.touhouAIFun$hideSliderWhenOpen = this.distanceSlider.getY() < dropdownBottom;
+        this.touhouAIFun$hideProxyWhenOpen = this.proxyInput.getY() < dropdownBottom;
     }
 
-    private String touhouStepFun$resolveSelectedSite(List<STTSite> enabledSites,
+    private String touhouAIFun$resolveSelectedSite(List<STTSite> enabledSites,
                                                      AIChatSettingsHubScreen.SharedState state) {
-        String configured = TouhouStepFunConfig.STT_SELECTED_SITE.get();
+        String configured = TouhouAIFunConfig.STT_SELECTED_SITE.get();
         if (enabledSites.stream().anyMatch(site -> site.id().equals(configured))) {
             return configured;
         }
@@ -80,23 +80,23 @@ public abstract class AIChatSettingsSTTConfigScreenMixin {
                 .findFirst().or(() -> enabledSites.stream().findFirst())
                 .map(STTSite::id).orElse("");
         if (!selected.equals(configured)) {
-            TouhouStepFunConfig.setSelectedSttSite(selected);
+            TouhouAIFunConfig.setSelectedSttSite(selected);
         }
         return selected;
     }
 
-    private void touhouStepFun$setOtherInputsActive(boolean active) {
+    private void touhouAIFun$setOtherInputsActive(boolean active) {
         // active == false means the dropdown is open: hide+disable only the widgets it overlaps,
         // so their text/render does not bleed through the option rows and they don't steal clicks.
-        if (this.touhouStepFun$hideMicWhenOpen) {
+        if (this.touhouAIFun$hideMicWhenOpen) {
             this.microphoneBtn.active = active;
             this.microphoneBtn.visible = active;
         }
-        if (this.touhouStepFun$hideSliderWhenOpen) {
+        if (this.touhouAIFun$hideSliderWhenOpen) {
             this.distanceSlider.active = active;
             this.distanceSlider.visible = active;
         }
-        if (this.touhouStepFun$hideProxyWhenOpen) {
+        if (this.touhouAIFun$hideProxyWhenOpen) {
             this.proxyInput.setEditable(active);
             this.proxyInput.visible = active;
         }

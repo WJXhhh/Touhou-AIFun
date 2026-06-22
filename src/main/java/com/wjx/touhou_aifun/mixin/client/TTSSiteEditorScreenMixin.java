@@ -50,36 +50,36 @@ public abstract class TTSSiteEditorScreenMixin {
     private int modelScrollOffset;
 
     @Unique
-    private final Map<Object, VoicePresetRowState> touhouStepFun$rowStates = new WeakHashMap<>();
+    private final Map<Object, VoicePresetRowState> touhouAIFun$rowStates = new WeakHashMap<>();
 
     @ModifyConstant(method = "init", constant = @Constant(intValue = 400), remap = true)
-    private int touhouStepFun$editorWidthInInit(int original) {
-        return this.touhouStepFun$getEditorWidth();
+    private int touhouAIFun$editorWidthInInit(int original) {
+        return this.touhouAIFun$getEditorWidth();
     }
 
     @ModifyConstant(method = "init", constant = @Constant(intValue = 376), remap = true)
-    private int touhouStepFun$contentWidthInInit(int original) {
-        return this.touhouStepFun$getEditorWidth() - 24;
+    private int touhouAIFun$contentWidthInInit(int original) {
+        return this.touhouAIFun$getEditorWidth() - 24;
     }
 
     @ModifyConstant(method = "render", constant = @Constant(intValue = 400), remap = true)
-    private int touhouStepFun$editorWidthInRender(int original) {
-        return this.touhouStepFun$getEditorWidth();
+    private int touhouAIFun$editorWidthInRender(int original) {
+        return this.touhouAIFun$getEditorWidth();
     }
 
     @ModifyConstant(method = "render", constant = @Constant(intValue = 200), remap = true)
-    private int touhouStepFun$editorCenterInRender(int original) {
-        return this.touhouStepFun$getEditorWidth() / 2;
+    private int touhouAIFun$editorCenterInRender(int original) {
+        return this.touhouAIFun$getEditorWidth() / 2;
     }
 
     @Unique
-    private int touhouStepFun$getEditorWidth() {
+    private int touhouAIFun$getEditorWidth() {
         TTSSiteEditorScreen screen = (TTSSiteEditorScreen) (Object) this;
         return Math.max(1, Math.min(MAX_EDITOR_WIDTH, screen.width - 32));
     }
 
     @Inject(method = "createModelRows", at = @At("TAIL"))
-    private void touhouStepFun$addVoiceModeButtons(int left, int contentWidth, CallbackInfo ci) {
+    private void touhouAIFun$addVoiceModeButtons(int left, int contentWidth, CallbackInfo ci) {
         if (!(this.layout instanceof VoicePresetCapabilities capabilities)) {
             return;
         }
@@ -88,16 +88,16 @@ public abstract class TTSSiteEditorScreenMixin {
         for (int rowIndex = this.modelScrollOffset; rowIndex < endIndex; rowIndex++) {
             Object row = this.modelRows.get(rowIndex);
             ModelRowAccessor accessor = (ModelRowAccessor) row;
-            EditBox idBox = accessor.touhouStepFun$getIdBox();
-            EditBox nameBox = accessor.touhouStepFun$getNameBox();
+            EditBox idBox = accessor.touhouAIFun$getIdBox();
+            EditBox nameBox = accessor.touhouAIFun$getNameBox();
             if (idBox == null || nameBox == null) {
                 continue;
             }
 
-            VoicePresetRowState state = this.touhouStepFun$rowStates.get(row);
+            VoicePresetRowState state = this.touhouAIFun$rowStates.get(row);
             if (state == null) {
                 state = VoicePresetRowState.fromStoredValue(idBox.getValue());
-                this.touhouStepFun$rowStates.put(row, state);
+                this.touhouAIFun$rowStates.put(row, state);
             } else {
                 state.syncVisibleValue(idBox.getValue());
             }
@@ -123,41 +123,41 @@ public abstract class TTSSiteEditorScreenMixin {
             state.applyToBox(idBox);
 
             int index = 0;
-            this.touhouStepFun$addModeButton(row, state, idBox, buttonX, buttonY, index++,
+            this.touhouAIFun$addModeButton(row, state, idBox, buttonX, buttonY, index++,
                     VoicePresetSpec.Mode.DIRECT_ID, "ID", "gui.touhou_aifun.voice_mode.id");
             if (capabilities.supportsVoiceDesign()) {
-                this.touhouStepFun$addModeButton(row, state, idBox, buttonX, buttonY, index++,
+                this.touhouAIFun$addModeButton(row, state, idBox, buttonX, buttonY, index++,
                         VoicePresetSpec.Mode.VOICE_DESIGN, "设", "gui.touhou_aifun.voice_mode.design");
             }
             if (capabilities.supportsReferenceVoice()) {
-                this.touhouStepFun$addModeButton(row, state, idBox, buttonX, buttonY, index++,
+                this.touhouAIFun$addModeButton(row, state, idBox, buttonX, buttonY, index++,
                         VoicePresetSpec.Mode.REFERENCE_SAMPLE, "样", "gui.touhou_aifun.voice_mode.reference");
             }
             if (capabilities.supportsSynthesisInstruction()) {
-                this.touhouStepFun$addInstructionButton(state, idBox, buttonX, buttonY, index++);
+                this.touhouAIFun$addInstructionButton(state, idBox, buttonX, buttonY, index++);
             }
             if (capabilities.supportsStreamingOutput()) {
-                this.touhouStepFun$addStreamingButton(state, idBox, buttonX, buttonY, index);
+                this.touhouAIFun$addStreamingButton(state, idBox, buttonX, buttonY, index);
             }
         }
     }
 
     @Inject(method = "buildModels", at = @At("RETURN"), cancellable = true)
-    private void touhouStepFun$encodeVoiceModes(CallbackInfoReturnable<Map<String, String>> cir) {
+    private void touhouAIFun$encodeVoiceModes(CallbackInfoReturnable<Map<String, String>> cir) {
         if (!(this.layout instanceof VoicePresetCapabilities)) {
             return;
         }
         Map<String, String> models = new LinkedHashMap<>();
         for (Object row : this.modelRows) {
             ModelRowAccessor accessor = (ModelRowAccessor) row;
-            EditBox idBox = accessor.touhouStepFun$getIdBox();
-            EditBox nameBox = accessor.touhouStepFun$getNameBox();
-            String visibleValue = StringUtils.trimToEmpty(idBox != null ? idBox.getValue() : accessor.touhouStepFun$getId());
-            String name = StringUtils.trimToEmpty(nameBox != null ? nameBox.getValue() : accessor.touhouStepFun$getName());
+            EditBox idBox = accessor.touhouAIFun$getIdBox();
+            EditBox nameBox = accessor.touhouAIFun$getNameBox();
+            String visibleValue = StringUtils.trimToEmpty(idBox != null ? idBox.getValue() : accessor.touhouAIFun$getId());
+            String name = StringUtils.trimToEmpty(nameBox != null ? nameBox.getValue() : accessor.touhouAIFun$getName());
             if (StringUtils.isBlank(visibleValue) || StringUtils.isBlank(name)) {
                 continue;
             }
-            VoicePresetRowState state = this.touhouStepFun$rowStates.computeIfAbsent(row,
+            VoicePresetRowState state = this.touhouAIFun$rowStates.computeIfAbsent(row,
                     ignored -> VoicePresetRowState.fromStoredValue(visibleValue));
             state.syncVisibleValue(visibleValue);
             String storedValue = state.toSpec().encode();
@@ -169,7 +169,7 @@ public abstract class TTSSiteEditorScreenMixin {
     }
 
     @Unique
-    private void touhouStepFun$addModeButton(Object row, VoicePresetRowState state, EditBox idBox,
+    private void touhouAIFun$addModeButton(Object row, VoicePresetRowState state, EditBox idBox,
                                               int startX, int y, int index, VoicePresetSpec.Mode mode,
                                               String label, String tooltipKey) {
         FlatColorButton button = new FlatColorButton(
@@ -199,7 +199,7 @@ public abstract class TTSSiteEditorScreenMixin {
     }
 
     @Unique
-    private void touhouStepFun$addStreamingButton(VoicePresetRowState state, EditBox idBox,
+    private void touhouAIFun$addStreamingButton(VoicePresetRowState state, EditBox idBox,
                                                    int startX, int y, int index) {
         String tooltipKey = state.streaming()
                 ? "gui.touhou_aifun.voice_stream.on" : "gui.touhou_aifun.voice_stream.off";
@@ -216,7 +216,7 @@ public abstract class TTSSiteEditorScreenMixin {
     }
 
     @Unique
-    private void touhouStepFun$addInstructionButton(VoicePresetRowState state, EditBox idBox,
+    private void touhouAIFun$addInstructionButton(VoicePresetRowState state, EditBox idBox,
                                                      int startX, int y, int index) {
         FlatColorButton button = new FlatColorButton(
                 startX + index * (MODE_BUTTON_WIDTH + MODE_BUTTON_GAP), y,

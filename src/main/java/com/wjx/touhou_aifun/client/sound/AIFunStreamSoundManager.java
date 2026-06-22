@@ -5,20 +5,20 @@ import net.minecraft.client.Minecraft;
 import net.minecraft.world.entity.Entity;
 import net.minecraftforge.api.distmarker.Dist;
 import net.minecraftforge.api.distmarker.OnlyIn;
-import com.wjx.touhou_aifun.network.message.StepFunTTSStreamMessage;
+import com.wjx.touhou_aifun.network.message.AIFunTTSStreamMessage;
 
 import java.util.HashMap;
 import java.util.Map;
 import java.util.UUID;
 
 @OnlyIn(Dist.CLIENT)
-public final class StepFunStreamSoundManager {
-    private static final Map<UUID, StepFunPcmAudioStream> STREAMS = new HashMap<>();
+public final class AIFunStreamSoundManager {
+    private static final Map<UUID, AIFunPcmAudioStream> STREAMS = new HashMap<>();
 
-    private StepFunStreamSoundManager() {
+    private AIFunStreamSoundManager() {
     }
 
-    public static void handle(StepFunTTSStreamMessage message) {
+    public static void handle(AIFunTTSStreamMessage message) {
         switch (message.action()) {
             case START -> start(message);
             case DATA -> append(message.streamId(), message.data());
@@ -26,7 +26,7 @@ public final class StepFunStreamSoundManager {
         }
     }
 
-    private static void start(StepFunTTSStreamMessage message) {
+    private static void start(AIFunTTSStreamMessage message) {
         Minecraft minecraft = Minecraft.getInstance();
         if (minecraft.level == null) {
             return;
@@ -36,24 +36,24 @@ public final class StepFunStreamSoundManager {
             return;
         }
 
-        StepFunPcmAudioStream stream = new StepFunPcmAudioStream(message.sampleRate());
+        AIFunPcmAudioStream stream = new AIFunPcmAudioStream(message.sampleRate());
         stream.append(message.data());
-        StepFunPcmAudioStream previous = STREAMS.put(message.streamId(), stream);
+        AIFunPcmAudioStream previous = STREAMS.put(message.streamId(), stream);
         if (previous != null) {
             previous.close();
         }
-        minecraft.getSoundManager().play(new StepFunStreamingSoundInstance(maid, stream));
+        minecraft.getSoundManager().play(new AIFunStreamingSoundInstance(maid, stream));
     }
 
     private static void append(UUID streamId, byte[] data) {
-        StepFunPcmAudioStream stream = STREAMS.get(streamId);
+        AIFunPcmAudioStream stream = STREAMS.get(streamId);
         if (stream != null) {
             stream.append(data);
         }
     }
 
     private static void finish(UUID streamId) {
-        StepFunPcmAudioStream stream = STREAMS.remove(streamId);
+        AIFunPcmAudioStream stream = STREAMS.remove(streamId);
         if (stream != null) {
             stream.finish();
         }

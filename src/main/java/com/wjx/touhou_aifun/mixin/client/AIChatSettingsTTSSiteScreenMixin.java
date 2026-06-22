@@ -9,8 +9,8 @@ import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.ModifyArg;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
-import com.wjx.touhou_aifun.config.TouhouStepFunConfig;
-import com.wjx.touhou_aifun.network.StepFunNetwork;
+import com.wjx.touhou_aifun.config.TouhouAIFunConfig;
+import com.wjx.touhou_aifun.network.AIFunNetwork;
 
 @Mixin(value = AIChatSettingsTTSSiteScreen.class, remap = false)
 public abstract class AIChatSettingsTTSSiteScreenMixin {
@@ -19,29 +19,29 @@ public abstract class AIChatSettingsTTSSiteScreenMixin {
     @ModifyArg(method = "initContent",
             at = @At(value = "INVOKE", target = "Lcom/github/tartaricacid/touhoulittlemaid/util/Rectangle;<init>(DDDD)V"),
             index = 3)
-    private double touhouStepFun$reserveToggleSpace(double height) {
+    private double touhouAIFun$reserveToggleSpace(double height) {
         return height - TOGGLE_SPACE;
     }
 
     @Inject(method = "initContent", at = @At("TAIL"))
-    private void touhouStepFun$addSentenceStreamingToggle(CallbackInfo ci) {
+    private void touhouAIFun$addSentenceStreamingToggle(CallbackInfo ci) {
         AIChatSettingsTTSSiteScreen screen = (AIChatSettingsTTSSiteScreen) (Object) this;
         AIChatSettingsHubAccessor accessor = (AIChatSettingsHubAccessor) this;
-        Rectangle listArea = accessor.touhouStepFun$getListArea();
-        boolean enabled = TouhouStepFunConfig.TTS_SENTENCE_STREAMING.get();
+        Rectangle listArea = accessor.touhouAIFun$getListArea();
+        boolean enabled = TouhouAIFunConfig.TTS_SENTENCE_STREAMING.get();
         FlatColorButton button = new FlatColorButton(
-                accessor.touhouStepFun$invokeGetContentX(), (int) listArea.bottom() + 4,
-                accessor.touhouStepFun$invokeGetContentWidth(), 20,
+                accessor.touhouAIFun$invokeGetContentX(), (int) listArea.bottom() + 4,
+                accessor.touhouAIFun$invokeGetContentWidth(), 20,
                 Component.translatable(enabled
                         ? "gui.touhou_aifun.tts_sentence_stream.on"
                         : "gui.touhou_aifun.tts_sentence_stream.off"), pressed -> {
-            boolean next = !TouhouStepFunConfig.TTS_SENTENCE_STREAMING.get();
-            TouhouStepFunConfig.setSentenceStreaming(next);
-            StepFunNetwork.sendSettingsToServer(next);
+            boolean next = !TouhouAIFunConfig.TTS_SENTENCE_STREAMING.get();
+            TouhouAIFunConfig.setSentenceStreaming(next);
+            AIFunNetwork.sendSettingsToServer(next);
             screen.init(screen.getMinecraft(), screen.width, screen.height);
         });
         button.setSelect(enabled);
-        button.active = !accessor.touhouStepFun$hasInsufficientPermissions();
+        button.active = !accessor.touhouAIFun$hasInsufficientPermissions();
         screen.addRenderableWidget(button);
     }
 }

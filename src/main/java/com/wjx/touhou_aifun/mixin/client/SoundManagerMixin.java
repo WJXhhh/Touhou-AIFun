@@ -12,7 +12,7 @@ import com.wjx.touhou_aifun.client.sound.QueuedTTSPlaybackManager;
 public abstract class SoundManagerMixin {
     @Inject(method = "play(Lnet/minecraft/client/resources/sounds/SoundInstance;)V",
             at = @At("HEAD"), cancellable = true)
-    private void touhouStepFun$queueTtsAudio(SoundInstance sound, CallbackInfo ci) {
+    private void touhouAIFun$queueTtsAudio(SoundInstance sound, CallbackInfo ci) {
         if (QueuedTTSPlaybackManager.intercept((SoundManager) (Object) this, sound)) {
             ci.cancel();
         }

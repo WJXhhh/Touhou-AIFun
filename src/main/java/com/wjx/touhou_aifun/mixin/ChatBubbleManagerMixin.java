@@ -9,7 +9,7 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 @Mixin(value = ChatBubbleManager.class, remap = false)
 public abstract class ChatBubbleManagerMixin {
     @Inject(method = "addLLMChatText", at = @At("HEAD"), cancellable = true)
-    private void touhouStepFun$avoidDuplicateTtsText(String message, long waitingChatBubbleId, CallbackInfo ci) {
+    private void touhouAIFun$avoidDuplicateTtsText(String message, long waitingChatBubbleId, CallbackInfo ci) {
         ChatBubbleManager manager = (ChatBubbleManager) (Object) this;
         if (waitingChatBubbleId >= 0
                 && !manager.getChatBubbleDataCollection().containsKey(waitingChatBubbleId)) {

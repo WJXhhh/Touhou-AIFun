@@ -2,7 +2,7 @@ package com.wjx.touhou_aifun.config;
 
 import net.minecraftforge.common.ForgeConfigSpec;
 
-public final class TouhouStepFunConfig {
+public final class TouhouAIFunConfig {
     public static final ForgeConfigSpec SPEC;
     public static final ForgeConfigSpec.BooleanValue TTS_SENTENCE_STREAMING;
     public static final ForgeConfigSpec.ConfigValue<String> STT_SELECTED_SITE;
@@ -23,7 +23,7 @@ public final class TouhouStepFunConfig {
         SPEC = builder.build();
     }
 
-    private TouhouStepFunConfig() {
+    private TouhouAIFunConfig() {
     }
 
     public static void setSentenceStreaming(boolean enabled) {

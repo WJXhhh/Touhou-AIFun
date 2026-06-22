@@ -9,11 +9,11 @@ import com.google.common.net.MediaType;
 import com.google.gson.JsonObject;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.entity.LivingEntity;
-import com.wjx.touhou_aifun.network.StepFunNetwork;
-import com.wjx.touhou_aifun.network.message.StepFunTTSStreamMessage;
+import com.wjx.touhou_aifun.network.AIFunNetwork;
+import com.wjx.touhou_aifun.network.message.AIFunTTSStreamMessage;
 import com.wjx.touhou_aifun.compat.ai.tts.VoicePresetSpec;
 import com.wjx.touhou_aifun.compat.ai.tts.SentenceTextSplitter;
-import com.wjx.touhou_aifun.config.TouhouStepFunConfig;
+import com.wjx.touhou_aifun.config.TouhouAIFunConfig;
 
 import java.io.ByteArrayOutputStream;
 import java.net.URI;
@@ -67,7 +67,7 @@ public class StepFunTTSClient implements TTSClient {
             playHttp(message, parts[0], parts[1], instruction, callback);
             return;
         }
-        if (TouhouStepFunConfig.TTS_SENTENCE_STREAMING.get()) {
+        if (TouhouAIFunConfig.TTS_SENTENCE_STREAMING.get()) {
             playChunkedHttp(chunks, 0, parts[0], parts[1], instruction,
                     callback, System.currentTimeMillis());
         } else {
@@ -420,10 +420,10 @@ public class StepFunTTSClient implements TTSClient {
             if (!streamToPlayer) {
                 bufferedPcm.writeBytes(pcm);
             } else if (firstChunk) {
-                StepFunNetwork.sendToPlayer(StepFunTTSStreamMessage.start(
+                AIFunNetwork.sendToPlayer(AIFunTTSStreamMessage.start(
                         streamId, callback.getMaid().getId(), SAMPLE_RATE, pcm), player);
             } else {
-                StepFunNetwork.sendToPlayer(StepFunTTSStreamMessage.data(streamId, pcm), player);
+                AIFunNetwork.sendToPlayer(AIFunTTSStreamMessage.data(streamId, pcm), player);
             }
         }
 
@@ -467,7 +467,7 @@ public class StepFunTTSClient implements TTSClient {
 
         private void closeStream() {
             if (streamToPlayer && started.get()) {
-                StepFunNetwork.sendToPlayer(StepFunTTSStreamMessage.end(streamId), player);
+                AIFunNetwork.sendToPlayer(AIFunTTSStreamMessage.end(streamId), player);
             }
         }
 
