@@ -31,6 +31,11 @@ public class StepFunLLMSite extends LLMOpenAISite {
     }
 
     @Override
+    public ResourceLocation icon() {
+        return StepFunShared.ICON;
+    }
+
+    @Override
     public LLMClient client() {
         return new StepFunLLMClient(LLM_HTTP_CLIENT, this);
     }

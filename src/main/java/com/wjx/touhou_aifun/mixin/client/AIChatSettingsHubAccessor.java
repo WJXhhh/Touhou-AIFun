@@ -22,4 +22,7 @@ public interface AIChatSettingsHubAccessor {
 
     @Invoker("getContentWidth")
     int touhouAIFun$invokeGetContentWidth();
+
+    @Invoker("getFooterY")
+    int touhouAIFun$invokeGetFooterY();
 }

@@ -52,7 +52,7 @@ public class StepFunTTSSite implements TTSSite, SupportModelSelect {
 
     @Override
     public ResourceLocation icon() {
-        return icon;
+        return StepFunShared.ICON;
     }
 
     @Override

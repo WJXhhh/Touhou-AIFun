@@ -54,7 +54,7 @@ public class MimoTTSSite implements TTSSite, SupportModelSelect {
 
     @Override
     public ResourceLocation icon() {
-        return icon;
+        return MimoShared.ICON;
     }
 
     @Override

@@ -51,7 +51,8 @@ public final class AIFunNetwork {
                 new AIFunTTSInterruptMessage(maid.getId()));
     }
 
-    public static void sendSettingsToServer(boolean sentenceStreaming) {
-        CHANNEL.sendToServer(new AIFunSettingsMessage(sentenceStreaming));
+    public static void sendSettingsToServer(boolean sentenceStreaming, boolean llmStreaming,
+                                            boolean emotionControl, boolean emotionInText) {
+        CHANNEL.sendToServer(new AIFunSettingsMessage(sentenceStreaming, llmStreaming, emotionControl, emotionInText));
     }
 }

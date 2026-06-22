@@ -35,6 +35,11 @@ public class MimoLLMSite extends ReasoningCompatOpenAISite {
     }
 
     @Override
+    public ResourceLocation icon() {
+        return MimoShared.ICON;
+    }
+
+    @Override
     public LLMClient client() {
         return new ReasoningCompatOpenAIClient(LLM_HTTP_CLIENT, this) {
             @Override

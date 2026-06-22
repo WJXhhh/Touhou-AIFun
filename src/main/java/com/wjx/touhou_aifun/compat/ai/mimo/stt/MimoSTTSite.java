@@ -40,7 +40,7 @@ public class MimoSTTSite implements STTSite {
 
     @Override
     public ResourceLocation icon() {
-        return icon;
+        return MimoShared.ICON;
     }
 
     @Override

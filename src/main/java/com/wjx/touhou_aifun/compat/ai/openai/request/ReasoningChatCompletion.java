@@ -33,8 +33,31 @@ public final class ReasoningChatCompletion {
     @Nullable
     private String reasoningEffort = null;
 
+    @SerializedName("stream")
+    @Nullable
+    private Boolean stream = null;
+
+    @SerializedName("stream_options")
+    @Nullable
+    private StreamOptions streamOptions = null;
+
     public static ReasoningChatCompletion create() {
         return new ReasoningChatCompletion();
+    }
+
+    /**
+     * Enables streaming (SSE) output and asks the server to include the final usage chunk so token
+     * accounting keeps working exactly like the non-streaming path.
+     */
+    public ReasoningChatCompletion enableStream() {
+        this.stream = Boolean.TRUE;
+        this.streamOptions = new StreamOptions();
+        return this;
+    }
+
+    private static final class StreamOptions {
+        @SerializedName("include_usage")
+        private final boolean includeUsage = true;
     }
 
     public ReasoningChatCompletion model(String model) {

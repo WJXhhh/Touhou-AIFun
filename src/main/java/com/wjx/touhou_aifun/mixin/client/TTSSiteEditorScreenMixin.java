@@ -8,6 +8,9 @@ import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.components.EditBox;
 import net.minecraft.network.chat.Component;
 import org.apache.commons.lang3.StringUtils;
+import org.lwjgl.PointerBuffer;
+import org.lwjgl.system.MemoryStack;
+import org.lwjgl.util.tinyfd.TinyFileDialogs;
 import org.spongepowered.asm.mixin.Final;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Shadow;
@@ -18,12 +21,12 @@ import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.ModifyConstant;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
-import com.wjx.touhou_aifun.client.gui.CustomVoiceScreen;
 import com.wjx.touhou_aifun.client.gui.TTSInstructionScreen;
 import com.wjx.touhou_aifun.client.gui.VoicePresetRowState;
 import com.wjx.touhou_aifun.compat.ai.tts.VoicePresetCapabilities;
 import com.wjx.touhou_aifun.compat.ai.tts.VoicePresetSpec;
 
+import java.nio.file.Path;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -104,8 +107,7 @@ public abstract class TTSSiteEditorScreenMixin {
 
             int buttonCount = 1 + (capabilities.supportsVoiceDesign() ? 1 : 0)
                     + (capabilities.supportsReferenceVoice() ? 1 : 0)
-                    + (capabilities.supportsSynthesisInstruction() ? 1 : 0)
-                    + (capabilities.supportsStreamingOutput() ? 1 : 0);
+                    + (capabilities.supportsSynthesisInstruction() ? 1 : 0);
             int buttonsWidth = buttonCount * MODE_BUTTON_WIDTH + (buttonCount - 1) * MODE_BUTTON_GAP;
             int deleteButtonX = left + contentWidth - 24;
             int buttonX = deleteButtonX - 6 - buttonsWidth;
@@ -122,6 +124,24 @@ public abstract class TTSSiteEditorScreenMixin {
             nameBox.setWidth(nameWidth);
             state.applyToBox(idBox);
 
+            if (state.mode() == VoicePresetSpec.Mode.REFERENCE_SAMPLE) {
+                VoicePresetRowState refState = state;
+                EditBox refIdBox = idBox;
+                int browseWidth = 44;
+                int browseGap = 2;
+                int adjustedIdWidth = Math.max(60, idWidth - browseWidth - browseGap);
+                idBox.setWidth(adjustedIdWidth);
+                int browseX = inputLeft + adjustedIdWidth + browseGap;
+                nameBox.setX(browseX + browseWidth + inputGap);
+                nameBox.setWidth(Math.max(60, nameWidth - browseWidth - browseGap));
+                FlatColorButton browseBtn = new FlatColorButton(
+                        browseX, idBox.getY() - 6,
+                        browseWidth, 18,
+                        Component.translatable("gui.touhou_aifun.custom_voice.browse"),
+                        pressed -> touhouAIFun$chooseAudioFile(refState, refIdBox));
+                ((TTSSiteEditorScreen) (Object) this).addRenderableWidget(browseBtn);
+            }
+
             int index = 0;
             this.touhouAIFun$addModeButton(row, state, idBox, buttonX, buttonY, index++,
                     VoicePresetSpec.Mode.DIRECT_ID, "ID", "gui.touhou_aifun.voice_mode.id");
@@ -135,9 +155,6 @@ public abstract class TTSSiteEditorScreenMixin {
             }
             if (capabilities.supportsSynthesisInstruction()) {
                 this.touhouAIFun$addInstructionButton(state, idBox, buttonX, buttonY, index++);
-            }
-            if (capabilities.supportsStreamingOutput()) {
-                this.touhouAIFun$addStreamingButton(state, idBox, buttonX, buttonY, index);
             }
         }
     }
@@ -169,50 +186,45 @@ public abstract class TTSSiteEditorScreenMixin {
     }
 
     @Unique
-    private void touhouAIFun$addModeButton(Object row, VoicePresetRowState state, EditBox idBox,
-                                              int startX, int y, int index, VoicePresetSpec.Mode mode,
-                                              String label, String tooltipKey) {
+    private void touhouAIFun$chooseAudioFile(VoicePresetRowState state, EditBox idBox) {
+        try (MemoryStack stack = MemoryStack.stackPush()) {
+            PointerBuffer filters = stack.mallocPointer(2);
+            filters.put(stack.UTF8("*.wav"));
+            filters.put(stack.UTF8("*.mp3"));
+            filters.flip();
+            String currentPath = StringUtils.trimToEmpty(idBox.getValue());
+            String defaultPath = StringUtils.isBlank(currentPath)
+                    ? Path.of(".").toAbsolutePath().normalize().toString()
+                    : currentPath;
+            String selected = TinyFileDialogs.tinyfd_openFileDialog(
+                    "选择参考音频",
+                    defaultPath,
+                    filters,
+                    "WAV/MP3",
+                    false
+            );
+            if (StringUtils.isNotBlank(selected)) {
+                idBox.setValue(selected);
+            }
+        }
+    }
+
+    @Unique
+    private FlatColorButton touhouAIFun$addModeButton(Object row, VoicePresetRowState state, EditBox idBox,
+                                                        int startX, int y, int index, VoicePresetSpec.Mode mode,
+                                                        String label, String tooltipKey) {
         FlatColorButton button = new FlatColorButton(
                 startX + index * (MODE_BUTTON_WIDTH + MODE_BUTTON_GAP), y,
                 MODE_BUTTON_WIDTH, 18, Component.literal(label), pressed -> {
             state.syncVisibleValue(idBox.getValue());
             state.setMode(mode);
             state.applyToBox(idBox);
-            if (mode == VoicePresetSpec.Mode.REFERENCE_SAMPLE) {
-                Minecraft minecraft = Minecraft.getInstance();
-                minecraft.setScreen(new CustomVoiceScreen(
-                        (TTSSiteEditorScreen) (Object) this,
-                        state.value(mode),
-                        state.referenceText(),
-                        (audioPath, referenceText) -> {
-                            state.updateReference(audioPath, referenceText);
-                            state.applyToBox(idBox);
-                        }
-                ));
-            } else {
-                Minecraft.getInstance().setScreen((TTSSiteEditorScreen) (Object) this);
-            }
+            Minecraft.getInstance().setScreen((TTSSiteEditorScreen) (Object) this);
         });
         button.setSelect(state.mode() == mode);
         button.setTooltips(tooltipKey);
         ((TTSSiteEditorScreen) (Object) this).addRenderableWidget(button);
-    }
-
-    @Unique
-    private void touhouAIFun$addStreamingButton(VoicePresetRowState state, EditBox idBox,
-                                                   int startX, int y, int index) {
-        String tooltipKey = state.streaming()
-                ? "gui.touhou_aifun.voice_stream.on" : "gui.touhou_aifun.voice_stream.off";
-        FlatColorButton button = new FlatColorButton(
-                startX + index * (MODE_BUTTON_WIDTH + MODE_BUTTON_GAP), y,
-                MODE_BUTTON_WIDTH, 18, Component.literal("流"), pressed -> {
-            state.syncVisibleValue(idBox.getValue());
-            state.toggleStreaming();
-            Minecraft.getInstance().setScreen((TTSSiteEditorScreen) (Object) this);
-        });
-        button.setSelect(state.streaming());
-        button.setTooltips(tooltipKey);
-        ((TTSSiteEditorScreen) (Object) this).addRenderableWidget(button);
+        return button;
     }
 
     @Unique

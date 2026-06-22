@@ -6,12 +6,14 @@
   "refmap": "touhou_aifun.refmap.json",
   "mixins": [
     "ChatBubbleManagerMixin",
+    "LLMCallbackAccessor",
     "LLMCallbackMixin",
     "MaidAIChatManagerMixin",
     "PapiReplacerMixin"
   ],
   "client": [
     "client.AIChatSettingsHubAccessor",
+    "client.AIChatSettingsLLMSiteScreenMixin",
     "client.AIChatSettingsSTTConfigScreenMixin",
     "client.AIChatSettingsTTSSiteScreenMixin",
     "client.LLMSiteEditorScreenMixin",

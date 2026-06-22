@@ -40,7 +40,7 @@ public class StepFunSTTSite implements STTSite {
 
     @Override
     public ResourceLocation icon() {
-        return icon;
+        return StepFunShared.ICON;
     }
 
     @Override
