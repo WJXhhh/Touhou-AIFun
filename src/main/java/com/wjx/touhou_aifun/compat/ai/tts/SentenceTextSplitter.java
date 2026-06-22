@@ -4,7 +4,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 public final class SentenceTextSplitter {
-    private static final String SENTENCE_ENDINGS = "。！？!?；;.\n";
+    private static final String SENTENCE_ENDINGS = "。！？!?；;.，,、\n";
     private static final String TRAILING_MARKS = "”’」』）)]】\"'";
 
     private SentenceTextSplitter() {

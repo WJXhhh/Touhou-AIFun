@@ -32,6 +32,15 @@ public final class QueuedTTSPlaybackManager {
         return true;
     }
 
+    /** Drop all pending TTS and stop the one currently playing (a newer reply is taking over). */
+    public static void interrupt() {
+        QUEUE.clear();
+        if (current != null) {
+            Minecraft.getInstance().getSoundManager().stop(current);
+            current = null;
+        }
+    }
+
     @SubscribeEvent
     public static void onClientTick(TickEvent.ClientTickEvent event) {
         if (event.phase != TickEvent.Phase.END) {

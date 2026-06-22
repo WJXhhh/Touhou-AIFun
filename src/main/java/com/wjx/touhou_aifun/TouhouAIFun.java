@@ -17,6 +17,6 @@ public final class TouhouAIFun {
         ModLoadingContext.get().registerConfig(ModConfig.Type.COMMON, TouhouAIFunConfig.SPEC,
                 "touhou-stepfun.toml");
         AIFunNetwork.init();
-        LOGGER.info("Touhou StepFun addon initialized.");
+        LOGGER.info("Touhou AIFun addon initialized.");
     }
 }

@@ -58,4 +58,12 @@ public final class AIFunStreamSoundManager {
             stream.finish();
         }
     }
+
+    /** Abandon all active streamed TTS so a newer reply can take over. */
+    public static void interrupt() {
+        for (AIFunPcmAudioStream stream : STREAMS.values()) {
+            stream.close();
+        }
+        STREAMS.clear();
+    }
 }
