@@ -12,6 +12,7 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 import com.wjx.touhou_aifun.chat.ChatFlowManager;
 import com.wjx.touhou_aifun.network.AIFunNetwork;
 
+import java.net.http.HttpRequest;
 import java.util.UUID;
 
 @Mixin(value = LLMCallback.class, remap = false)
@@ -21,6 +22,17 @@ public abstract class LLMCallbackMixin {
         EntityMaid maid = ((LLMCallback) (Object) this).getMaid();
         if (maid != null) {
             ChatFlowManager.registerRequest(maid.getUUID(), this);
+        }
+    }
+
+    @Inject(method = "onFailure", at = @At("HEAD"), cancellable = true)
+    private void touhouAIFun$suppressSupersededFailure(HttpRequest request, Throwable throwable,
+                                                       int errorCode, CallbackInfo ci) {
+        EntityMaid maid = ((LLMCallback) (Object) this).getMaid();
+        // The previous request was cancelled (or finished late) because a newer one took over:
+        // swallow its failure so no error is shown to the player.
+        if (maid != null && ChatFlowManager.isSuperseded(maid.getUUID(), this)) {
+            ci.cancel();
         }
     }
 

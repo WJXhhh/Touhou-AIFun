@@ -27,10 +27,13 @@ import com.wjx.touhou_aifun.compat.ai.openai.request.ReasoningChatCompletion;
 import com.wjx.touhou_aifun.compat.ai.openai.response.ReasoningOpenAIChatCompletionResponse;
 import com.wjx.touhou_aifun.compat.ai.openai.response.ReasoningOpenAIMessage;
 
+import com.wjx.touhou_aifun.chat.ChatFlowManager;
+
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 
 public class ReasoningCompatOpenAIClient extends LLMOpenAIClient {
@@ -109,8 +112,12 @@ public class ReasoningCompatOpenAIClient extends LLMOpenAIClient {
 
         this.site.headers().forEach(builder::header);
         HttpRequest httpRequest = builder.build();
-        this.httpClient.sendAsync(httpRequest, HttpResponse.BodyHandlers.ofString())
-                .orTimeout(MAX_TIMEOUT.toSeconds() + 5, TimeUnit.SECONDS)
+        // Keep the raw sendAsync future so a newer request can cancel it (cancelling this future
+        // aborts the underlying HTTP exchange, stopping the model from generating further).
+        CompletableFuture<HttpResponse<String>> future =
+                this.httpClient.sendAsync(httpRequest, HttpResponse.BodyHandlers.ofString());
+        ChatFlowManager.setInFlight(maid.getUUID(), future);
+        future.orTimeout(MAX_TIMEOUT.toSeconds() + 5, TimeUnit.SECONDS)
                 .whenComplete((response, throwable) -> complete(callback, response, throwable, httpRequest));
     }
 

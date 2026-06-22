@@ -2,6 +2,7 @@ package com.wjx.touhou_aifun.chat;
 
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
@@ -19,13 +20,30 @@ import java.util.concurrent.ConcurrentHashMap;
 public final class ChatFlowManager {
     private static final Map<UUID, Object> LATEST_REQUEST = new ConcurrentHashMap<>();
     private static final Map<UUID, Integer> TTS_GENERATION = new ConcurrentHashMap<>();
+    private static final Map<UUID, CompletableFuture<?>> IN_FLIGHT = new ConcurrentHashMap<>();
 
     private ChatFlowManager() {
     }
 
-    /** Marks {@code callback} as the latest request for the maid (called when it is created). */
+    /**
+     * Marks {@code callback} as the latest request for the maid (called when it is created), and
+     * actively cancels the previous request's in-flight LLM HTTP call so the model stops generating.
+     */
     public static void registerRequest(UUID maid, Object callback) {
+        cancelInFlight(maid);
         LATEST_REQUEST.put(maid, callback);
+    }
+
+    /** Remembers the in-flight LLM request future so a later request can abort it. */
+    public static void setInFlight(UUID maid, CompletableFuture<?> future) {
+        IN_FLIGHT.put(maid, future);
+    }
+
+    private static void cancelInFlight(UUID maid) {
+        CompletableFuture<?> previous = IN_FLIGHT.remove(maid);
+        if (previous != null && !previous.isDone()) {
+            previous.cancel(true);
+        }
     }
 
     /** True if a newer request has been issued for the maid since {@code callback} was created. */
