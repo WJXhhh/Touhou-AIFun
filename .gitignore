@@ -1,0 +1,21 @@
+/.gradle/
+/build/
+/out/
+/run/
+/run-data/
+/.idea/
+*.iml
+*.ipr
+*.iws
+*.classpath
+*.project
+*.settings/
+
+# Local scratch, logs, scraped docs and test fixtures (not part of the mod)
+/*.txt
+/*.ps1
+/*.html
+/tmp/
+/tmp_test/
+/stepfun_test_*.json
+/mcmodsrepo/
