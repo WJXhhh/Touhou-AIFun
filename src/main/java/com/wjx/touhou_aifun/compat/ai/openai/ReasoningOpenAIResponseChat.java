@@ -12,15 +12,23 @@ import java.util.regex.Pattern;
 
 final class ReasoningOpenAIResponseChat extends ResponseChat {
     /**
-     * One leading emotion marker like {@code (开心)} — a short run of CJK characters wrapped in
-     * parentheses at the very start. Matching CJK-only (not arbitrary text) keeps genuine parenthetical
-     * openings (emoticons, English asides) from being mistaken for a marker. Both ASCII {@code ()} and
+     * The inner body of an {@code (emotion)} marker: it must <em>start</em> with a CJK character, then
+     * may carry more CJK plus the separators used to combine tags — ASCII/full-width comma, the
+     * enumeration comma {@code 、}, and whitespace — so a combined marker like {@code (委屈，抽泣)} or
+     * {@code (极其疲惫，有气无力)} matches as a single marker. Requiring a CJK lead keeps genuine
+     * parenthetical openings (emoticons, English asides) from being mistaken for a marker; the length
+     * cap keeps a long Chinese aside in parentheses from being swallowed as one. Keep in sync with the
+     * marker list in {@code PapiReplacerMixin}.
+     */
+    private static final String MARKER_BODY = "[\\u4e00-\\u9fa5][\\u4e00-\\u9fa5，,、 \\t\\u3000]{0,15}";
+
+    /**
+     * One leading emotion marker wrapped in parentheses at the very start. Both ASCII {@code ()} and
      * full-width {@code （）} parentheses are accepted: the prompt asks for ASCII, but models frequently
-     * emit full-width ones, and an unstripped marker would otherwise leak into the chat bubble. Keep in
-     * sync with the marker list in {@code PapiReplacerMixin}.
+     * emit full-width ones, and an unstripped marker would otherwise leak into the chat bubble.
      */
     private static final Pattern LEADING_MARKER =
-            Pattern.compile("^\\s*[(（][\\u4e00-\\u9fa5]{1,6}[)）]\\s*");
+            Pattern.compile("^\\s*[(（]" + MARKER_BODY + "[)）]\\s*");
 
     /**
      * Any {@code (emotion)} marker anywhere in the text. With mid-reply emotion switches a reply can
@@ -28,7 +36,7 @@ final class ReasoningOpenAIResponseChat extends ResponseChat {
      * them must be removed, not just the leading one.
      */
     private static final Pattern ANY_MARKER =
-            Pattern.compile("[(（][\\u4e00-\\u9fa5]{1,6}[)）]");
+            Pattern.compile("[(（]" + MARKER_BODY + "[)）]");
 
     /**
      * A leading {@code Part 1:} / {@code Part 2:} label (or full-width colon). The prompt forbids these

@@ -82,7 +82,8 @@ public abstract class PapiReplacerMixin {
                 ## Output Examples:
                 (开心)勾指起誓，此生不渝～
                 (唱歌)爱你孤身走暗巷，爱你不跪的模样～
-                (委屈)呜…人家等主人好久了…(撒娇)主人下次要早点回来嘛～
+                (委屈，抽泣)呜…人家等主人好久了…(撒娇)主人下次要早点回来嘛～
+                (慵懒，气声)唔…再让我靠一会儿嘛…(俏皮)骗你的，这就起来啦～
                 """;
     }
 
@@ -147,18 +148,33 @@ public abstract class PapiReplacerMixin {
     private static String touhouAIFun$markers() {
         return """
                 ### Allowed markers
-                Start the reply with one marker that fits the opening mood (you may add more later — see Marker scope):
-                `(开心)` `(悲伤)` `(愤怒)` `(恐惧)` `(惊讶)` `(兴奋)` `(委屈)` `(平静)` `(温柔)` `(严肃)`
-                `(慵懒)` `(俏皮)` `(紧张)` `(疲惫)` `(撒娇)` `(不耐烦)` `(轻笑)` `(大笑)` `(抽泣)` `(嚎啕大哭)` `(叹气)` `(唱歌)`
+                Start every sentence with one PRIMARY mood tag that fits it (add more later — see Marker scope).
+                Choose the primary tag from these groups:
+                - Basic emotion: `开心` `悲伤` `愤怒` `恐惧` `惊讶` `兴奋` `委屈` `平静` `冷漠`
+                - Complex emotion: `怅然` `欣慰` `无奈` `愧疚` `释然` `嫉妒` `厌倦` `忐忑` `动情`
+                - Tone / manner: `温柔` `高冷` `活泼` `严肃` `慵懒` `俏皮` `深沉` `干练` `凌厉` `撒娇` `不耐烦`
+                - Expressive timbre: `磁性` `醇厚` `清亮` `甜美` `沙哑`
+
+                You MAY add one or two PARALINGUISTIC tags inside the SAME parentheses to enrich delivery
+                (or use one alone for a beat):
+                - Breath / pacing: `吸气` `深呼吸` `叹气` `长叹一口气` `喘息` `屏息`
+                - Voice quality: `颤抖` `声音颤抖` `变调` `破音` `鼻音` `气声`
+                - Cry / laugh: `笑` `轻笑` `大笑` `冷笑` `抽泣` `呜咽` `哽咽` `嚎啕大哭`
+                - State: `紧张` `害怕` `激动` `疲惫` `心虚` `震惊`
+
+                ### Combining tags
+                Put up to 2–3 tags in one marker, comma-separated, primary mood first:
+                `(委屈，抽泣)` `(紧张，深呼吸)` `(慵懒，气声)` `(开心，轻笑)` `(无奈，叹气)` `(极其疲惫，有气无力)`
+                Do not over-stack — one mood tag plus at most a paralinguistic touch reads best.
 
                 Use `(平静)` when no stronger emotion applies.
                 MANDATORY: if your reply is singing, humming, or song lyrics (the user asked you to sing, or
                 you are performing a song), the marker MUST be `(唱歌)` — NEVER `(开心)`, `(俏皮)`, `(兴奋)` or
-                any other. Singing always uses `(唱歌)`, no exceptions.
+                any other, and do NOT combine it with other tags. Singing always uses `(唱歌)`, no exceptions.
                 Other explicitly requested delivery styles likewise take priority over the general mood:
                 loud crying -> `(嚎啕大哭)`; sobbing -> `(抽泣)`; laughing -> `(轻笑)` or `(大笑)`; sighing -> `(叹气)`.
                 Use ASCII half-width parentheses `()` exactly. Full-width Chinese parentheses `（）` are NOT emotion markers.
-                Do not invent a marker outside this list.
+                Combine only the tags listed above (an intensity word like `极其`/`有点` before a tag is fine); do not invent unrelated tags.
 
                 ### Marker scope — RE-MARK WHEN THE MOOD CHANGES
                 A marker sets the emotion for everything after it and KEEPS applying to every following

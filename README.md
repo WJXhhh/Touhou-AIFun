@@ -23,6 +23,7 @@ text-to-speech (TTS) and speech-to-text (STT) — and adds extra voice-customiza
 - **Xiaomi MiMo** — direct voice ID, **Voice Design** prompt, and **reference-audio cloning**
 - **MiniMax**, **SiliconFlow**, **Fish Audio**
 - Per-voice mode buttons in the editor and **sentence-by-sentence streaming** playback
+- **Inline emotion / style control** — per-sentence `(emotion)` markers (incl. combined tags like `(委屈，抽泣)`) for `stepaudio-2.5-tts` / `mimo-v2.5-tts`, carried across streamed sentences
 
 ### Speech-to-Text (STT)
 - **StepFun**, **Xiaomi MiMo**

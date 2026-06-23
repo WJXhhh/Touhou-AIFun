@@ -69,8 +69,13 @@ final class StreamingTtsReply {
 
     /** Sentences awaiting synthesis, in order. */
     private final Deque<String> pending = new ArrayDeque<>();
-    /** How many sentences of the TTS text have already been queued (so we never re-queue). */
-    private int queuedSentences;
+    /**
+     * How many characters of the TTS text have already been turned into queued sentences. Tracking the
+     * consumed text by <em>character offset</em> (not by an index into a chunk list that is recomputed
+     * every streaming frame) keeps the accounting stable: each frame only the unconsumed, completed tail
+     * is split and queued, so no sentence is re-queued, dropped, or given a stale emotion marker.
+     */
+    private int consumedLen;
     /** True while a synthesis request is in flight; keeps synthesis strictly sequential. */
     private boolean synthesizing;
 
@@ -143,18 +148,17 @@ final class StreamingTtsReply {
             ttsText = new ReasoningOpenAIResponseChat(visibleContent, null).getTtsText();
         }
 
-        List<String> chunks = this.ttsSentences(ttsText);
-        // The last chunk may still be a partial sentence; only queue the completed ones.
-        this.enqueue(chunks, chunks.size() - 1);
+        // Queue only sentences completed so far (the still-growing trailing sentence is left for later).
+        this.queueUpTo(ttsText, SentenceTextSplitter.completePrefixLength(ttsText, MAX_CHUNK_CODE_POINTS));
     }
 
     /**
-     * Splits the TTS text into synthesis chunks. With emotion control on, each {@code (emotion)} marker
-     * is additionally made to start its own chunk so a mid-reply switch marker takes effect on its own
-     * synthesis request rather than being buried inside one (see {@link #carryEmotion}).
+     * Splits a piece of TTS text into synthesis chunks. With emotion control on, each {@code (emotion)}
+     * marker is additionally made to start its own chunk so a mid-reply switch marker takes effect on
+     * its own synthesis request rather than being buried inside one (see {@link #carryEmotion}).
      */
-    private List<String> ttsSentences(String ttsText) {
-        List<String> base = SentenceTextSplitter.split(ttsText, MAX_CHUNK_CODE_POINTS);
+    private List<String> piecesOf(String text) {
+        List<String> base = SentenceTextSplitter.split(text, MAX_CHUNK_CODE_POINTS);
         if (!this.propagateEmotion) {
             return base;
         }
@@ -173,8 +177,9 @@ final class StreamingTtsReply {
             return;
         }
 
-        List<String> chunks = this.ttsSentences(response.getTtsText());
-        this.enqueue(chunks, chunks.size());
+        // The reply is complete, so everything up to the end is a finished sentence.
+        String ttsText = response.getTtsText();
+        this.queueUpTo(ttsText, ttsText.length());
         this.runOnServer(() -> this.chatManager.addAssistantHistory(response.toString()));
         // Take over speaking (interrupt any previous reply), then surface the COMPLETE chat text once —
         // replacing the live streamed bubble. This must use the finalized reply, never a partial: the
@@ -184,14 +189,29 @@ final class StreamingTtsReply {
         this.pump();
     }
 
-    private void enqueue(List<String> chunks, int upTo) {
+    /**
+     * Queues the completed-sentence text of {@code ttsText} between the already-consumed offset and
+     * {@code completeLen}. Only the newly-completed tail is split and queued, so the emotion carried by
+     * {@link #carryEmotion} stays consistent across frames and no sentence is re-queued or dropped.
+     */
+    private void queueUpTo(String ttsText, int completeLen) {
         synchronized (this) {
-            for (int i = this.queuedSentences; i < upTo; i++) {
-                this.pending.addLast(this.carryEmotion(chunks.get(i)));
+            int from = Math.min(this.consumedLen, ttsText.length());
+            int to = Math.min(completeLen, ttsText.length());
+            if (to <= from) {
+                // Nothing new completed (or the text unexpectedly shrank — never un-speak what was said).
+                return;
             }
-            if (upTo > this.queuedSentences) {
-                this.queuedSentences = upTo;
+            for (String piece : this.piecesOf(ttsText.substring(from, to))) {
+                String spoken = this.carryEmotion(piece);
+                // A marker-only piece (e.g. adjacent markers like `(唱歌)(平静)`) carries no spoken
+                // text. carryEmotion has already recorded its emotion, but queuing it would waste a
+                // serial synthesis slot on empty audio and stall the next real sentence — so skip it.
+                if (!ReasoningOpenAIResponseChat.stripAllMarkers(spoken).isEmpty()) {
+                    this.pending.addLast(spoken);
+                }
             }
+            this.consumedLen = to;
         }
         this.pump();
     }

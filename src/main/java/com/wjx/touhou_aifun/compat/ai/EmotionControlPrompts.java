@@ -91,6 +91,7 @@ public final class EmotionControlPrompts {
                     FINAL TEXT FORMAT REMINDER (ignore this while making tool calls):
                     Output your reply EXACTLY ONCE as ONE plain-text message.
                     Begin it with one allowed `(emotion)` marker, immediately followed by the reply.
+                    A marker may combine a mood with a paralinguistic tag in one parenthesis, e.g. `(委屈，抽泣)` or `(紧张，深呼吸)`.
                     A marker stays in effect for every following sentence until you write a new one, so re-mark
                     when the mood changes partway. If you sing `(唱歌)`, the ENTIRE reply must be ONLY the song —
                     no spoken lead-in or follow-up; say anything else in a separate later reply, never in the same one.
@@ -113,6 +114,7 @@ public final class EmotionControlPrompts {
                     ---
                     (emotion)TRANSLATION
                     `---` MUST be on its own line. Both sections start with the SAME `(emotion)`.
+                    A marker may combine a mood with a paralinguistic tag in one parenthesis, e.g. `(委屈，抽泣)`; use the SAME combined marker in both sections.
                     Part 1 is REPLY in the chat language; Part 2 is its faithful translation into %s — translate the meaning, do NOT copy Part 1.
                     A marker stays in effect for the following sentences until changed; if the mood changes partway
                     (e.g. from comforting to teasing), put a new marker at that point in BOTH sections.
@@ -129,6 +131,7 @@ public final class EmotionControlPrompts {
                 ---
                 (emotion)TRANSLATION
                 `---` MUST be on its own line. Part 1 has no marker; Part 2 starts with one `(emotion)`.
+                Part 2's marker may combine a mood with a paralinguistic tag in one parenthesis, e.g. `(委屈，抽泣)`.
                 Part 1 is REPLY in the chat language; Part 2 is its faithful translation into %s — translate the meaning, do NOT copy Part 1.
                 In Part 2 a marker stays in effect for the following sentences until changed; if the mood changes
                 partway (e.g. from comforting to teasing), put a new marker at that point in Part 2.
