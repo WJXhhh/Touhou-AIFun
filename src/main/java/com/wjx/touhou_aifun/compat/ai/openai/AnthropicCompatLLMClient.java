@@ -4,6 +4,7 @@ import com.github.tartaricacid.touhoulittlemaid.TouhouLittleMaid;
 import com.github.tartaricacid.touhoulittlemaid.ai.agent.tool.ITool;
 import com.github.tartaricacid.touhoulittlemaid.ai.agent.tool.ToolRegister;
 import com.github.tartaricacid.touhoulittlemaid.ai.manager.entity.LLMCallback;
+import com.github.tartaricacid.touhoulittlemaid.ai.manager.response.ResponseChat;
 import com.github.tartaricacid.touhoulittlemaid.ai.service.ErrorCode;
 import com.github.tartaricacid.touhoulittlemaid.ai.service.function.schema.parameter.ObjectParameter;
 import com.github.tartaricacid.touhoulittlemaid.ai.service.function.schema.parameter.Parameter;
@@ -28,6 +29,8 @@ import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import org.apache.commons.lang3.StringUtils;
 import com.wjx.touhou_aifun.chat.ChatFlowManager;
+import com.wjx.touhou_aifun.chat.context.AIFunMemoryManager;
+import com.wjx.touhou_aifun.chat.context.ContextBudgetPlanner;
 import com.wjx.touhou_aifun.compat.ai.EmotionControlPrompts;
 import com.wjx.touhou_aifun.compat.ai.openai.response.ReasoningOpenAIMessage;
 import com.wjx.touhou_aifun.compat.ai.openai.response.StreamAccumulator;
@@ -112,6 +115,20 @@ public class AnthropicCompatLLMClient implements LLMClient {
     @Override
     public void chat(LLMCallback callback) {
         EntityMaid maid = callback.getMaid();
+        if (callback.getClass() == LLMCallback.class
+                && ChatFlowManager.isSuperseded(maid.getUUID(), callback)) {
+            return;
+        }
+        if (callback.getClass() == LLMCallback.class && !callback.getMessages().stream()
+                .anyMatch(message -> message.role() == Role.TOOL)) {
+            double factor = AIFunMemoryManager.calibratedEstimate(maid.getAiChatManager(), callback.getMessages())
+                    / (double) Math.max(1, com.wjx.touhou_aifun.chat.context.ContextTokenEstimator.estimate(callback.getMessages()));
+            List<LLMMessage> planned = ContextBudgetPlanner.trim(callback.getMessages(),
+                    TouhouAIFunConfig.CONTEXT_INPUT_BUDGET_TOKENS.get(),
+                    ToolContextSelector.schemaBudget(maid, callback), factor);
+            callback.getMessages().clear();
+            callback.getMessages().addAll(planned);
+        }
         // Per-request streaming state. The pending server-tool blocks survive only across the
         // auto-retry of an unfinished server-tool turn (detected by the trailing empty assistant
         // message); a brand-new conversation starts clean.
@@ -146,7 +163,7 @@ public class AnthropicCompatLLMClient implements LLMClient {
         // aborts the underlying HTTP exchange, stopping the model from generating further).
         CompletableFuture<HttpResponse<String>> future =
                 this.httpClient.sendAsync(httpRequest, HttpResponse.BodyHandlers.ofString());
-        ChatFlowManager.setInFlight(maid.getUUID(), future);
+        ChatFlowManager.setInFlight(maid.getUUID(), callback, future);
         future.orTimeout(MAX_TIMEOUT.toSeconds() + 5, TimeUnit.SECONDS)
                 .whenComplete((response, throwable) -> this.complete(callback, response, throwable, httpRequest));
     }
@@ -183,6 +200,9 @@ public class AnthropicCompatLLMClient implements LLMClient {
         }
         // Keep the emotion reminders adjacent to the model's next response, exactly like the OpenAI path.
         if (callback.getClass() == LLMCallback.class) {
+            systemParts.add(ToolContextSelector.compactDirectory(maid,
+                    callback.getMessages().stream().filter(m -> m.role() == Role.USER)
+                            .reduce((first, second) -> second).map(LLMMessage::message).orElse("")));
             String emotionChange = EmotionControlPrompts.changeNotice(maid);
             if (emotionChange != null) {
                 systemParts.add(emotionChange);
@@ -304,6 +324,7 @@ public class AnthropicCompatLLMClient implements LLMClient {
 
         // --- tools ---
         if (callback.needAddTools) {
+            Set<String> selectedTools = ToolContextSelector.selected(maid, callback);
             JsonArray tools = new JsonArray();
             // Server-executed web search goes first; DeepSeek runs it and returns the results in
             // the same turn, so no client-side tool_result round trip is needed.
@@ -315,8 +336,11 @@ public class AnthropicCompatLLMClient implements LLMClient {
 
             for (var entry : ToolRegister.getAllTools().entrySet()) {
                 String toolId = entry.getKey();
+                if (!selectedTools.contains(toolId)) {
+                    continue;
+                }
                 ITool<?> tool = entry.getValue();
-                if (tool == null || !tool.trigger(maid, null)) {
+                if (tool == null || !ToolContextSelector.isTriggered(maid, tool)) {
                     continue;
                 }
                 JsonObject function = new JsonObject();
@@ -412,6 +436,7 @@ public class AnthropicCompatLLMClient implements LLMClient {
         }
         EntityMaid maid = callback.getMaid();
         if (this.shouldStopChat(maid)) {
+            if (callback.getClass() == LLMCallback.class) ChatFlowManager.finishRequest(maid.getUUID(), callback);
             return;
         }
         if (!this.isSuccessful(response)) {
@@ -449,6 +474,10 @@ public class AnthropicCompatLLMClient implements LLMClient {
                 // Streamed responses are normalized to the OpenAI usage shape (prompt/completion).
                 inputTokens = optInt(usage, "prompt_tokens");
                 outputTokens = optInt(usage, "completion_tokens");
+            }
+            if (inputTokens > 0 && callback.getClass() == LLMCallback.class) {
+                AIFunMemoryManager.recordPromptCalibration(callback.getChatManager(), inputTokens,
+                        callback.getMessages(), ToolContextSelector.schemaBudget(callback.getMaid(), callback));
             }
             if (inputTokens + outputTokens > 0 && !this.recordTokenUsage(callback, inputTokens + outputTokens, request)) {
                 return;
@@ -581,6 +610,10 @@ public class AnthropicCompatLLMClient implements LLMClient {
             callback.onSuccess(new ReasoningOpenAIResponseChat(StringUtils.EMPTY, reasoning));
             return;
         }
+        if (callback.getClass() != LLMCallback.class) {
+            callback.onSuccess(new ResponseChat(content, content));
+            return;
+        }
         EntityMaid maid = callback.getMaid();
         ReasoningOpenAIResponseChat responseChat = this.singleSegmentMode(maid)
                 ? ReasoningOpenAIResponseChat.singleSegment(content, reasoning, !this.stripChatMarker(maid))
@@ -690,7 +723,7 @@ public class AnthropicCompatLLMClient implements LLMClient {
         // once streaming starts, the consume loop additionally bails out as soon as it is superseded.
         CompletableFuture<HttpResponse<Stream<String>>> future =
                 this.httpClient.sendAsync(httpRequest, HttpResponse.BodyHandlers.ofLines());
-        ChatFlowManager.setInFlight(maid.getUUID(), future);
+        ChatFlowManager.setInFlight(maid.getUUID(), callback, future);
         future.orTimeout(MAX_TIMEOUT.toSeconds() + 5, TimeUnit.SECONDS)
                 .whenCompleteAsync((response, throwable) ->
                         this.consumeStream(callback, response, throwable, httpRequest, accumulator, ttsReplyRef, displayRef));
@@ -706,6 +739,7 @@ public class AnthropicCompatLLMClient implements LLMClient {
         }
         if (this.shouldStopChat(maid)) {
             response.body().close();
+            if (callback.getClass() == LLMCallback.class) ChatFlowManager.finishRequest(maid.getUUID(), callback);
             return;
         }
         try {
@@ -733,6 +767,7 @@ public class AnthropicCompatLLMClient implements LLMClient {
             // The stream was aborted because a newer request took over (or the maid is gone):
             // abandon this reply, so no tools run and nothing is spoken on a partial answer.
             if (this.shouldStopChat(maid) || ChatFlowManager.isSuperseded(maidId, callback)) {
+                if (callback.getClass() == LLMCallback.class) ChatFlowManager.finishRequest(maidId, callback);
                 return;
             }
 

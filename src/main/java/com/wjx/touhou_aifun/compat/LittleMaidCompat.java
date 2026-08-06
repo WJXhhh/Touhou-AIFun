@@ -16,6 +16,7 @@ import com.wjx.touhou_aifun.compat.ai.fishaudio.tts.FishAudioCompatTTSSite;
 import com.wjx.touhou_aifun.compat.ai.mimo.MimoLLMSite;
 import com.wjx.touhou_aifun.compat.ai.minimax.tts.MiniMaxCompatTTSSite;
 import com.wjx.touhou_aifun.compat.ai.openai.ReasoningCompatOpenAISite;
+import com.wjx.touhou_aifun.compat.ai.openai.LoadToolSchemaTool;
 import com.wjx.touhou_aifun.compat.ai.stepfun.StepFunLLMSite;
 import com.wjx.touhou_aifun.compat.ai.stepfun.StepFunPlanLLMSite;
 import com.wjx.touhou_aifun.compat.ai.mimo.stt.MimoSTTSite;
@@ -34,6 +35,11 @@ import java.util.function.Consumer;
 
 @LittleMaidExtension
 public final class LittleMaidCompat implements ILittleMaid {
+    @Override
+    public void registerAITool(com.github.tartaricacid.touhoulittlemaid.ai.agent.tool.ToolRegister register) {
+        register.register(new LoadToolSchemaTool());
+    }
+
     @Override
     public void registerAIChatSerializer(SerializerRegister register) {
         register.register(ServiceType.LLM, LLMOpenAISite.API_TYPE, new ReasoningCompatOpenAISite.Serializer());

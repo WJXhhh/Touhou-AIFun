@@ -8,6 +8,9 @@ public final class TouhouAIFunConfig {
     public static final ForgeConfigSpec.BooleanValue TTS_EMOTION_CONTROL;
     public static final ForgeConfigSpec.BooleanValue TTS_EMOTION_IN_TEXT;
     public static final ForgeConfigSpec.BooleanValue LLM_STREAMING;
+    public static final ForgeConfigSpec.IntValue CONTEXT_INPUT_BUDGET_TOKENS;
+    public static final ForgeConfigSpec.IntValue MEMORY_RECENT_TURNS;
+    public static final ForgeConfigSpec.BooleanValue BACKGROUND_MEMORY_EXTRACTION;
     public static final ForgeConfigSpec.ConfigValue<String> STT_SELECTED_SITE;
 
     static {
@@ -32,6 +35,15 @@ public final class TouhouAIFunConfig {
                 .comment("Use streaming (SSE) output for LLM providers. Tool/agent calls still work; ",
                         "completed sentences are forwarded to TTS as soon as they arrive.")
                 .define("streaming", true);
+        CONTEXT_INPUT_BUDGET_TOKENS = builder
+                .comment("Target input-context budget for AIFun's layered memory planner.")
+                .defineInRange("contextInputBudgetTokens", 24576, 4096, 131072);
+        MEMORY_RECENT_TURNS = builder
+                .comment("Number of completed conversation turns kept verbatim in the visible context.")
+                .defineInRange("memoryRecentTurns", 8, 2, 32);
+        BACKGROUND_MEMORY_EXTRACTION = builder
+                .comment("Extract durable facts and older episodes asynchronously after long conversations.")
+                .define("backgroundMemoryExtraction", true);
         builder.pop();
 
         builder.push("stt");
@@ -63,6 +75,11 @@ public final class TouhouAIFunConfig {
     public static void setLlmStreaming(boolean enabled) {
         LLM_STREAMING.set(enabled);
         LLM_STREAMING.save();
+    }
+
+    public static void setContextInputBudgetTokens(int tokens) {
+        CONTEXT_INPUT_BUDGET_TOKENS.set(tokens);
+        CONTEXT_INPUT_BUDGET_TOKENS.save();
     }
 
     public static void setSelectedSttSite(String siteId) {

@@ -4,6 +4,7 @@ import com.github.tartaricacid.touhoulittlemaid.TouhouLittleMaid;
 import com.github.tartaricacid.touhoulittlemaid.ai.agent.tool.ITool;
 import com.github.tartaricacid.touhoulittlemaid.ai.agent.tool.ToolRegister;
 import com.github.tartaricacid.touhoulittlemaid.ai.manager.entity.LLMCallback;
+import com.github.tartaricacid.touhoulittlemaid.ai.manager.response.ResponseChat;
 import com.github.tartaricacid.touhoulittlemaid.ai.service.ErrorCode;
 import com.github.tartaricacid.touhoulittlemaid.ai.service.function.schema.FunctionTool;
 import com.github.tartaricacid.touhoulittlemaid.ai.service.function.schema.parameter.ObjectParameter;
@@ -31,6 +32,8 @@ import com.wjx.touhou_aifun.compat.ai.openai.response.StreamAccumulator;
 import com.wjx.touhou_aifun.compat.ai.openai.response.StreamChunk;
 
 import com.wjx.touhou_aifun.chat.ChatFlowManager;
+import com.wjx.touhou_aifun.chat.context.AIFunMemoryManager;
+import com.wjx.touhou_aifun.chat.context.ContextBudgetPlanner;
 import com.wjx.touhou_aifun.compat.ai.EmotionControlPrompts;
 import com.wjx.touhou_aifun.config.TouhouAIFunConfig;
 
@@ -53,10 +56,25 @@ public class ReasoningCompatOpenAIClient extends LLMOpenAIClient {
     @Override
     public void chat(LLMCallback callback) {
         EntityMaid maid = callback.getMaid();
+        if (callback.getClass() == LLMCallback.class
+                && ChatFlowManager.isSuperseded(maid.getUUID(), callback)) {
+            return;
+        }
         URI url = URI.create(this.site.url());
         String apiKey = this.site.secretKey();
         String model = maid.getAiChatManager().getLLMModel();
         boolean isReasoningModel = this.site.isReasoningModel(model);
+
+        if (callback.getClass() == LLMCallback.class && !callback.getMessages().stream()
+                .anyMatch(message -> message.role() == Role.TOOL)) {
+            var planned = ContextBudgetPlanner.trim(callback.getMessages(),
+                    TouhouAIFunConfig.CONTEXT_INPUT_BUDGET_TOKENS.get(),
+                    ToolContextSelector.schemaBudget(maid, callback),
+                    AIFunMemoryManager.calibratedEstimate(maid.getAiChatManager(), callback.getMessages())
+                            / (double) Math.max(1, com.wjx.touhou_aifun.chat.context.ContextTokenEstimator.estimate(callback.getMessages())));
+            callback.getMessages().clear();
+            callback.getMessages().addAll(planned);
+        }
 
         ReasoningChatCompletion chatCompletion = ReasoningChatCompletion.create()
                 .model(model)
@@ -89,6 +107,9 @@ public class ReasoningCompatOpenAIClient extends LLMOpenAIClient {
         // ordinary maid chat callbacks so setting generation, history summaries, and grounded
         // knowledge extraction retain their own output formats.
         if (callback.getClass() == LLMCallback.class) {
+            chatCompletion.systemChat(ToolContextSelector.compactDirectory(maid,
+                    callback.getMessages().stream().filter(m -> m.role() == Role.USER)
+                            .reduce((first, second) -> second).map(LLMMessage::message).orElse("")));
             // If the emotion setting changed since this maid's last reply, announce the switch once so
             // the model stops imitating the old-format replies still present in the conversation history.
             String emotionChange = EmotionControlPrompts.changeNotice(maid);
@@ -110,10 +131,14 @@ public class ReasoningCompatOpenAIClient extends LLMOpenAIClient {
         }
 
         if (callback.needAddTools) {
+            var selectedTools = ToolContextSelector.selected(maid, callback);
             for (var entry : ToolRegister.getAllTools().entrySet()) {
                 String toolId = entry.getKey();
+                if (!selectedTools.contains(toolId)) {
+                    continue;
+                }
                 ITool<?> tool = entry.getValue();
-                if (tool == null || !tool.trigger(maid, null)) {
+                if (tool == null || !ToolContextSelector.isTriggered(maid, tool)) {
                     continue;
                 }
 
@@ -160,7 +185,7 @@ public class ReasoningCompatOpenAIClient extends LLMOpenAIClient {
         // aborts the underlying HTTP exchange, stopping the model from generating further).
         CompletableFuture<HttpResponse<String>> future =
                 this.httpClient.sendAsync(httpRequest, HttpResponse.BodyHandlers.ofString());
-        ChatFlowManager.setInFlight(maid.getUUID(), future);
+        ChatFlowManager.setInFlight(maid.getUUID(), callback, future);
         future.orTimeout(MAX_TIMEOUT.toSeconds() + 5, TimeUnit.SECONDS)
                 .whenComplete((response, throwable) -> complete(callback, response, throwable, httpRequest));
     }
@@ -201,7 +226,7 @@ public class ReasoningCompatOpenAIClient extends LLMOpenAIClient {
         // once streaming starts, the consume loop additionally bails out as soon as it is superseded.
         CompletableFuture<HttpResponse<Stream<String>>> future =
                 this.httpClient.sendAsync(httpRequest, HttpResponse.BodyHandlers.ofLines());
-        ChatFlowManager.setInFlight(maid.getUUID(), future);
+        ChatFlowManager.setInFlight(maid.getUUID(), callback, future);
         future.orTimeout(MAX_TIMEOUT.toSeconds() + 5, TimeUnit.SECONDS)
                 .whenCompleteAsync((response, throwable) ->
                         this.consumeStream(callback, response, throwable, httpRequest, accumulator, ttsReplyRef, displayRef));
@@ -217,6 +242,7 @@ public class ReasoningCompatOpenAIClient extends LLMOpenAIClient {
         }
         if (this.shouldStopChat(maid)) {
             response.body().close();
+            if (callback.getClass() == LLMCallback.class) ChatFlowManager.finishRequest(maid.getUUID(), callback);
             return;
         }
         try {
@@ -244,6 +270,7 @@ public class ReasoningCompatOpenAIClient extends LLMOpenAIClient {
             // this reply just like a cancelled non-streaming request, so no tools run and nothing is
             // spoken on a partial answer.
             if (this.shouldStopChat(maid) || ChatFlowManager.isSuperseded(maidId, callback)) {
+                if (callback.getClass() == LLMCallback.class) ChatFlowManager.finishRequest(maidId, callback);
                 return;
             }
 
@@ -324,6 +351,7 @@ public class ReasoningCompatOpenAIClient extends LLMOpenAIClient {
     protected void handle(LLMCallback callback, HttpResponse<String> response, Throwable throwable, HttpRequest request) {
         EntityMaid maid = callback.getMaid();
         if (this.shouldStopChat(maid)) {
+            if (callback.getClass() == LLMCallback.class) ChatFlowManager.finishRequest(maid.getUUID(), callback);
             return;
         }
 
@@ -346,6 +374,10 @@ public class ReasoningCompatOpenAIClient extends LLMOpenAIClient {
 
         Usage usage = chat.getUsage();
         if (usage != null) {
+            if (usage.getPromptTokens() > 0 && callback.getClass() == LLMCallback.class) {
+                AIFunMemoryManager.recordPromptCalibration(callback.getChatManager(), usage.getPromptTokens(),
+                        callback.getMessages(), ToolContextSelector.schemaBudget(callback.getMaid(), callback));
+            }
             int totalTokens = usage.getTotalTokens();
             if (totalTokens > 0 && callback.shouldCacheTokenUsage()) {
                 callback.getMaid().getAiChatManager().setLastChatTokenUsage(totalTokens);
@@ -380,6 +412,10 @@ public class ReasoningCompatOpenAIClient extends LLMOpenAIClient {
 
     protected void onTextCall(LLMCallback callback, ReasoningOpenAIMessage firstChoice, @Nullable StreamingTtsReply ttsReply) {
         String content = firstChoice.getVisibleContent();
+        if (callback.getClass() != LLMCallback.class) {
+            callback.onSuccess(new ResponseChat(content, content));
+            return;
+        }
         if (StringUtils.isBlank(content)) {
             callback.onSuccess(new ReasoningOpenAIResponseChat(StringUtils.EMPTY, firstChoice.getReasoningContent()));
             return;

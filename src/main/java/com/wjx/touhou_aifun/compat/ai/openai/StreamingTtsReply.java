@@ -17,6 +17,7 @@ import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.entity.LivingEntity;
 import org.apache.commons.lang3.StringUtils;
 import com.wjx.touhou_aifun.chat.ChatFlowManager;
+import com.wjx.touhou_aifun.chat.context.AIFunMemoryManager;
 import com.wjx.touhou_aifun.compat.ai.tts.SentenceTextSplitter;
 import com.wjx.touhou_aifun.network.AIFunNetwork;
 
@@ -96,6 +97,8 @@ final class StreamingTtsReply {
     private final Map<Long, byte[]> readyAudio = new HashMap<>();
 
     private boolean started;
+    /** Prevent a stream finalizer and a duplicate provider callback from committing twice. */
+    private boolean finishScheduled;
     private volatile int generation;
 
     StreamingTtsReply(LLMCallback callback, boolean singleSegment, boolean showMarkerInChat,
@@ -187,22 +190,39 @@ final class StreamingTtsReply {
 
     /** Finalizes a complete text reply: queues any remaining sentences, then records history. */
     void finish(ReasoningOpenAIResponseChat response) {
-        if (ChatFlowManager.isSuperseded(this.maidId, this.callback)) {
-            // A newer request took over: keep this reply in history for context, but do not output it.
-            this.runOnServer(() -> this.chatManager.addAssistantHistory(response.toString()));
-            return;
-        }
-
         // The reply is complete, so everything up to the end is a finished sentence.
+        synchronized (this) {
+            if (this.finishScheduled) return;
+            this.finishScheduled = true;
+        }
         String ttsText = response.getTtsText();
-        this.queueUpTo(ttsText, ttsText.length());
-        this.runOnServer(() -> this.chatManager.addAssistantHistory(response.toString()));
-        // Take over speaking (interrupt any previous reply), then surface the COMPLETE chat text once —
-        // replacing the live streamed bubble. This must use the finalized reply, never a partial: the
-        // early-spoken sentences only cover the start of the text.
-        this.ensureStarted();
-        this.showChatBubble(response.getChatText());
-        this.pump();
+        // Do not dispatch the final queue before the server-thread turn check below. Otherwise a
+        // late stream could take over TTS in the small window before B's turn is observed.
+        this.queueUpTo(ttsText, ttsText.length(), false);
+        this.runOnServer(() -> {
+            if (ChatFlowManager.isSuperseded(this.maidId, this.callback)) {
+                // A newer request took over: the response is a discarded draft, not an answer to
+                // the newer user turn. Keeping it as ordinary assistant history corrupts ordering.
+                synchronized (this) {
+                    this.pending.clear();
+                    this.readyAudio.clear();
+                }
+                AIFunMemoryManager.interruptCallback(this.callback);
+                ChatFlowManager.finishRequest(this.maidId, this.callback);
+                return;
+            }
+
+            // Commit the durable turn and legacy history on the same server thread that starts a
+            // new player turn. This makes the turn check and the assistant write one ordered event.
+            AIFunMemoryManager.completeCallback(this.callback, response.toString());
+            ChatFlowManager.finishRequest(this.maidId, this.callback);
+            this.chatManager.addAssistantHistory(response.toString());
+            // Take over speaking (interrupt any previous reply), then surface the COMPLETE chat
+            // text once — replacing the live streamed bubble.
+            this.ensureStarted();
+            this.showChatBubble(response.getChatText());
+            this.pump();
+        });
     }
 
     /**
@@ -211,6 +231,10 @@ final class StreamingTtsReply {
      * {@link #carryEmotion} stays consistent across frames and no sentence is re-queued or dropped.
      */
     private void queueUpTo(String ttsText, int completeLen) {
+        this.queueUpTo(ttsText, completeLen, true);
+    }
+
+    private void queueUpTo(String ttsText, int completeLen, boolean dispatch) {
         synchronized (this) {
             int from = Math.min(this.consumedLen, ttsText.length());
             int to = Math.min(completeLen, ttsText.length());
@@ -229,7 +253,7 @@ final class StreamingTtsReply {
             }
             this.consumedLen = to;
         }
-        this.pump();
+        if (dispatch) this.pump();
     }
 
     /** Shows the finalized reply in the chat bubble, replacing the live streamed bubble. */
@@ -365,7 +389,11 @@ final class StreamingTtsReply {
 
     private void runOnServer(Runnable runnable) {
         if (this.maid.level() instanceof ServerLevel serverLevel) {
-            serverLevel.getServer().submit(runnable);
+            if (serverLevel.getServer().isSameThread()) {
+                runnable.run();
+            } else {
+                serverLevel.getServer().submit(runnable);
+            }
         } else {
             runnable.run();
         }

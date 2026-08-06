@@ -93,6 +93,12 @@ dependencies {
 
     compileOnly fg.deobf("maven.modrinth:touhou-little-maid:${touhou_little_maid_version}")
     runtimeOnly fg.deobf("maven.modrinth:touhou-little-maid:${touhou_little_maid_version}")
+
+    testImplementation 'org.junit.jupiter:junit-jupiter:5.10.2'
+}
+
+tasks.named('test', Test).configure {
+    useJUnitPlatform()
 }
 
 def replaceProperties = [
