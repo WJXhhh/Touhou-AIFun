@@ -3,6 +3,8 @@ package com.wjx.touhou_aifun.mixin.client;
 import com.github.tartaricacid.touhoulittlemaid.ai.service.llm.LLMSite;
 import com.github.tartaricacid.touhoulittlemaid.ai.service.llm.openai.LLMOpenAISite;
 import com.github.tartaricacid.touhoulittlemaid.client.gui.entity.maid.ai.editor.LLMSiteEditorScreen;
+import com.wjx.touhou_aifun.compat.ai.anthropic.AnthropicLLMSite;
+import com.wjx.touhou_aifun.compat.ai.anthropic.AnthropicShared;
 import com.wjx.touhou_aifun.compat.ai.mimo.MimoLLMSite;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Shadow;
@@ -72,6 +74,18 @@ public abstract class LLMSiteEditorScreenMixin {
                     openAISite.enabled(), openAISite.secretKey(),
                     supportsReasoning, openAISite.headers(), entries
             ));
+            return;
+        }
+        if (isAnthropicSource()) {
+            // Keep the original thinking-field flag: the base mod passes supportsReasoning=false
+            // for non-"openai" ids, which would silently re-enable thinking after an edit.
+            boolean thinkingField = sourceSite instanceof LLMOpenAISite anthropicSite
+                    ? anthropicSite.hasThinkingField() : supportsReasoning;
+            cir.setReturnValue(new AnthropicLLMSite(
+                    openAISite.id(), AnthropicShared.ICON, openAISite.url(),
+                    openAISite.enabled(), openAISite.secretKey(),
+                    thinkingField, openAISite.headers(), entries
+            ));
         }
     }
 
@@ -94,5 +108,12 @@ public abstract class LLMSiteEditorScreenMixin {
             return true;
         }
         return "mimo".equals(sourceSite.id());
+    }
+
+    private boolean isAnthropicSource() {
+        if (sourceSite instanceof AnthropicLLMSite) {
+            return true;
+        }
+        return AnthropicShared.API_TYPE.equals(sourceSite.id());
     }
 }

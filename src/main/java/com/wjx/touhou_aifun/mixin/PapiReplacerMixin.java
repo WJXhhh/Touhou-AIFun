@@ -1,9 +1,11 @@
 package com.wjx.touhou_aifun.mixin;
 
 import com.github.tartaricacid.touhoulittlemaid.ai.manager.setting.papi.PapiReplacer;
+import com.github.tartaricacid.touhoulittlemaid.ai.service.llm.LLMSite;
 import com.github.tartaricacid.touhoulittlemaid.entity.passive.EntityMaid;
 import com.wjx.touhou_aifun.TouhouAIFun;
 import com.wjx.touhou_aifun.compat.ai.EmotionControlPrompts;
+import com.wjx.touhou_aifun.compat.ai.anthropic.AnthropicShared;
 import com.wjx.touhou_aifun.config.TouhouAIFunConfig;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.injection.At;
@@ -44,7 +46,45 @@ public abstract class PapiReplacerMixin {
             result = touhouAIFun$strengthenDifferentLanguages(result, maid, ttsLanguage, emotion);
         }
 
+        // Anthropic-protocol LLM sites (DeepSeek's Anthropic-compatible endpoint) declare the
+        // server-executed web_search tool on every request; tell the model when and how to use it.
+        if (isAnthropicDeepSeek(maid)) {
+            result += touhouAIFun$webSearchGuidance();
+        }
+
         cir.setReturnValue(result);
+    }
+
+    /** True when the maid's LLM site speaks the Anthropic Messages protocol. */
+    private static boolean isAnthropicDeepSeek(EntityMaid maid) {
+        LLMSite site = maid.getAiChatManager().getLLMSite();
+        return site != null && AnthropicShared.API_TYPE.equals(site.getApiType());
+    }
+
+    /**
+     * Explains the {@code web_search} server tool to the model. The tool is declared by
+     * {@code AnthropicCompatLLMClient} and executed by the API provider (DeepSeek) itself, so the
+     * model only needs to decide WHEN to search and then answer from the results that land in its
+     * context. The output-format contract (single-reply or the {@code ---} two-part rule, emotion
+     * markers) still applies to the final reply.
+     */
+    private static String touhouAIFun$webSearchGuidance() {
+        return """
+
+                ## 🔍 Web Search (联网搜索)
+                When the `web_search` tool is available in this request, it is executed by the API provider
+                on its side — you do not call it with arguments, you only decide to use it. Follow these rules:
+                - Use `web_search` whenever the user's question depends on CURRENT information: recent events,
+                  news, prices, weather, or anything you are not sure about. Do not guess or rely on stale
+                  knowledge when a search would settle it.
+                - After the search runs, base your reply on the returned results and briefly name the source
+                  (e.g. "据最近的消息…" / "According to the latest news…") where it helps the answer.
+                - Never fabricate search results, URLs, or sources. If the results are missing or unhelpful,
+                  say so honestly instead of inventing content.
+                - The search happens BEFORE your final answer: whatever the search returned, your reply must
+                  still follow the output format contract above (single reply, or the `---` two-part rule,
+                  plus any required (emotion) marker) and be written in the required language(s).
+                """;
     }
 
     /**

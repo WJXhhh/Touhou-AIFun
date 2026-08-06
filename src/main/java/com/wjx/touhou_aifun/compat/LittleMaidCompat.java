@@ -11,6 +11,7 @@ import com.github.tartaricacid.touhoulittlemaid.ai.service.SerializableSite;
 import com.github.tartaricacid.touhoulittlemaid.ai.service.tts.fishaudio.TTSFishAudioSite;
 import com.github.tartaricacid.touhoulittlemaid.ai.service.tts.minimax.TTSMiniMaxSite;
 import com.github.tartaricacid.touhoulittlemaid.ai.service.tts.siliconflow.TTSSiliconflowSite;
+import com.wjx.touhou_aifun.compat.ai.anthropic.AnthropicLLMSite;
 import com.wjx.touhou_aifun.compat.ai.fishaudio.tts.FishAudioCompatTTSSite;
 import com.wjx.touhou_aifun.compat.ai.mimo.MimoLLMSite;
 import com.wjx.touhou_aifun.compat.ai.minimax.tts.MiniMaxCompatTTSSite;
@@ -36,6 +37,7 @@ public final class LittleMaidCompat implements ILittleMaid {
     @Override
     public void registerAIChatSerializer(SerializerRegister register) {
         register.register(ServiceType.LLM, LLMOpenAISite.API_TYPE, new ReasoningCompatOpenAISite.Serializer());
+        register.register(ServiceType.LLM, AnthropicLLMSite.API_TYPE, new AnthropicLLMSite.Serializer());
         register.register(ServiceType.LLM, StepFunLLMSite.API_TYPE, new StepFunLLMSite.Serializer());
         register.register(ServiceType.LLM, StepFunPlanLLMSite.API_TYPE, new StepFunPlanLLMSite.Serializer());
         register.register(ServiceType.LLM, MimoLLMSite.API_TYPE, new MimoLLMSite.Serializer());

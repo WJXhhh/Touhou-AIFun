@@ -18,6 +18,23 @@ public final class SentenceTextSplitter {
     private SentenceTextSplitter() {
     }
 
+    /**
+     * True when {@code codePoint} (an ASCII {@code .} or {@code ,}) sits between two digits — e.g.
+     * {@code 1.2}, {@code 3.14}, {@code 1,234} or {@code v1.2} — i.e. it is decimal/thousands
+     * punctuation, not a sentence ending. Without this guard a number would be split mid-way
+     * ("输出1." + "2美元"), making TTS pause at every decimal point.
+     */
+    private static boolean isNumericPunctuation(String text, int indexAfter, int codePoint) {
+        if (codePoint != '.' && codePoint != ',') {
+            return false;
+        }
+        // indexAfter already advanced past codePoint; the previous char is at indexAfter - 2.
+        if (indexAfter < 2 || indexAfter >= text.length()) {
+            return false;
+        }
+        return Character.isDigit(text.charAt(indexAfter - 2)) && Character.isDigit(text.charAt(indexAfter));
+    }
+
     public static List<String> split(String text, int maxCodePoints) {
         List<String> chunks = new ArrayList<>();
         if (text == null || text.isBlank()) {
@@ -35,7 +52,8 @@ public final class SentenceTextSplitter {
 
             depth = updateBracketDepth(depth, codePoint);
             boolean sentenceEnd = depth == 0 && codePoint <= Character.MAX_VALUE
-                    && SENTENCE_ENDINGS.indexOf((char) codePoint) >= 0;
+                    && SENTENCE_ENDINGS.indexOf((char) codePoint) >= 0
+                    && !isNumericPunctuation(text, index, codePoint);
             if (sentenceEnd) {
                 while (index < text.length() && TRAILING_MARKS.indexOf(text.charAt(index)) >= 0) {
                     index++;
@@ -74,7 +92,8 @@ public final class SentenceTextSplitter {
 
             depth = updateBracketDepth(depth, codePoint);
             boolean sentenceEnd = depth == 0 && codePoint <= Character.MAX_VALUE
-                    && SENTENCE_ENDINGS.indexOf((char) codePoint) >= 0;
+                    && SENTENCE_ENDINGS.indexOf((char) codePoint) >= 0
+                    && !isNumericPunctuation(text, index, codePoint);
             if (sentenceEnd) {
                 while (index < text.length() && TRAILING_MARKS.indexOf(text.charAt(index)) >= 0) {
                     index++;

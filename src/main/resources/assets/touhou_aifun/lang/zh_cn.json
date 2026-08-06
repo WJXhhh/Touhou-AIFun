@@ -2,6 +2,7 @@
   "ai.touhou_little_maid.chat.site.stepfun.name": "阶跃星辰",
   "ai.touhou_little_maid.chat.site.stepfun_plan.name": "阶跃星辰 Step Plan",
   "ai.touhou_little_maid.chat.site.mimo.name": "小米 MiMo",
+  "ai.touhou_little_maid.chat.site.anthropic.name": "DeepSeek（Anthropic）",
   "ai.touhou_little_maid.chat.settings.hub.touhou_aifun.mimo_voice_design_prompt": "MiMo 自定义音色描述",
   "ai.touhou_little_maid.chat.settings.hub.touhou_aifun.mimo_voice_clone_ref_audio_path": "MiMo 参考音频路径",
   "gui.touhou_aifun.custom_voice": "自定义音色",

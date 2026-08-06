@@ -113,6 +113,14 @@ StepFun / MiMo / Qwen / OpenAI 兼容 / DeepSeek 的 LLM 都继承它，自动�
 - 有 `stepfun` 与 `stepfun_plan` 两种 apiType；LLM/TTS/STT 各成对（`StepFunPlanLLMSite` 等）。
 - TTS 走自定义 PCM 流播放（`AIFunPcmAudioStream`），不经基模解码。
 
+### Anthropic 协议 DeepSeek（`compat/ai/anthropic/`，Anthropic 模式）
+- `AnthropicShared.API_TYPE = "anthropic"`，defaultSite id 同 `"anthropic"`（**必须等于注册键**：基模列表 map 按注册键存、按钮按 `site.id()` 操作，不一致会导致编辑/启用/删除静默失效；显示名经 lang 键 `ai.touhou_little_maid.chat.site.anthropic.name`），默认端点 `https://api.deepseek.com/anthropic`（client 自动拼 `/v1/messages`），默认模型 `deepseek-v4-flash`/`deepseek-v4-pro`。
+- 协议：`POST /v1/messages`，`x-api-key` 认证（`anthropic-version` 头 DeepSeek 忽略但照发）；`system` 是**顶层字段**；assistant 工具调用是 `tool_use` 块、工具结果是 `user` 消息里的 `tool_result` 块（连续 tool 消息合并为一条）；响应块 `text`/`thinking`/`tool_use`/`server_tool_use`/`web_search_tool_result`。
+- **联网搜索是服务端 server tool**：请求 `tools` 前置声明 `{"type":"web_search_20250305","name":"web_search","max_uses":3}`，DeepSeek 自己执行搜索、同一轮返回 `server_tool_use`+`web_search_tool_result`，客户端**跳过**这两个块（结果已在上下文，后续 text 块即答案）。**必须用 `20250305` 版本**：`20260209`+ 依赖 code execution，DeepSeek 不支持。OpenAI 兼容端点无此能力——这是该模式存在的意义。**搜索轮可能无文本**（模型先发起搜索、本轮未作答）：client 会保留未配对的 `server_tool_use` 块并在下一轮请求中原样回传（Anthropic server tool 语义），自动续轮最多 3 次；空文本且无待续工具时才走基模 `CHAT_TEXT_IS_EMPTY` 兜底。
+- 实现：`AnthropicLLMSite`（anthropic 包）+ `AnthropicCompatLLMClient`（**openai 包内**，因 `ReasoningOpenAIResponseChat`/`StreamingTtsReply`/`StreamingDisplay` 是 package-private）。流式把 Anthropic SSE 事件翻译成 `StreamChunk` 喂 `StreamAccumulator` 归一化（usage 转 OpenAI 形状：prompt/completion），走与 OpenAI 相同的显示/TTS/取消链路。**请求体必须带 `"stream": true`**（LLM_STREAMING 时）：漏带会让端点返回普通 JSON，SSE 消费者整行忽略 → 空文本报错（踩过的坑）。**不传 `thinking` 字段**：Anthropic 协议默认非思考，显式 `{"type":"disabled"}` 不是合法值可能 400，让服务端默认行为真实可见（用户可观察女仆思考开没开）。
+- 系统提示词：`PapiReplacerMixin` 注入末尾按 `site.getApiType()=="anthropic"` 附加 `touhouAIFun$webSearchGuidance()`（何时搜索、基于结果作答、禁止编造、仍守输出格式契约）。
+- 冒烟脚本：`scripts/smoke-deepseek-anthropic.ps1 -ApiKey sk-xxx`（验证 /v1/messages 基本聊天 + web_search server tool 返回结构）。
+
 ### Qwen / 百炼（`compat/ai/qwen/`，未提交，夺舍基模 "aliyun" 身份）
 - `QwenShared.API_TYPE = "aliyun"`，图标用 `SerializableSite.defaultIcon("aliyun")`，显示名沿用"阿里云"；中国站 `dashscope.aliyuncs.com`。
 - **三类端点**：
@@ -143,9 +151,11 @@ dev 用 official 映射，本番用 SRG 名，桥梁是编译期生成的 **refm
 ## 已知坑 / 排查
 
 - **光影下气泡文字消失**（Oculus/IterationRP）：不是本模组，是 **AcceleratedRendering** 的加速文字与光影不兼容。改 `config/acceleratedrendering-client.toml` 的 `[accelerated_text_rendering] default_pipeline = "ACCELERATED" → "VANILLA"`（或 feature_status=DISABLED）。判据：改 `Font.DisplayMode` 完全无效 = 不是深度问题。曾尝试的 `EntityGraphicsMixin` 改 DisplayMode 已删除（无效）。
-- **本环境 gradlew 跑不动**（worker "Unable to establish loopback connection"），编译需用户本地验证。
+- **本环境 gradlew 可编译**：需设 `JAVA_HOME=C:\Users\Administrator\.gradle\jdks\eclipse_adoptium-17-amd64-windows\jdk-17.0.16+8`（系统 PATH 的 java 是 1.8，勿用）且**在线模式**（offline 缺 Forge 依赖缓存）。`gradlew build` 全流程（compileJava/reobfJar/refmap）可跑。
 - 本仓库是 Windows + 中文环境，与用户沟通用中文。
 
 ## 未提交的工作（写本文件时）
 
 git status：修改 `TouhouAIFun`、`CustomVoiceScreen`、`LittleMaidCompat`、`EmotionControlPrompts`、`ReasoningCompatOpenAIClient`、`StreamingTtsReply`、`StepFunTTSFormLayout`、`ChatBubbleManagerMixin`、`PapiReplacerMixin`、`LLMSiteEditorScreenMixin`、`TTSSiteEditorScreenMixin`、`touhou_aifun.mixins.json`；新增 `chat/ChatBubbleDisplayTime`（气泡存活时间按长度缩放，下限基模默认、上限 120s）、`compat/ai/qwen/` 全套、`AvailableSitesMixin`。尚未提交，改动是否完整需验证。
+
+本次新增（同批未提交）：`compat/ai/anthropic/`（`AnthropicLLMSite` + `AnthropicShared`，Anthropic 协议 DeepSeek 选项）、`compat/ai/openai/AnthropicCompatLLMClient`（/v1/messages 协议 + 流式 SSE + web_search server tool）、`PapiReplacerMixin` 联网搜索提示词段落、`LLMSiteEditorScreenMixin`/`LittleMaidCompat` 注册与恢复分支、`lang` 键 `anthropic`、`textures/gui/ai_chat/anthropic.png`（复制自基模 deepseek.png）、`scripts/smoke-deepseek-anthropic.ps1`。`gradlew build` 已验证通过；运行时验证需用户本地 runClient + 真实 API key。

@@ -2,6 +2,7 @@
   "ai.touhou_little_maid.chat.site.stepfun.name": "StepFun",
   "ai.touhou_little_maid.chat.site.stepfun_plan.name": "StepFun Step Plan",
   "ai.touhou_little_maid.chat.site.mimo.name": "Xiaomi MiMo",
+"ai.touhou_little_maid.chat.site.anthropic.name": "DeepSeek (Anthropic)",
   "ai.touhou_little_maid.chat.settings.hub.touhou_aifun.mimo_voice_design_prompt": "MiMo Voice Design Prompt",
   "ai.touhou_little_maid.chat.settings.hub.touhou_aifun.mimo_voice_clone_ref_audio_path": "MiMo Reference Audio Path",
   "gui.touhou_aifun.custom_voice": "Custom Voice",
