@@ -24,6 +24,7 @@ public class CustomVoiceScreen extends Screen {
     private String initialRefText;
     private EditBox audioPathBox;
     private EditBox refTextBox;
+    private volatile boolean choosingFile;
 
     public CustomVoiceScreen(Screen parent, String initialAudioPath, String initialRefText,
                              BiConsumer<String, String> onSave) {
@@ -78,27 +79,41 @@ public class CustomVoiceScreen extends Screen {
     }
 
     private void chooseAudioFile() {
-        try (MemoryStack stack = MemoryStack.stackPush()) {
-            PointerBuffer filters = stack.mallocPointer(2);
-            filters.put(stack.UTF8("*.wav"));
-            filters.put(stack.UTF8("*.mp3"));
-            filters.flip();
-
-            String currentPath = StringUtils.trimToEmpty(this.audioPathBox.getValue());
-            String defaultPath = StringUtils.isBlank(currentPath)
-                    ? Path.of(".").toAbsolutePath().normalize().toString()
-                    : currentPath;
-            String selected = TinyFileDialogs.tinyfd_openFileDialog(
-                    Component.translatable("gui.touhou_aifun.custom_voice.choose_file").getString(),
-                    defaultPath,
-                    filters,
-                    "WAV/MP3",
-                    false
-            );
-            if (StringUtils.isNotBlank(selected)) {
-                this.audioPathBox.setValue(selected);
-            }
+        // The native file dialog blocks until the user picks a file. Running it on the client
+        // render thread freezes the game loop, which in single-player stalls the KeepAlive
+        // heartbeat to the integrated server and disconnects the player with "连接超时". Open it
+        // on a background thread so the main loop keeps ticking, then marshal the result back.
+        if (this.choosingFile) {
+            return;
         }
+        this.choosingFile = true;
+        String currentPath = StringUtils.trimToEmpty(this.audioPathBox.getValue());
+        String defaultPath = StringUtils.isBlank(currentPath)
+                ? Path.of(".").toAbsolutePath().normalize().toString()
+                : currentPath;
+        String dialogTitle = Component.translatable("gui.touhou_aifun.custom_voice.choose_file").getString();
+        Thread dialogThread = new Thread(() -> {
+            String selected;
+            try (MemoryStack stack = MemoryStack.stackPush()) {
+                PointerBuffer filters = stack.mallocPointer(2);
+                filters.put(stack.UTF8("*.wav"));
+                filters.put(stack.UTF8("*.mp3"));
+                filters.flip();
+                selected = TinyFileDialogs.tinyfd_openFileDialog(
+                        dialogTitle, defaultPath, filters, "WAV/MP3", false);
+            } finally {
+                this.choosingFile = false;
+            }
+            if (StringUtils.isNotBlank(selected)) {
+                net.minecraft.client.Minecraft.getInstance().execute(() -> {
+                    if (this.audioPathBox != null) {
+                        this.audioPathBox.setValue(selected);
+                    }
+                });
+            }
+        }, "AIFun-CustomVoice-FileDialog");
+        dialogThread.setDaemon(true);
+        dialogThread.start();
     }
 
     @Override

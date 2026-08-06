@@ -89,6 +89,16 @@ public class ReasoningCompatOpenAIClient extends LLMOpenAIClient {
         // ordinary maid chat callbacks so setting generation, history summaries, and grounded
         // knowledge extraction retain their own output formats.
         if (callback.getClass() == LLMCallback.class) {
+            // If the emotion setting changed since this maid's last reply, announce the switch once so
+            // the model stops imitating the old-format replies still present in the conversation history.
+            String emotionChange = EmotionControlPrompts.changeNotice(maid);
+            if (emotionChange != null) {
+                if (isReasoningModel) {
+                    chatCompletion.developerChat(emotionChange);
+                } else {
+                    chatCompletion.systemChat(emotionChange);
+                }
+            }
             String reminder = EmotionControlPrompts.turnReminder(maid);
             if (reminder != null) {
                 if (isReasoningModel) {
@@ -163,15 +173,29 @@ public class ReasoningCompatOpenAIClient extends LLMOpenAIClient {
      */
     private void chatStreaming(LLMCallback callback, HttpRequest httpRequest) {
         EntityMaid maid = callback.getMaid();
-        boolean singleSegment = this.singleSegmentMode(maid);
-        boolean showMarkerInChat = !this.stripChatMarker(maid);
-        // When emotion control is on for an emotion-aware provider, carry the leading (emotion) marker
-        // onto every streamed sentence so sentences after the first are not synthesized neutral.
-        boolean propagateEmotion = TouhouAIFunConfig.TTS_EMOTION_CONTROL.get()
-                && EmotionControlPrompts.isSupported(maid);
         StreamAccumulator accumulator = new StreamAccumulator();
-        StreamingTtsReply ttsReply = new StreamingTtsReply(callback, singleSegment, showMarkerInChat, propagateEmotion);
-        StreamingDisplay display = new StreamingDisplay(callback, singleSegment, showMarkerInChat);
+
+        // Only ordinary maid chat should stream into the head bubble and speak. Setting generation,
+        // history summaries, and grounded-knowledge extraction are LLMCallback subclasses whose
+        // onSuccess does its own thing (e.g. writing the result into the character setting), so for
+        // those we just accumulate the SSE body and finalize through onSuccess — exactly like the
+        // non-streaming path. Without this guard, generating a character setting while streaming is on
+        // would type the result into the chat bubble instead of saving it as the setting.
+        StreamingTtsReply ttsReply = null;
+        StreamingDisplay display = null;
+        if (callback.getClass() == LLMCallback.class) {
+            boolean singleSegment = this.singleSegmentMode(maid);
+            boolean showMarkerInChat = !this.stripChatMarker(maid);
+            // When emotion control is on for an emotion-aware provider, carry the leading (emotion)
+            // marker onto every streamed sentence so sentences after the first are not synthesized neutral.
+            boolean propagateEmotion = TouhouAIFunConfig.TTS_EMOTION_CONTROL.get()
+                    && EmotionControlPrompts.isSupported(maid);
+            ttsReply = new StreamingTtsReply(callback, singleSegment, showMarkerInChat, propagateEmotion);
+            display = new StreamingDisplay(callback, singleSegment, showMarkerInChat);
+        }
+        // Effectively-final copies for the completion lambda.
+        StreamingTtsReply ttsReplyRef = ttsReply;
+        StreamingDisplay displayRef = display;
 
         // The raw sendAsync future lets a newer request abort this one before the body is consumed;
         // once streaming starts, the consume loop additionally bails out as soon as it is superseded.
@@ -180,12 +204,12 @@ public class ReasoningCompatOpenAIClient extends LLMOpenAIClient {
         ChatFlowManager.setInFlight(maid.getUUID(), future);
         future.orTimeout(MAX_TIMEOUT.toSeconds() + 5, TimeUnit.SECONDS)
                 .whenCompleteAsync((response, throwable) ->
-                        this.consumeStream(callback, response, throwable, httpRequest, accumulator, ttsReply, display));
+                        this.consumeStream(callback, response, throwable, httpRequest, accumulator, ttsReplyRef, displayRef));
     }
 
     private void consumeStream(LLMCallback callback, HttpResponse<Stream<String>> response, Throwable throwable,
-                               HttpRequest request, StreamAccumulator accumulator, StreamingTtsReply ttsReply,
-                               StreamingDisplay display) {
+                               HttpRequest request, StreamAccumulator accumulator, @Nullable StreamingTtsReply ttsReply,
+                               @Nullable StreamingDisplay display) {
         EntityMaid maid = callback.getMaid();
         if (throwable != null) {
             callback.onFailure(request, throwable, ErrorCode.REQUEST_SENDING_ERROR);
@@ -230,8 +254,8 @@ public class ReasoningCompatOpenAIClient extends LLMOpenAIClient {
         }
     }
 
-    private void acceptStreamLine(String line, StreamAccumulator accumulator, StreamingTtsReply ttsReply,
-                                  StreamingDisplay display) {
+    private void acceptStreamLine(String line, StreamAccumulator accumulator, @Nullable StreamingTtsReply ttsReply,
+                                  @Nullable StreamingDisplay display) {
         if (line == null || !line.startsWith("data:")) {
             return;
         }
@@ -249,6 +273,10 @@ public class ReasoningCompatOpenAIClient extends LLMOpenAIClient {
             return;
         }
         accumulator.accept(chunk);
+        // Non-ordinary callbacks (e.g. setting generation) stream silently: no early TTS, no bubble.
+        if (ttsReply == null) {
+            return;
+        }
         // Forward completed sentences to TTS early, but never while the model is producing tool
         // calls (those are agent turns with no spoken text).
         if (ttsReply.isUsable() && !accumulator.hasToolCalls()) {

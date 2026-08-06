@@ -19,6 +19,9 @@ import com.wjx.touhou_aifun.compat.ai.stepfun.StepFunLLMSite;
 import com.wjx.touhou_aifun.compat.ai.stepfun.StepFunPlanLLMSite;
 import com.wjx.touhou_aifun.compat.ai.mimo.stt.MimoSTTSite;
 import com.wjx.touhou_aifun.compat.ai.mimo.tts.MimoTTSSite;
+import com.wjx.touhou_aifun.compat.ai.qwen.QwenLLMSite;
+import com.wjx.touhou_aifun.compat.ai.qwen.stt.QwenSTTSite;
+import com.wjx.touhou_aifun.compat.ai.qwen.tts.QwenTTSSite;
 import com.wjx.touhou_aifun.compat.ai.siliconflow.tts.SiliconflowCompatTTSSite;
 import com.wjx.touhou_aifun.compat.ai.stepfun.stt.StepFunPlanSTTSite;
 import com.wjx.touhou_aifun.compat.ai.stepfun.stt.StepFunSTTSite;
@@ -36,15 +39,31 @@ public final class LittleMaidCompat implements ILittleMaid {
         register.register(ServiceType.LLM, StepFunLLMSite.API_TYPE, new StepFunLLMSite.Serializer());
         register.register(ServiceType.LLM, StepFunPlanLLMSite.API_TYPE, new StepFunPlanLLMSite.Serializer());
         register.register(ServiceType.LLM, MimoLLMSite.API_TYPE, new MimoLLMSite.Serializer());
+        register.register(ServiceType.LLM, QwenLLMSite.API_TYPE, new QwenLLMSite.Serializer());
         register.register(ServiceType.STT, StepFunSTTSite.API_TYPE, new StepFunSTTSite.Serializer());
         register.register(ServiceType.STT, StepFunPlanSTTSite.API_TYPE, new StepFunPlanSTTSite.Serializer());
         register.register(ServiceType.STT, MimoSTTSite.API_TYPE, new MimoSTTSite.Serializer());
+        register.register(ServiceType.STT, QwenSTTSite.API_TYPE, new QwenSTTSite.Serializer());
         register.register(ServiceType.TTS, StepFunTTSSite.API_TYPE, new StepFunTTSSite.Serializer());
         register.register(ServiceType.TTS, StepFunPlanTTSSite.API_TYPE, new StepFunPlanTTSSite.Serializer());
         register.register(ServiceType.TTS, MimoTTSSite.API_TYPE, new MimoTTSSite.Serializer());
+        register.register(ServiceType.TTS, QwenTTSSite.API_TYPE, new QwenTTSSite.Serializer());
         register.register(ServiceType.TTS, TTSFishAudioSite.API_TYPE, new FishAudioCompatTTSSite.Serializer());
         register.register(ServiceType.TTS, TTSSiliconflowSite.API_TYPE, new SiliconflowCompatTTSSite.Serializer());
         register.register(ServiceType.TTS, TTSMiniMaxSite.API_TYPE, new MiniMaxCompatTTSSite.Serializer());
+
+        // 夺舍：让阿里云默认 LLM 预置站点改用 Qwen 的 reasoning 兼容客户端，与上面注册的 "aliyun" 序列化器类型保持一致。
+        // 复用基模原有的 qwen 模型列表，仅升级为带思考字段的 QwenLLMSite。
+        DefaultLLMSite.ALIYUN = new QwenLLMSite(
+                QwenLLMSite.API_TYPE,
+                SerializableSite.defaultIcon(QwenLLMSite.API_TYPE),
+                "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions",
+                false,
+                "",
+                true,
+                Map.of(),
+                DefaultLLMSite.ALIYUN.modelEntries()
+        );
 
         DefaultLLMSite.DEEPSEEK = new ReasoningCompatOpenAISite(
                 "deepseek",

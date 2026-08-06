@@ -199,7 +199,10 @@ public class StepFunTTSFormLayout extends CustomVoiceTTSFormLayout {
 
         JsonObject requestBody = new JsonObject();
         requestBody.addProperty("file_id", uploadJson.get("id").getAsString());
-        requestBody.addProperty("model", "stepaudio-2.5-tts");
+        // The clone endpoint only accepts step-tts-2 / step-tts-mini / step-tts-vivid here;
+        // "stepaudio-2.5-tts" (the step_plan synth model) is rejected with HTTP 400. The model
+        // chosen for cloning is independent of the model used later for synthesis.
+        requestBody.addProperty("model", "step-tts-2");
         if (StringUtils.isNotBlank(refText)) {
             requestBody.addProperty("text", refText);
         }
@@ -237,6 +240,9 @@ public class StepFunTTSFormLayout extends CustomVoiceTTSFormLayout {
                 path = targetSuffix.startsWith("/") ? targetSuffix : "/" + targetSuffix;
             }
         }
+        // The file upload (/files) and voice clone (/audio/voices) endpoints only exist at the
+        // top-level /v1, not under /step_plan, so normalize the prefix to avoid a 404.
+        path = path.replace("/step_plan/v1/", "/v1/");
         return new URI(uri.getScheme(), uri.getUserInfo(), uri.getHost(), uri.getPort(), path, null, null);
     }
 }

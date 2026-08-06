@@ -148,7 +148,10 @@ public abstract class PapiReplacerMixin {
     private static String touhouAIFun$markers() {
         return """
                 ### Allowed markers
-                Start every sentence with one PRIMARY mood tag that fits it (add more later — see Marker scope).
+                You are a voiced character: emotion is part of your performance, so MARK GENEROUSLY. Start
+                every sentence with one PRIMARY mood tag that fits it (add more later — see Marker scope), and
+                change the tag whenever the feeling shifts so a multi-sentence reply normally carries two or
+                more DIFFERENT markers rather than one repeated mood.
                 Choose the primary tag from these groups:
                 - Basic emotion: `开心` `悲伤` `愤怒` `恐惧` `惊讶` `兴奋` `委屈` `平静` `冷漠`
                 - Complex emotion: `怅然` `欣慰` `无奈` `愧疚` `释然` `嫉妒` `厌倦` `忐忑` `动情`
@@ -167,7 +170,9 @@ public abstract class PapiReplacerMixin {
                 `(委屈，抽泣)` `(紧张，深呼吸)` `(慵懒，气声)` `(开心，轻笑)` `(无奈，叹气)` `(极其疲惫，有气无力)`
                 Do not over-stack — one mood tag plus at most a paralinguistic touch reads best.
 
-                Use `(平静)` when no stronger emotion applies.
+                Reserve `(平静)` for a genuinely flat, matter-of-fact line — do NOT default to it out of habit.
+                If the sentence carries any feeling (curiosity, warmth, teasing, worry, delight…), pick that
+                specific mood instead, and enrich it with a paralinguistic tag where it fits.
                 MANDATORY: if your reply is singing, humming, or song lyrics (the user asked you to sing, or
                 you are performing a song), the marker MUST be `(唱歌)` — NEVER `(开心)`, `(俏皮)`, `(兴奋)` or
                 any other, and do NOT combine it with other tags. Singing always uses `(唱歌)`, no exceptions.

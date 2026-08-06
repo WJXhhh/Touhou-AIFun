@@ -8,9 +8,72 @@ import com.wjx.touhou_aifun.config.TouhouAIFunConfig;
 import org.jetbrains.annotations.Nullable;
 
 import java.util.Locale;
+import java.util.Map;
+import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 
 public final class EmotionControlPrompts {
     private EmotionControlPrompts() {
+    }
+
+    /** The effective emotion output mode for a maid, derived from the toggles plus TTS-model support. */
+    private enum EmotionMode {
+        /** No markers: replies are plain text. */
+        OFF,
+        /** Markers required for TTS delivery but stripped from the visible chat text. */
+        HIDDEN,
+        /** Markers required and also shown in the chat text. */
+        VISIBLE
+    }
+
+    /**
+     * Last emotion mode each maid was told about. Used to detect when the setting changed between
+     * conversations so the next turn can announce the switch (the history still holds old-format replies).
+     */
+    private static final Map<UUID, EmotionMode> LAST_SEEN_MODE = new ConcurrentHashMap<>();
+
+    private static EmotionMode currentMode(EntityMaid maid) {
+        // An unsupported TTS model makes markers a no-op, so it is effectively OFF.
+        if (!TouhouAIFunConfig.TTS_EMOTION_CONTROL.get() || !isSupported(maid)) {
+            return EmotionMode.OFF;
+        }
+        return TouhouAIFunConfig.TTS_EMOTION_IN_TEXT.get() ? EmotionMode.VISIBLE : EmotionMode.HIDDEN;
+    }
+
+    /**
+     * A one-shot system/developer notice emitted on the first chat turn after the emotion setting
+     * changed for this maid, or {@code null} if nothing changed (including the very first turn). The
+     * full output contract still lives in the character system prompt; this only flags the transition
+     * prominently so the model does not keep copying the old-format replies in the history.
+     * <p>
+     * Has the side effect of recording the maid's current mode, so it must be called exactly once per
+     * ordinary chat turn.
+     */
+    @Nullable
+    public static String changeNotice(EntityMaid maid) {
+        EmotionMode now = currentMode(maid);
+        EmotionMode prev = LAST_SEEN_MODE.put(maid.getUUID(), now);
+        if (prev == null || prev == now) {
+            return null;
+        }
+
+        String change = switch (now) {
+            case OFF -> "Emotion `(emotion)` markers are now DISABLED. Do NOT begin replies with any "
+                    + "`(emotion)` marker and do NOT add markers anywhere — write the reply as plain text.";
+            case HIDDEN -> "Emotion `(emotion)` markers are now ENABLED (used for spoken TTS delivery). "
+                    + "Begin replies with one allowed `(emotion)` marker exactly as the output format requires.";
+            case VISIBLE -> "Emotion `(emotion)` markers are now ENABLED and are shown in the chat text. "
+                    + "Begin replies with one allowed `(emotion)` marker exactly as the output format requires.";
+        };
+
+        return """
+                ⚠️ TTS EMOTION FORMAT SETTING JUST CHANGED (since your previous reply):
+                %s
+                The assistant replies already in the conversation history were produced under the OLD
+                setting and are NOT valid format examples. From this reply onward, follow the current
+                Output Format Requirements / response contract exactly; this overrides any conflicting
+                format in the history.
+                """.formatted(change);
     }
 
     /**
@@ -64,8 +127,10 @@ public final class EmotionControlPrompts {
 
     /**
      * A deliberately short reminder appended as the final developer/system message on every normal
-     * maid chat request. The full contract remains in the character system prompt; this only keeps
-     * the exact output shape close to the model's next response.
+     * maid chat request. It is intentionally terse — the full contract (allowed markers, scope rules,
+     * examples, expressiveness mandate) lives in the character system prompt; this only keeps the exact
+     * output shape and a short "be expressive, re-mark" nudge close to the model's next response, since
+     * a long trailing block tends to get skimmed.
      */
     @Nullable
     public static String turnReminder(EntityMaid maid) {
@@ -88,15 +153,10 @@ public final class EmotionControlPrompts {
             // Same language: one reply only, no `---`, no duplicated copy. The display/TTS texts are
             // derived from this single body downstream.
             return """
-                    FINAL TEXT FORMAT REMINDER (ignore this while making tool calls):
-                    Output your reply EXACTLY ONCE as ONE plain-text message.
-                    Begin it with one allowed `(emotion)` marker, immediately followed by the reply.
-                    A marker may combine a mood with a paralinguistic tag in one parenthesis, e.g. `(委屈，抽泣)` or `(紧张，深呼吸)`.
-                    A marker stays in effect for every following sentence until you write a new one, so re-mark
-                    when the mood changes partway. If you sing `(唱歌)`, the ENTIRE reply must be ONLY the song —
-                    no spoken lead-in or follow-up; say anything else in a separate later reply, never in the same one.
-                    Do NOT output a `---` separator and do NOT repeat or duplicate the reply.
-                    An explicitly requested style wins: singing=`(唱歌)`, loud crying=`(嚎啕大哭)`, sobbing=`(抽泣)`.
+                    Format reminder (skip while making tool calls): reply ONCE as one message — no `---`,
+                    no duplicate. Open with a fitting `(emotion)` marker and RE-MARK whenever the mood
+                    shifts: aim for 2+ different markers across a multi-sentence reply, and don't fall back
+                    to `(平静)`. Singing must be `(唱歌)` as the ENTIRE reply.
                     """;
         }
 
@@ -108,36 +168,19 @@ public final class EmotionControlPrompts {
 
         if (TouhouAIFunConfig.TTS_EMOTION_IN_TEXT.get()) {
             return """
-                    FINAL TEXT FORMAT REMINDER (ignore this while making tool calls):
-                    For the final text reply, compose the reply ONCE in the chat language, choose one allowed `(emotion)`, then output exactly:
-                    (emotion)REPLY
-                    ---
-                    (emotion)TRANSLATION
-                    `---` MUST be on its own line. Both sections start with the SAME `(emotion)`.
-                    A marker may combine a mood with a paralinguistic tag in one parenthesis, e.g. `(委屈，抽泣)`; use the SAME combined marker in both sections.
-                    Part 1 is REPLY in the chat language; Part 2 is its faithful translation into %s — translate the meaning, do NOT copy Part 1.
-                    A marker stays in effect for the following sentences until changed; if the mood changes partway
-                    (e.g. from comforting to teasing), put a new marker at that point in BOTH sections.
-                    A song `(唱歌)` must be the WHOLE reply — never mix singing with spoken lines in one message.
-                    Do not add any preface, explanation, or follow-up to only one section.
-                    An explicitly requested style wins: singing=`(唱歌)`, loud crying=`(嚎啕大哭)`, sobbing=`(抽泣)`.
+                    Format reminder (skip while making tool calls): output two sections split by a line of
+                    only `---`. Part 1 = `(emotion)` + reply in the chat language; Part 2 = the SAME
+                    `(emotion)` + its %s translation (translate, don't copy). RE-MARK on every mood shift
+                    (aim for 2+ markers, in BOTH sections), don't fall back to `(平静)`. Singing must be
+                    `(唱歌)` as the ENTIRE reply.
                     """.formatted(ttsLang);
         }
 
         return """
-                FINAL TEXT FORMAT REMINDER (ignore this while making tool calls):
-                For the final text reply, compose the visible reply ONCE in the chat language, choose one allowed `(emotion)`, then output exactly:
-                REPLY
-                ---
-                (emotion)TRANSLATION
-                `---` MUST be on its own line. Part 1 has no marker; Part 2 starts with one `(emotion)`.
-                Part 2's marker may combine a mood with a paralinguistic tag in one parenthesis, e.g. `(委屈，抽泣)`.
-                Part 1 is REPLY in the chat language; Part 2 is its faithful translation into %s — translate the meaning, do NOT copy Part 1.
-                In Part 2 a marker stays in effect for the following sentences until changed; if the mood changes
-                partway (e.g. from comforting to teasing), put a new marker at that point in Part 2.
-                A song `(唱歌)` must be the WHOLE reply — never mix singing with spoken lines in one message.
-                Do not add any preface, explanation, or follow-up to only one section.
-                An explicitly requested style wins: singing=`(唱歌)`, loud crying=`(嚎啕大哭)`, sobbing=`(抽泣)`.
+                Format reminder (skip while making tool calls): output two sections split by a line of
+                only `---`. Part 1 = reply in the chat language with NO marker; Part 2 = `(emotion)` + its
+                %s translation (translate, don't copy). RE-MARK on every mood shift in Part 2 (aim for 2+
+                markers), don't fall back to `(平静)`. Singing must be `(唱歌)` as the ENTIRE reply.
                 """.formatted(ttsLang);
     }
 }

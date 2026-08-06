@@ -55,6 +55,9 @@ public abstract class TTSSiteEditorScreenMixin {
     @Unique
     private final Map<Object, VoicePresetRowState> touhouAIFun$rowStates = new WeakHashMap<>();
 
+    @Unique
+    private volatile boolean touhouAIFun$choosingFile;
+
     @ModifyConstant(method = "init", constant = @Constant(intValue = 400), remap = true)
     private int touhouAIFun$editorWidthInInit(int original) {
         return this.touhouAIFun$getEditorWidth();
@@ -187,26 +190,35 @@ public abstract class TTSSiteEditorScreenMixin {
 
     @Unique
     private void touhouAIFun$chooseAudioFile(VoicePresetRowState state, EditBox idBox) {
-        try (MemoryStack stack = MemoryStack.stackPush()) {
-            PointerBuffer filters = stack.mallocPointer(2);
-            filters.put(stack.UTF8("*.wav"));
-            filters.put(stack.UTF8("*.mp3"));
-            filters.flip();
-            String currentPath = StringUtils.trimToEmpty(idBox.getValue());
-            String defaultPath = StringUtils.isBlank(currentPath)
-                    ? Path.of(".").toAbsolutePath().normalize().toString()
-                    : currentPath;
-            String selected = TinyFileDialogs.tinyfd_openFileDialog(
-                    "选择参考音频",
-                    defaultPath,
-                    filters,
-                    "WAV/MP3",
-                    false
-            );
-            if (StringUtils.isNotBlank(selected)) {
-                idBox.setValue(selected);
-            }
+        // Open the blocking native file dialog off the render thread; running it on the main
+        // loop stalls the integrated-server KeepAlive and disconnects the player with "连接超时".
+        if (this.touhouAIFun$choosingFile) {
+            return;
         }
+        this.touhouAIFun$choosingFile = true;
+        String currentPath = StringUtils.trimToEmpty(idBox.getValue());
+        String defaultPath = StringUtils.isBlank(currentPath)
+                ? Path.of(".").toAbsolutePath().normalize().toString()
+                : currentPath;
+        Thread dialogThread = new Thread(() -> {
+            String selected;
+            try (MemoryStack stack = MemoryStack.stackPush()) {
+                PointerBuffer filters = stack.mallocPointer(2);
+                filters.put(stack.UTF8("*.wav"));
+                filters.put(stack.UTF8("*.mp3"));
+                filters.flip();
+                selected = TinyFileDialogs.tinyfd_openFileDialog(
+                        "选择参考音频", defaultPath, filters, "WAV/MP3", false);
+            } finally {
+                this.touhouAIFun$choosingFile = false;
+            }
+            if (StringUtils.isNotBlank(selected)) {
+                String chosen = selected;
+                net.minecraft.client.Minecraft.getInstance().execute(() -> idBox.setValue(chosen));
+            }
+        }, "AIFun-CustomVoice-FileDialog");
+        dialogThread.setDaemon(true);
+        dialogThread.start();
     }
 
     @Unique

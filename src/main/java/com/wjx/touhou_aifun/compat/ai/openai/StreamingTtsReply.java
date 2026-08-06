@@ -20,21 +20,27 @@ import com.wjx.touhou_aifun.chat.ChatFlowManager;
 import com.wjx.touhou_aifun.compat.ai.tts.SentenceTextSplitter;
 import com.wjx.touhou_aifun.network.AIFunNetwork;
 
+import javax.annotation.Nullable;
 import java.net.http.HttpRequest;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Deque;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 
 /**
  * Speaks a streaming text reply sentence-by-sentence <em>while the model is still generating</em>.
  * <p>
  * As visible content arrives, the TTS-text region (the part after the {@code ---} separator) is
- * split into sentences and each completed sentence is queued for synthesis. Synthesis is strictly
- * <strong>sequential</strong> — only one request is in flight at a time and audio is sent to the
- * client in sentence order — because the client plays queued audio in arrival order, so parallel
- * synthesis (fast short sentences finishing before slow long ones) would scramble playback.
+ * split into sentences and each completed sentence is queued for synthesis. Synthesis is
+ * <strong>pipelined</strong>: up to {@link #MAX_CONCURRENT_SYNTHESIS} sentences are synthesized in
+ * parallel so a later sentence can be produced while an earlier one is still being made. The client
+ * plays queued audio in <em>arrival</em> order, so finished audio is held in a reorder buffer and
+ * released to the client <strong>strictly in sentence order</strong> — as soon as the next expected
+ * sentence is ready, it (and any consecutive ready sentences after it) is flushed out at once. This
+ * keeps playback in order while still letting synthesis run ahead of playback.
  * <p>
  * It owns the full text-reply finalization (takeover, chat bubble, history) for the common case of
  * a network TTS provider, replicating {@code LLMCallbackMixin#onSuccess}, so it must
@@ -44,6 +50,10 @@ import java.util.UUID;
  */
 final class StreamingTtsReply {
     private static final int MAX_CHUNK_CODE_POINTS = 1_000;
+    /** Upper bound on synthesis requests in flight at once, so playback can run ahead without flooding the API. */
+    private static final int MAX_CONCURRENT_SYNTHESIS = 3;
+    /** Stored for a failed/silent sentence so the in-order flush can advance past it without sending anything. */
+    private static final byte[] EMPTY_AUDIO = new byte[0];
 
     private final LLMCallback callback;
     private final EntityMaid maid;
@@ -76,8 +86,14 @@ final class StreamingTtsReply {
      * is split and queued, so no sentence is re-queued, dropped, or given a stale emotion marker.
      */
     private int consumedLen;
-    /** True while a synthesis request is in flight; keeps synthesis strictly sequential. */
-    private boolean synthesizing;
+    /** Number of synthesis requests currently in flight; capped at {@link #MAX_CONCURRENT_SYNTHESIS}. */
+    private int inFlight;
+    /** Sequence number assigned to the next sentence dispatched for synthesis. */
+    private long nextDispatchIndex;
+    /** Sequence number of the next sentence whose audio is allowed to be sent to the client. */
+    private long nextSendIndex;
+    /** Finished audio waiting for its in-order turn (index -> audio; {@link #EMPTY_AUDIO} = failed/silent). */
+    private final Map<Long, byte[]> readyAudio = new HashMap<>();
 
     private boolean started;
     private volatile int generation;
@@ -242,52 +258,90 @@ final class StreamingTtsReply {
         return this.activeMarker.isEmpty() ? sentence : this.activeMarker + sentence;
     }
 
-    /** Synthesizes the next queued sentence; only one request is ever in flight at a time. */
+    /**
+     * Dispatches queued sentences for synthesis, keeping up to {@link #MAX_CONCURRENT_SYNTHESIS}
+     * requests in flight at once. Sentences are synthesized in parallel (their audio is reordered on
+     * completion by {@link #onSynthesized}), so the next sentence starts being made before the previous
+     * one has finished playing.
+     */
     private void pump() {
         if (!this.usable) {
             return;
         }
-        String sentence;
+        List<Dispatch> toDispatch = new ArrayList<>();
         synchronized (this) {
-            if (this.synthesizing || this.pending.isEmpty()) {
-                return;
-            }
             if (ChatFlowManager.isSuperseded(this.maidId, this.callback)) {
                 this.pending.clear();
                 return;
             }
-            sentence = this.pending.pollFirst();
-            this.synthesizing = true;
+            while (this.inFlight < MAX_CONCURRENT_SYNTHESIS && !this.pending.isEmpty()) {
+                String sentence = this.pending.pollFirst();
+                toDispatch.add(new Dispatch(this.nextDispatchIndex++, sentence));
+                this.inFlight++;
+            }
         }
+        // Fire the requests outside the lock. ensureStarted is idempotent and only the first call does
+        // the takeover and sets the generation each dispatched sentence then captures.
+        for (Dispatch dispatch : toDispatch) {
+            this.ensureStarted();
+            this.synthesize(dispatch.index(), dispatch.sentence());
+        }
+    }
 
-        this.ensureStarted();
+    private void synthesize(long index, String sentence) {
         int capturedGeneration = this.generation;
         this.client.play(sentence, this.config, new TTSCallback(this.maid, StringUtils.EMPTY, -1) {
             @Override
             public void onSuccess(byte[] data) {
-                // Drop late audio if a newer reply has taken over speaking.
-                if (ChatFlowManager.ttsGeneration(maidId) == capturedGeneration
-                        && maid.level() instanceof ServerLevel serverLevel
-                        && maid.getOwner() instanceof ServerPlayer player) {
-                    serverLevel.getServer().submit(() ->
-                            NetworkHandler.sendToClientPlayer(new TTSAudioToClientMessage(maid.getId(), data), player));
-                }
-                StreamingTtsReply.this.onSentenceDone();
+                StreamingTtsReply.this.onSynthesized(index, data, capturedGeneration);
             }
 
             @Override
             public void onFailure(HttpRequest request, Throwable throwable, int errorCode) {
                 TouhouLittleMaid.LOGGER.error("Streaming TTS sentence failed: {}", throwable.getMessage());
-                StreamingTtsReply.this.onSentenceDone();
+                StreamingTtsReply.this.onSynthesized(index, null, capturedGeneration);
             }
         });
     }
 
-    private void onSentenceDone() {
+    /**
+     * Records a finished sentence's audio, then releases every sentence that is now ready in an
+     * unbroken run starting at {@link #nextSendIndex} — flushing the reorder buffer to the client in
+     * sentence order. A sentence that completes out of order simply waits until the gap before it is
+     * filled, so audio always arrives at the client in order even though synthesis runs ahead.
+     */
+    private void onSynthesized(long index, @Nullable byte[] data, int capturedGeneration) {
+        List<byte[]> toSend = new ArrayList<>();
         synchronized (this) {
-            this.synthesizing = false;
+            this.inFlight--;
+            this.readyAudio.put(index, data != null && data.length > 0 ? data : EMPTY_AUDIO);
+            while (this.readyAudio.containsKey(this.nextSendIndex)) {
+                byte[] audio = this.readyAudio.remove(this.nextSendIndex);
+                this.nextSendIndex++;
+                if (audio.length > 0) {
+                    toSend.add(audio);
+                }
+            }
+        }
+        // Drop the audio if a newer reply has taken over speaking; otherwise send it in order.
+        if (ChatFlowManager.ttsGeneration(this.maidId) == capturedGeneration) {
+            for (byte[] audio : toSend) {
+                this.sendAudio(audio);
+            }
         }
         this.pump();
+    }
+
+    private void sendAudio(byte[] data) {
+        if (this.maid.level() instanceof ServerLevel serverLevel
+                && this.maid.getOwner() instanceof ServerPlayer player) {
+            serverLevel.getServer().submit(() ->
+                    NetworkHandler.sendToClientPlayer(new TTSAudioToClientMessage(this.maid.getId(), data), player));
+        }
+    }
+
+    /** A sentence assigned its in-order sequence number, dispatched for parallel synthesis. */
+    private record Dispatch(long index, String sentence) {
     }
 
     /**
@@ -302,8 +356,10 @@ final class StreamingTtsReply {
                 return;
             }
             this.started = true;
+            // Set the generation under the lock so a parallel dispatch never captures the unset (0)
+            // value after seeing started == true.
+            this.generation = ChatFlowManager.beginTtsTakeover(this.maidId);
         }
-        this.generation = ChatFlowManager.beginTtsTakeover(this.maidId);
         AIFunNetwork.sendInterruptTts(this.maid);
     }
 

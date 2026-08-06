@@ -5,6 +5,7 @@
   "compatibilityLevel": "JAVA_17",
   "refmap": "touhou_aifun.refmap.json",
   "mixins": [
+    "AvailableSitesMixin",
     "ChatBubbleManagerMixin",
     "LLMCallbackAccessor",
     "LLMCallbackMixin",
