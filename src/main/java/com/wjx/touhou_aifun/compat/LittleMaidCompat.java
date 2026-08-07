@@ -29,6 +29,8 @@ import com.wjx.touhou_aifun.compat.ai.stepfun.stt.StepFunPlanSTTSite;
 import com.wjx.touhou_aifun.compat.ai.stepfun.stt.StepFunSTTSite;
 import com.wjx.touhou_aifun.compat.ai.stepfun.tts.StepFunPlanTTSSite;
 import com.wjx.touhou_aifun.compat.ai.stepfun.tts.StepFunTTSSite;
+import com.wjx.touhou_aifun.compat.ai.vision.ScanSurroundingsTool;
+import com.wjx.touhou_aifun.compat.ai.vision.ObserveSurroundingsTool;
 
 import java.util.Map;
 import java.util.function.Consumer;
@@ -38,6 +40,8 @@ public final class LittleMaidCompat implements ILittleMaid {
     @Override
     public void registerAITool(com.github.tartaricacid.touhoulittlemaid.ai.agent.tool.ToolRegister register) {
         register.register(new LoadToolSchemaTool());
+        register.register(new ScanSurroundingsTool());
+        register.register(new ObserveSurroundingsTool());
     }
 
     @Override

@@ -7,6 +7,7 @@ import net.minecraftforge.fml.config.ModConfig;
 import org.slf4j.Logger;
 import com.wjx.touhou_aifun.config.TouhouAIFunConfig;
 import com.wjx.touhou_aifun.network.AIFunNetwork;
+import com.wjx.touhou_aifun.vision.AvailableVisionSites;
 
 @Mod(TouhouAIFun.MOD_ID)
 public final class TouhouAIFun {
@@ -17,6 +18,7 @@ public final class TouhouAIFun {
         ModLoadingContext.get().registerConfig(ModConfig.Type.COMMON, TouhouAIFunConfig.SPEC,
                 "touhou-aifun.toml");
         AIFunNetwork.init();
+        AvailableVisionSites.ensureLoaded();
         LOGGER.info("Touhou AIFun addon initialized.");
     }
 }

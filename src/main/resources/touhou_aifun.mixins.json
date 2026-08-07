@@ -7,6 +7,8 @@
   "mixins": [
     "AvailableSitesMixin",
     "ChatBubbleManagerMixin",
+    "HistorySummaryManagerMixin",
+    "NearbyEntitiesContextMixin",
     "MaidAIChatDataMixin",
     "LLMCallbackAccessor",
     "LLMCallbackMixin",
@@ -15,6 +17,8 @@
   ],
   "client": [
     "client.AIChatSettingsHubAccessor",
+    "client.AIChatSettingsHubVisionMixin",
+    "client.GameRendererVisionMixin",
     "client.AIChatSettingsLLMSiteScreenMixin",
     "client.AIChatSettingsSTTConfigScreenMixin",
     "client.AIChatSettingsTTSSiteScreenMixin",

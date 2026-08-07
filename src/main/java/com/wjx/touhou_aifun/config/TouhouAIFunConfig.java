@@ -12,6 +12,9 @@ public final class TouhouAIFunConfig {
     public static final ForgeConfigSpec.IntValue MEMORY_RECENT_TURNS;
     public static final ForgeConfigSpec.BooleanValue BACKGROUND_MEMORY_EXTRACTION;
     public static final ForgeConfigSpec.ConfigValue<String> STT_SELECTED_SITE;
+    public static final ForgeConfigSpec.BooleanValue VISION_ENABLED;
+    public static final ForgeConfigSpec.ConfigValue<String> VISION_SELECTED_SITE;
+    public static final ForgeConfigSpec.BooleanValue SHALLOW_SCAN_ENABLED;
 
     static {
         ForgeConfigSpec.Builder builder = new ForgeConfigSpec.Builder();
@@ -51,6 +54,18 @@ public final class TouhouAIFunConfig {
                 .comment("Selected enabled STT site id. Empty means the first enabled site.")
                 .define("selectedSite", "");
         builder.pop();
+
+        builder.push("vision");
+        VISION_ENABLED = builder
+                .comment("Allow the observe_surroundings image tool to send maid screenshots to an enabled provider.")
+                .define("enabled", false);
+        VISION_SELECTED_SITE = builder
+                .comment("Selected enabled visual site id. Empty means the first enabled site.")
+                .define("selectedSite", "");
+        SHALLOW_SCAN_ENABLED = builder
+                .comment("Enable the server-only scan_surroundings grounding tool.")
+                .define("shallowScanEnabled", true);
+        builder.pop();
         SPEC = builder.build();
     }
 
@@ -85,5 +100,20 @@ public final class TouhouAIFunConfig {
     public static void setSelectedSttSite(String siteId) {
         STT_SELECTED_SITE.set(siteId);
         STT_SELECTED_SITE.save();
+    }
+
+    public static void setVisionEnabled(boolean enabled) {
+        VISION_ENABLED.set(enabled);
+        VISION_ENABLED.save();
+    }
+
+    public static void setSelectedVisionSite(String siteId) {
+        VISION_SELECTED_SITE.set(siteId == null ? "" : siteId);
+        VISION_SELECTED_SITE.save();
+    }
+
+    public static void setShallowScanEnabled(boolean enabled) {
+        SHALLOW_SCAN_ENABLED.set(enabled);
+        SHALLOW_SCAN_ENABLED.save();
     }
 }

@@ -1,7 +1,6 @@
 package com.wjx.touhou_aifun.mixin;
 
 import com.github.tartaricacid.touhoulittlemaid.ai.manager.entity.MaidAIChatManager;
-import com.github.tartaricacid.touhoulittlemaid.ai.manager.entity.summary.HistorySummaryManager;
 import com.github.tartaricacid.touhoulittlemaid.ai.service.llm.LLMClient;
 import com.github.tartaricacid.touhoulittlemaid.ai.service.llm.LLMMessage;
 import com.github.tartaricacid.touhoulittlemaid.ai.manager.entity.TTSCallback;
@@ -19,15 +18,6 @@ import java.util.List;
 
 @Mixin(value = MaidAIChatManager.class, remap = false)
 public abstract class MaidAIChatManagerMixin {
-    @Redirect(method = "chat",
-            at = @At(value = "INVOKE",
-                    target = "Lcom/github/tartaricacid/touhoulittlemaid/ai/manager/entity/summary/HistorySummaryManager;tryCompressBeforeChat(Ljava/lang/Runnable;)Z"))
-    private boolean touhouAIFun$disableBlockingBaseSummary(HistorySummaryManager ignored, Runnable afterSummary) {
-        // AIFun keeps its own asynchronous, structured memory. The base summary blocks the player
-        // request and would also put a lossy duplicate summary back into the visible prompt.
-        return false;
-    }
-
     @Inject(method = "normalChat", at = @At("HEAD"))
     private void touhouAIFun$prepareTurn(String message, List<LLMMessage> messages,
                                          LLMClient chatClient, CallbackInfo ci) {

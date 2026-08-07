@@ -8,6 +8,7 @@ import com.github.tartaricacid.touhoulittlemaid.ai.service.llm.openai.response.M
 import com.github.tartaricacid.touhoulittlemaid.entity.passive.EntityMaid;
 import net.minecraft.server.level.ServerLevel;
 import org.spongepowered.asm.mixin.Mixin;
+import org.spongepowered.asm.mixin.Unique;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
@@ -24,8 +25,19 @@ import java.util.UUID;
 
 @Mixin(value = LLMCallback.class, remap = false)
 public abstract class LLMCallbackMixin {
+    @Unique
+    private boolean touhouAIFun$requestRegistered;
+
     @Inject(method = "<init>", at = @At("RETURN"))
     private void touhouAIFun$registerRequest(CallbackInfo ci) {
+        // LLMCallback's two-argument constructor delegates to the three-argument one. A constructor
+        // injection therefore observes both RETURN points for the same object; only register and
+        // trim once, after the first fully-initialised return.
+        if (touhouAIFun$requestRegistered) {
+            return;
+        }
+        touhouAIFun$requestRegistered = true;
+
         EntityMaid maid = ((LLMCallback) (Object) this).getMaid();
         if (maid != null && ((Object) this).getClass() == LLMCallback.class) {
             ChatFlowManager.registerRequest(maid.getUUID(), this);

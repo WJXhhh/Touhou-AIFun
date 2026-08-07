@@ -3,6 +3,7 @@ package com.wjx.touhou_aifun.mixin;
 import com.github.tartaricacid.touhoulittlemaid.ai.manager.entity.MaidAIChatData;
 import com.github.tartaricacid.touhoulittlemaid.ai.manager.entity.MaidAIChatManager;
 import com.wjx.touhou_aifun.chat.context.AIFunMemoryManager;
+import com.wjx.touhou_aifun.chat.context.AIFunMemoryAccess;
 import com.wjx.touhou_aifun.chat.context.MaidMemoryState;
 import com.wjx.touhou_aifun.chat.context.MemoryStateCodec;
 import com.wjx.touhou_aifun.chat.ChatFlowManager;

@@ -11,7 +11,6 @@ import com.github.tartaricacid.touhoulittlemaid.ai.agent.skill.SkillLoader;
 import com.google.common.xml.XmlEscapers;
 import com.wjx.touhou_aifun.chat.ChatFlowManager;
 import com.wjx.touhou_aifun.config.TouhouAIFunConfig;
-import com.wjx.touhou_aifun.mixin.AIFunMemoryAccess;
 import org.apache.commons.lang3.StringUtils;
 
 import java.util.ArrayList;

@@ -1,0 +1,13 @@
+{
+  "replace": false,
+  "values": [
+    "#minecraft:flowers",
+    "#minecraft:tall_flowers",
+    "minecraft:fire",
+    "minecraft:soul_fire",
+    "minecraft:torch",
+    "minecraft:soul_torch",
+    "minecraft:wall_torch",
+    "minecraft:soul_wall_torch"
+  ]
+}

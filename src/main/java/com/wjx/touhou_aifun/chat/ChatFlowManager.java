@@ -63,6 +63,14 @@ public final class ChatFlowManager {
     /** Starts a new ordinary user turn before the base manager appends the user history entry. */
     public static long beginTurn(UUID maid, long turnId) {
         CURRENT_TURN.put(maid, turnId);
+        // Visual captures are tied to the old turn too; discard their in-memory request table so a
+        // late six-face upload cannot be grounded into the new conversation.
+        try {
+            com.wjx.touhou_aifun.vision.VisionCaptureTransport.cancelForMaid(maid);
+            com.wjx.touhou_aifun.vision.scan.VisionScanScheduler.cancelForMaid(maid);
+        } catch (Throwable ignored) {
+            // Optional integration remains harmless during bootstrap.
+        }
         // Publish the new turn before cancelling the old future: cancellation may synchronously
         // invoke its completion handler, which must already observe the request as superseded.
         cancelInFlight(maid);
