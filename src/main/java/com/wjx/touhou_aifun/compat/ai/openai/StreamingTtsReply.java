@@ -10,10 +10,8 @@ import com.github.tartaricacid.touhoulittlemaid.ai.service.tts.TTSSite;
 import com.github.tartaricacid.touhoulittlemaid.ai.service.tts.TTSSystemServices;
 import com.github.tartaricacid.touhoulittlemaid.config.subconfig.AIConfig;
 import com.github.tartaricacid.touhoulittlemaid.entity.passive.EntityMaid;
-import com.github.tartaricacid.touhoulittlemaid.network.NetworkHandler;
 import com.github.tartaricacid.touhoulittlemaid.network.message.ai.TTSAudioToClientMessage;
 import net.minecraft.server.level.ServerLevel;
-import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.entity.LivingEntity;
 import org.apache.commons.lang3.StringUtils;
 import com.wjx.touhou_aifun.chat.ChatFlowManager;
@@ -372,11 +370,7 @@ final class StreamingTtsReply {
     }
 
     private void sendAudio(byte[] data) {
-        if (this.maid.level() instanceof ServerLevel serverLevel
-                && this.maid.getOwner() instanceof ServerPlayer player) {
-            serverLevel.getServer().submit(() ->
-                    NetworkHandler.sendToClientPlayer(new TTSAudioToClientMessage(this.maid.getId(), data), player));
-        }
+        AIFunNetwork.sendMaidTtsAudio(this.maid, new TTSAudioToClientMessage(this.maid.getId(), data));
     }
 
     /** A sentence assigned its in-order sequence number, dispatched for parallel synthesis. */

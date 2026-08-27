@@ -16,7 +16,8 @@
     "MaidAIChatManagerMixin",
     "PapiReplacerMixin",
     "SyncMaidAIDataMessageMixin",
-    "TamableAnimalPublicAccessMixin"
+    "TamableAnimalPublicAccessMixin",
+    "TTSCallbackMixin"
   ],
   "client": [
     "client.AIChatSettingsHubAccessor",

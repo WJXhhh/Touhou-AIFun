@@ -12,7 +12,7 @@ import java.lang.reflect.Field;
 import java.util.Map;
 
 /**
- * Oculus 1.8 integration for rendering a second view without borrowing the player's frame.
+ * Oculus 1.7+ integration for rendering a second view without borrowing the player's frame.
  *
  * <p>Oculus has no public secondary-camera API. Its LevelRenderer mixins resolve the active
  * pipeline through {@link PipelineManager} on every world render, so the capture installs a

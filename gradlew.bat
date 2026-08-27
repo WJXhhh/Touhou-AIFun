@@ -32,6 +32,12 @@ set APP_HOME=%DIRNAME%
 @rem Resolve any "." and ".." in APP_HOME to make it shorter.
 for %%i in ("%APP_HOME%") do set APP_HOME=%%~fi
 
+@rem Some Windows hosts expose AF_UNIX but reject the loopback connection used by
+@rem Java NIO PipeImpl. Gradle then fails before the build starts. Pointing the
+@rem Unix-domain temporary directory at the NUL device makes the JDK use its TCP
+@rem fallback instead. JAVA_TOOL_OPTIONS is inherited by Gradle's child daemon.
+set "JAVA_TOOL_OPTIONS=%JAVA_TOOL_OPTIONS% -Djdk.net.unixdomain.tmpdir=NUL"
+
 @rem Add default JVM options here. You can also use JAVA_OPTS and GRADLE_OPTS to pass JVM options to this script.
 set DEFAULT_JVM_OPTS="-Xmx64m" "-Xms64m"
 

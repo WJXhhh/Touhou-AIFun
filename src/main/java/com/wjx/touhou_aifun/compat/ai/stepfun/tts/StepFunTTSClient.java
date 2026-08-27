@@ -433,10 +433,10 @@ public class StepFunTTSClient implements TTSClient {
             if (!streamToPlayer) {
                 bufferedPcm.writeBytes(pcm);
             } else if (firstChunk) {
-                AIFunNetwork.sendToPlayer(AIFunTTSStreamMessage.start(
-                        streamId, callback.getMaid().getId(), SAMPLE_RATE, pcm), player);
+                AIFunNetwork.sendMaidTtsStream(callback.getMaid(), AIFunTTSStreamMessage.start(
+                        streamId, callback.getMaid().getId(), SAMPLE_RATE, pcm));
             } else {
-                AIFunNetwork.sendToPlayer(AIFunTTSStreamMessage.data(streamId, pcm), player);
+                AIFunNetwork.sendMaidTtsStream(callback.getMaid(), AIFunTTSStreamMessage.data(streamId, pcm));
             }
         }
 
@@ -480,7 +480,7 @@ public class StepFunTTSClient implements TTSClient {
 
         private void closeStream() {
             if (streamToPlayer && started.get()) {
-                AIFunNetwork.sendToPlayer(AIFunTTSStreamMessage.end(streamId), player);
+                AIFunNetwork.sendMaidTtsStream(callback.getMaid(), AIFunTTSStreamMessage.end(streamId));
             }
         }
 

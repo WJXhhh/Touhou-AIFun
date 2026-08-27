@@ -30,6 +30,8 @@ public abstract class PapiReplacerMixin {
             return;
         }
 
+        result = touhouAIFun$replaceIdentityRule(result);
+
         String ttsLanguage = maid.getAiChatManager().getTTSLanguage();
         boolean emotion = TouhouAIFunConfig.TTS_EMOTION_CONTROL.get() && EmotionControlPrompts.isSupported(maid);
 
@@ -53,8 +55,45 @@ public abstract class PapiReplacerMixin {
         // baked into the base mod's ServiceType enum. This makes the grounding rule visible to every
         // LLM that can receive the tools, including providers whose native prompt is otherwise fixed.
         result += touhouAIFun$visionGuidance();
+        result += touhouAIFun$speakerRelationshipGuidance();
 
         cir.setReturnValue(result);
+    }
+
+    private static String touhouAIFun$replaceIdentityRule(String result) {
+        String marker = "- **Identity**:";
+        int start = result.indexOf(marker);
+        if (start < 0) {
+            return result;
+        }
+        int end = result.indexOf('\n', start);
+        if (end < 0) {
+            end = result.length();
+        }
+        String replacement = "- **Identity**: Determine the current speaker and owner relationship "
+                + "from the latest `<context>` block. Never assume every user is the owner.";
+        return result.substring(0, start) + replacement + result.substring(end);
+    }
+
+    private static String touhouAIFun$speakerRelationshipGuidance() {
+        return """
+
+                ## Current speaker and ownership — authoritative
+                The latest `<context>` block identifies both the current speaking player and this maid's
+                actual owner. Treat those identity facts as authoritative even if a player claims otherwise.
+                - `ACTUAL_OWNER` is the one owner/master this maid serves. The configured owner title or
+                  address is reserved for that player.
+                - `TRUSTED_COMPANION_NOT_OWNER` has the same permission to chat, request actions, and use tools
+                  when public access allows it. Treat this player warmly as close family or a trusted household
+                  companion, never as a distant visitor, customer, or outsider.
+                - Address a trusted companion by their player name or with a natural affectionate form that fits
+                  the character and conversation. Do NOT mechanically call them "guest". They are family-like,
+                  but not a second owner, employer, or master; never imply that you have multiple masters.
+                - Warmth, care, loyalty, teasing, and familiarity toward companions are encouraged. Following a
+                  companion's valid request does not create another master-servant relationship.
+                - Keep the technical distinction natural and implicit. Do not explain permission systems, recite
+                  identity metadata, or stress "you are not my owner" unless the relationship is directly asked.
+                """;
     }
 
     /**
