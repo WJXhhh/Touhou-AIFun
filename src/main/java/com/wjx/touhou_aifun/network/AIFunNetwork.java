@@ -13,6 +13,8 @@ import com.wjx.touhou_aifun.network.message.AIFunTTSInterruptMessage;
 import com.wjx.touhou_aifun.network.message.AIFunTTSStreamMessage;
 import com.wjx.touhou_aifun.network.message.AIFunVisionCaptureRequestMessage;
 import com.wjx.touhou_aifun.network.message.AIFunVisionCaptureChunkMessage;
+import com.wjx.touhou_aifun.network.message.AIFunVisionCaptureFailureMessage;
+import com.wjx.touhou_aifun.network.message.AIFunVisionCaptureCancelMessage;
 import com.wjx.touhou_aifun.network.message.AIFunVisionSitesRequestMessage;
 import com.wjx.touhou_aifun.network.message.AIFunVisionSitesSyncMessage;
 import com.wjx.touhou_aifun.network.message.AIFunVisionSettingsMessage;
@@ -24,7 +26,9 @@ import com.wjx.touhou_aifun.vision.VisionCaptureTransport;
 import java.util.Optional;
 
 public final class AIFunNetwork {
-    private static final String VERSION = "1";
+    // Version 4 makes visual capture cancellation request-specific, avoiding a stale cancel racing
+    // with the next capture for the same maid.
+    private static final String VERSION = "4";
     private static final SimpleChannel CHANNEL = NetworkRegistry.newSimpleChannel(
             new ResourceLocation(TouhouAIFun.MOD_ID, "network"),
             () -> VERSION, VERSION::equals, VERSION::equals);
@@ -70,6 +74,12 @@ public final class AIFunNetwork {
         CHANNEL.registerMessage(8, AIFunVisionSiteSaveMessage.class,
                 AIFunVisionSiteSaveMessage::encode, AIFunVisionSiteSaveMessage::decode,
                 AIFunVisionSiteSaveMessage::handle, Optional.of(NetworkDirection.PLAY_TO_SERVER));
+        CHANNEL.registerMessage(9, AIFunVisionCaptureFailureMessage.class,
+                AIFunVisionCaptureFailureMessage::encode, AIFunVisionCaptureFailureMessage::decode,
+                AIFunVisionCaptureFailureMessage::handle, Optional.of(NetworkDirection.PLAY_TO_SERVER));
+        CHANNEL.registerMessage(10, AIFunVisionCaptureCancelMessage.class,
+                AIFunVisionCaptureCancelMessage::encode, AIFunVisionCaptureCancelMessage::decode,
+                AIFunVisionCaptureCancelMessage::handle, Optional.of(NetworkDirection.PLAY_TO_CLIENT));
     }
 
     public static void sendToPlayer(AIFunTTSStreamMessage message, ServerPlayer player) {
@@ -88,17 +98,33 @@ public final class AIFunNetwork {
     }
 
     public static void sendVisionCaptureRequest(ServerPlayer player, java.util.UUID requestId, int maidId,
-                                                String focus, String scanJson) {
+                                                java.util.UUID maidUuid) {
         CHANNEL.send(PacketDistributor.PLAYER.with(() -> player),
-                new AIFunVisionCaptureRequestMessage(requestId, maidId, focus, scanJson));
+                new AIFunVisionCaptureRequestMessage(requestId, maidId, maidUuid));
+    }
+
+    public static void sendVisionCaptureCancel(ServerPlayer player, java.util.UUID requestId,
+                                               java.util.UUID maidUuid) {
+        if (player == null || player.connection == null || requestId == null || maidUuid == null) return;
+        CHANNEL.send(PacketDistributor.PLAYER.with(() -> player),
+                new AIFunVisionCaptureCancelMessage(requestId, maidUuid));
     }
 
     public static void sendVisionCaptureChunk(AIFunVisionCaptureChunkMessage message) {
         CHANNEL.sendToServer(message);
     }
 
+    public static void sendVisionCaptureFailure(AIFunVisionCaptureFailureMessage message) {
+        CHANNEL.sendToServer(message);
+    }
+
     public static void acceptVisionCaptureChunk(ServerPlayer sender, AIFunVisionCaptureChunkMessage message) {
         VisionCaptureTransport.acceptChunk(sender, message);
+    }
+
+    public static void acceptVisionCaptureFailure(ServerPlayer sender, AIFunVisionCaptureFailureMessage message) {
+        VisionCaptureTransport.acceptFailure(sender, message.requestId(), message.maidId(),
+                message.maidUuid(), message.reason());
     }
 
     public static void requestVisionSitesFromServer() {
@@ -115,10 +141,14 @@ public final class AIFunNetwork {
     }
 
     public static void sendVisionSitesToPlayer(ServerPlayer player) {
+        sendVisionSitesToPlayer(player, "");
+    }
+
+    public static void sendVisionSitesToPlayer(ServerPlayer player, String operationStatus) {
         AvailableVisionSites.ensureLoaded();
         CHANNEL.send(PacketDistributor.PLAYER.with(() -> player), new AIFunVisionSitesSyncMessage(
                 AvailableVisionSites.serializeForClient(), TouhouAIFunConfig.VISION_ENABLED.get(),
-                TouhouAIFunConfig.SHALLOW_SCAN_ENABLED.get(), TouhouAIFunConfig.VISION_SELECTED_SITE.get(),
-                !player.hasPermissions(2)));
+                TouhouAIFunConfig.SHALLOW_SCAN_ENABLED.get(), AvailableVisionSites.effectiveSelectedId(),
+                !player.hasPermissions(2), operationStatus == null ? "" : operationStatus));
     }
 }

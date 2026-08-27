@@ -1,0 +1,47 @@
+### stepfun  model=step-3.7-flash
+  [ 256px] OK 13KB 大文字=N 小字=Y
+           '```json\n{\n  "scene_summary": "A light blue background displays the text \'MAID TEST\' in dark red at the top. Below the text is a solid yellow rectangle. In the bottom left corner, there is a green circle outline and the t'
+  [ 512px] OK 29KB 大文字=N 小字=Y
+           '```json\n{\n  "scene_summary": "A light blue background displays the text \'MAID TEST\' in large, dark red serif letters at the top. Below the text is a solid, golden-yellow rectangle. In the bottom left corner, there is a g'
+  [1024px] OK 67KB 大文字=N 小字=Y
+           '```json\n{\n  "scene_summary": "A graphic design test image featuring a light blue background. At the top, large dark red serif text reads \'MAID TEST\'. In the center is a solid yellow rectangle. In the bottom left corner i'
+  [2048px] OK 174KB 大文字=N 小字=Y
+           '```json\n{\n  "scene_summary": "A light blue background features large, dark red sans-serif text at the top reading \'MAID TEST\'. Below the text is a large, solid yellow rectangle. In the bottom left corner, there is a thic'
+  [4096px] OK 514KB 大文字=N 小字=Y
+           '```json\n{\n  "scene_summary": "A light blue background displays large, dark red uppercase text \'MAID TEST\' across the top. Below the text is a large, solid yellow rectangle. In the bottom left corner, there is a thick gre'
+### qwen  model=qwen3-vl-flash
+  [ 256px] OK 13KB 大文字=N 小字=Y
+           '{\n  "scene_summary": "A light blue background with red text \'MAID TEST\' at the top, a yellow rectangle centered below it, a green circle in the lower-left quadrant, and black text \'tiny 12px line\' beneath the circle.",\n '
+  [ 512px] OK 29KB 大文字=N 小字=Y
+           '{\n  "scene_summary": "A light blue background with bold red text \'MAID TEST\' at the top. Below it, a centered yellow rectangle. In the lower-left corner, a green ring (annulus) with a thin line; beneath it, small black t'
+  [1024px] OK 67KB 大文字=N 小字=Y
+           '{\n  "scene_summary": "A light blue background with large red text \'MAID TEST\' at the top, a centered yellow rectangle below it, and a green ring in the lower-left quadrant. A tiny black text label \'tiny 12px line\' appear'
+  [2048px] OK 174KB 大文字=N 小字=Y
+           '{\n  "scene_summary": "A light blue background with large red text \'MAID TEST\' at the top, a solid yellow rectangle centered below the text, and a green ring (annulus) in the lower-left quadrant. A tiny black text label \''
+  [4096px] OK 514KB 大文字=N 小字=Y
+           '{\n  "scene_summary": "A light blue background with bold red text \'MAID TEST\' at the top, a solid yellow rectangle centered below the text, and a green outlined circle in the lower-left quadrant. A tiny watermark \'Roy Opa'
+### zhipu  model=glm-4.6v-flash
+  [ 256px] HTTP 429 {"error":{"code":"1305","message":"该模型当前访问量过大，请您稍后再试"}}  (body≈14KB)
+  [ 512px] HTTP 429 {"error":{"code":"1305","message":"该模型当前访问量过大，请您稍后再试"}}  (body≈29KB)
+  [1024px] HTTP 429 {"error":{"code":"1305","message":"该模型当前访问量过大，请您稍后再试"}}  (body≈67KB)
+  [2048px] OK 174KB 大文字=N 小字=Y
+           '{"scene_summary": "A light blue background with large maroon text \'MAID TEST\', a central yellow rectangle, a lower green-outlined circle, and small text \'tiny 12px line\' at bottom left.", "visible_text": "MAID TEST\\ntiny'
+  [4096px] OK 514KB 大文字=N 小字=Y
+           '{"scene_summary": "A light blue background with large maroon text \'MAID TEST\', a central yellow rectangle, a lower left green circle, and tiny text at bottom left.", "visible_text": "MAID TEST tiny 12px line"}'
+
+== 汇总 ==
+  stepfun    256px  OK       big=False,tiny=True
+  stepfun    512px  OK       big=False,tiny=True
+  stepfun   1024px  OK       big=False,tiny=True
+  stepfun   2048px  OK       big=False,tiny=True
+  stepfun   4096px  OK       big=False,tiny=True
+  qwen       256px  OK       big=False,tiny=True
+  qwen       512px  OK       big=False,tiny=True
+  qwen      1024px  OK       big=False,tiny=True
+  qwen      2048px  OK       big=False,tiny=True
+  qwen      4096px  OK       big=False,tiny=True
+  zhipu      256px  HTTP 429 {"error":{"code":"1305","message":"该模型当前访问量过大，请您稍后再试"}} 
+  zhipu      512px  HTTP 429 {"error":{"code":"1305","message":"该模型当前访问量过大，请您稍后再试"}} 
+  zhipu     1024px  HTTP 429 {"error":{"code":"1305","message":"该模型当前访问量过大，请您稍后再试"}} 
+  zhipu     2048px  OK       big=False,tiny=True
+  zhipu     4096px  OK       big=False,tiny=True

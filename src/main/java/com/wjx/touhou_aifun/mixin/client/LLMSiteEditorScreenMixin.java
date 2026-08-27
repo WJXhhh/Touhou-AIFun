@@ -6,6 +6,8 @@ import com.github.tartaricacid.touhoulittlemaid.client.gui.entity.maid.ai.editor
 import com.wjx.touhou_aifun.compat.ai.anthropic.AnthropicLLMSite;
 import com.wjx.touhou_aifun.compat.ai.anthropic.AnthropicShared;
 import com.wjx.touhou_aifun.compat.ai.mimo.MimoLLMSite;
+import com.wjx.touhou_aifun.compat.ai.opencodego.OpenCodeGoLLMSite;
+import com.wjx.touhou_aifun.compat.ai.opencodego.OpenCodeGoShared;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Shadow;
 import org.spongepowered.asm.mixin.injection.At;
@@ -86,6 +88,14 @@ public abstract class LLMSiteEditorScreenMixin {
                     openAISite.enabled(), openAISite.secretKey(),
                     thinkingField, openAISite.headers(), entries
             ));
+            return;
+        }
+        if (isOpenCodeGoSource()) {
+            cir.setReturnValue(new OpenCodeGoLLMSite(
+                    openAISite.id(), OpenCodeGoShared.ICON, openAISite.url(),
+                    openAISite.enabled(), openAISite.secretKey(), false,
+                    openAISite.headers(), entries
+            ));
         }
     }
 
@@ -115,5 +125,10 @@ public abstract class LLMSiteEditorScreenMixin {
             return true;
         }
         return AnthropicShared.API_TYPE.equals(sourceSite.id());
+    }
+
+    private boolean isOpenCodeGoSource() {
+        return sourceSite instanceof OpenCodeGoLLMSite
+                || OpenCodeGoShared.API_TYPE.equals(sourceSite.id());
     }
 }

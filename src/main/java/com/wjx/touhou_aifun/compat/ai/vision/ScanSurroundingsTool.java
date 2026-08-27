@@ -13,7 +13,6 @@ import com.wjx.touhou_aifun.config.TouhouAIFunConfig;
 import com.wjx.touhou_aifun.vision.scan.EnvironmentScanRequest;
 import com.wjx.touhou_aifun.vision.scan.ScanDirection;
 import com.wjx.touhou_aifun.vision.scan.ScanMode;
-import com.wjx.touhou_aifun.vision.scan.ShallowEnvironmentScanner;
 import com.wjx.touhou_aifun.vision.scan.VisionScanCache;
 import com.wjx.touhou_aifun.chat.ChatFlowManager;
 import net.minecraft.ChatFormatting;
@@ -67,15 +66,11 @@ public final class ScanSurroundingsTool implements ITool<EnvironmentScanRequest>
 
     @Override
     public LLMCallback onCall(String toolCallId, EnvironmentScanRequest request, LLMCallback callback) {
-        EnvironmentScanRequest normalized = normalize(request);
-        String result;
-        try {
-            result = VisionScanCache.scan(callback.getMaid(), normalized).toJson();
-        } catch (Throwable throwable) {
-            result = "{\"status\":\"failed\",\"error\":\"server scan failed\"}";
-            com.wjx.touhou_aifun.TouhouAIFun.LOGGER.error("scan_surroundings failed", throwable);
-        }
-        return callback.addToolResult(result, toolCallId);
+        // TLM 1.5.3 dispatches tools through onCallAsync. Never let a direct compatibility call
+        // bypass the server-wide per-tick ray and DDA budgets with a synchronous 360-degree scan.
+        return callback.addToolResult("{\"status\":\"failed\",\"error\":\"async_dispatch_required\","
+                + "\"uncertainties\":[\"The shallow scan must use the asynchronous tool dispatcher.\"]}",
+                toolCallId);
     }
 
     @Override
@@ -112,7 +107,9 @@ public final class ScanSurroundingsTool implements ITool<EnvironmentScanRequest>
 
     @Override
     public Component invocationSummaryComponent(EnvironmentScanRequest result) {
-        return Component.literal(invocationSummary(result)).withStyle(ChatFormatting.GRAY);
+        String mode = result == null ? "both" : result.mode().name().toLowerCase();
+        return Component.translatable("tool.touhou_aifun.scan_surroundings", mode)
+                .withStyle(ChatFormatting.GRAY);
     }
 
     private static EnvironmentScanRequest normalize(EnvironmentScanRequest request) {

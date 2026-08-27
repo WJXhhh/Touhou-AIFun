@@ -30,3 +30,10 @@ mandatory = true
 versionRange = "${touhou_little_maid_version_range}"
 ordering = "AFTER"
 side = "BOTH"
+
+[[dependencies.${mod_id}]]
+modId = "oculus"
+mandatory = false
+versionRange = "${oculus_version_range}"
+ordering = "AFTER"
+side = "CLIENT"

@@ -1,11 +1,15 @@
 package com.wjx.touhou_aifun.vision.scan;
 
-/** One representative surface hit. Coordinates are relative to the maid's block position. */
-public record SurfaceBlockHit(String registryId, int dx, int dy, int dz, double distance,
-                              String direction, OpacityClass opacity, int remainingBudget,
-                              int count, double farthestDistance) {
-    public SurfaceBlockHit(String registryId, int dx, int dy, int dz, double distance,
-                           String direction, OpacityClass opacity, int remainingBudget) {
-        this(registryId, dx, dy, dz, distance, direction, opacity, remainingBudget, 1, distance);
+import java.util.List;
+
+/** One aggregated surface group with a few concrete relative positions for grounding. */
+public record SurfaceBlockHit(String registryId, String direction, OpacityClass opacity, int count,
+                              double nearestDistance, double farthestDistance,
+                              List<Representative> representatives) {
+    public SurfaceBlockHit {
+        representatives = List.copyOf(representatives);
+    }
+
+    public record Representative(int dx, int dy, int dz, double distance, int remainingBudget) {
     }
 }

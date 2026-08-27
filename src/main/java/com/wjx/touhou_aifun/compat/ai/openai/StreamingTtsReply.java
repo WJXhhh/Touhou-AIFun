@@ -19,6 +19,7 @@ import org.apache.commons.lang3.StringUtils;
 import com.wjx.touhou_aifun.chat.ChatFlowManager;
 import com.wjx.touhou_aifun.chat.context.AIFunMemoryManager;
 import com.wjx.touhou_aifun.compat.ai.tts.SentenceTextSplitter;
+import com.wjx.touhou_aifun.config.TouhouAIFunConfig;
 import com.wjx.touhou_aifun.network.AIFunNetwork;
 
 import javax.annotation.Nullable;
@@ -71,6 +72,8 @@ final class StreamingTtsReply {
      * carry the active marker onto every following sentence so the whole reply keeps the same emotion.
      */
     private final boolean propagateEmotion;
+    /** Low-RPM providers must receive one completed reply, not a burst per punctuation mark. */
+    private final boolean batchWholeReply;
     /** The marker (e.g. {@code (开心)}) carried onto sentences that do not start with their own. */
     private String activeMarker = StringUtils.EMPTY;
 
@@ -112,10 +115,12 @@ final class StreamingTtsReply {
         this.propagateEmotion = propagateEmotion;
 
         TTSSite site = this.chatManager.getTTSSite();
+        this.batchWholeReply = site != null && requiresWholeReplyBatch(site.getApiType());
         boolean ttsOn = AIConfig.TTS_ENABLED.get() && site != null && site.enabled();
         TTSClient resolvedClient = ttsOn ? site.client() : null;
         // System/local TTS uses a different (local sound) path; let the normal onSuccess handle it.
-        if (ttsOn && resolvedClient != null && !(resolvedClient instanceof TTSSystemServices)) {
+        if (ttsOn && TouhouAIFunConfig.TTS_SENTENCE_STREAMING.get()
+                && resolvedClient != null && !(resolvedClient instanceof TTSSystemServices)) {
             this.usable = true;
             this.client = resolvedClient;
             String model = this.chatManager.getTTSModel();
@@ -141,7 +146,7 @@ final class StreamingTtsReply {
      * separator (and real text after it) is present.
      */
     void onPartial(String visibleContent) {
-        if (!this.usable) {
+        if (!this.usable || this.batchWholeReply) {
             return;
         }
         String ttsText;
@@ -177,6 +182,9 @@ final class StreamingTtsReply {
      * its own synthesis request rather than being buried inside one (see {@link #carryEmotion}).
      */
     private List<String> piecesOf(String text) {
+        if (this.batchWholeReply) {
+            return text == null || text.isBlank() ? List.of() : List.of(text);
+        }
         List<String> base = SentenceTextSplitter.split(text, MAX_CHUNK_CODE_POINTS);
         if (!this.propagateEmotion) {
             return base;
@@ -186,6 +194,12 @@ final class StreamingTtsReply {
             out.addAll(ReasoningOpenAIResponseChat.splitAtMarkers(chunk));
         }
         return out;
+    }
+
+    static boolean requiresWholeReplyBatch(String apiType) {
+        if (apiType == null) return false;
+        String normalized = apiType.trim().toLowerCase(java.util.Locale.ROOT);
+        return "stepfun".equals(normalized) || "stepfun_plan".equals(normalized);
     }
 
     /** Finalizes a complete text reply: queues any remaining sentences, then records history. */
@@ -214,7 +228,7 @@ final class StreamingTtsReply {
 
             // Commit the durable turn and legacy history on the same server thread that starts a
             // new player turn. This makes the turn check and the assistant write one ordered event.
-            AIFunMemoryManager.completeCallback(this.callback, response.toString());
+            AIFunMemoryManager.completeCallback(this.callback, response.getChatText());
             ChatFlowManager.finishRequest(this.maidId, this.callback);
             this.chatManager.addAssistantHistory(response.toString());
             // Take over speaking (interrupt any previous reply), then surface the COMPLETE chat
@@ -348,7 +362,8 @@ final class StreamingTtsReply {
             }
         }
         // Drop the audio if a newer reply has taken over speaking; otherwise send it in order.
-        if (ChatFlowManager.ttsGeneration(this.maidId) == capturedGeneration) {
+        if (!ChatFlowManager.isSuperseded(this.maidId, this.callback)
+                && ChatFlowManager.ttsGeneration(this.maidId) == capturedGeneration) {
             for (byte[] audio : toSend) {
                 this.sendAudio(audio);
             }

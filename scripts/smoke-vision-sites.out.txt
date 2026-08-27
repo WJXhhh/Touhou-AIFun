@@ -1,0 +1,29 @@
+测试图: 8599 bytes
+
+### stepfun  provider=stepfun  model=step-3.7-flash
+    endpoint=https://api.stepfun.com/v1/chat/completions
+    api_key=3iwIfRZKLm... (len=65)
+[stepfun 单图] 200 (8.7s, body≈11KB) -> Light blue background front cubemap face containing dark red text, a solid yellow rectangle, and a green outlined circle.
+         原文前240: '{\n    "scene_summary": "Light blue background front cubemap face containing dark red text, a solid yellow rectangle, and a green outlined circle.",\n    "answer_to_focus": "The front face has a uniform light blue background. Dark red upperca'
+[stepfun 六图] 200 (7.0s, body≈68KB) -> ```json
+{
+  "scene_summary": "A simple 2D graphic scene with a light cyan background. All six cubemap faces display identical content: dark red text a
+         原文前240: '```json\n{\n  "scene_summary": "A simple 2D graphic scene with a light cyan background. All six cubemap faces display identical content: dark red text at the top, a solid yellow rectangle in the center-right, and a green circle outline in the'
+
+### qwen  provider=qwen  model=qwen3-vl-flash
+    endpoint=https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions
+    api_key=sk-ws-H.RP... (len=115)
+[qwen 单图] 200 (3.0s, body≈11KB) -> A light blue background with red text 'MAID TEST 42' at the top, a large yellow rectangle centered below the text, and a green-outlined circle in the 
+         原文前240: '{\n  "scene_summary": "A light blue background with red text \'MAID TEST 42\' at the top, a large yellow rectangle centered below the text, and a green-outlined circle in the lower-left quadrant.",\n  "answer_to_focus": "The front cubemap face '
+[qwen 六图] 200 (3.2s, body≈68KB) -> A uniform light blue background with the text 'MAID TEST 42' in red at the top, a large solid yellow rectangle centered below the text, and a green-ou
+         原文前240: '{\n  "scene_summary": "A uniform light blue background with the text \'MAID TEST 42\' in red at the top, a large solid yellow rectangle centered below the text, and a green-outlined circle in the lower-left quadrant. All six cubemap faces are '
+
+### zhipu  provider=zhipu  model=glm-4.6v-flash
+    endpoint=https://open.bigmodel.cn/api/paas/v4/chat/completions
+    api_key=3d47f84f3c... (len=49)
+[zhipu 单图] 200 (4.6s, body≈11KB) -> A blue background with text 'MAID TEST 42' at the top and a yellow rectangle below, plus a green circle on the left.
+         原文前240: '```json\n{\n    "scene_summary": "A blue background with text \'MAID TEST 42\' at the top and a yellow rectangle below, plus a green circle on the left.",\n    "answer_to_focus": "The scene is a test graphic with labeled text and shapes.",\n    "'
+[zhipu 六图] HTTP 429 (0.1s, body≈68KB) 尝试1/3: {"error":{"code":"1305","message":"该模型当前访问量过大，请您稍后再试"}}
+[zhipu 六图] HTTP 429 (0.1s, body≈68KB) 尝试2/3: {"error":{"code":"1305","message":"该模型当前访问量过大，请您稍后再试"}}
+[zhipu 六图] 200 (11.9s, body≈68KB) -> A simple scene with a light blue background, featuring the text 'MAID TEST 42' at the top, a large yellow rectangle in the center, and a green circle 
+         原文前240: '```json\n{\n    "scene_summary": "A simple scene with a light blue background, featuring the text \'MAID TEST 42\' at the top, a large yellow rectangle in the center, and a green circle outline on the left side.",\n    "answer_to_focus": "The sc'

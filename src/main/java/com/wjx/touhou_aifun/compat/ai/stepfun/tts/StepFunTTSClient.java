@@ -12,7 +12,6 @@ import net.minecraft.world.entity.LivingEntity;
 import com.wjx.touhou_aifun.network.AIFunNetwork;
 import com.wjx.touhou_aifun.network.message.AIFunTTSStreamMessage;
 import com.wjx.touhou_aifun.compat.ai.tts.VoicePresetSpec;
-import com.wjx.touhou_aifun.compat.ai.tts.SentenceTextSplitter;
 import com.wjx.touhou_aifun.config.TouhouAIFunConfig;
 
 import java.io.ByteArrayOutputStream;
@@ -62,7 +61,11 @@ public class StepFunTTSClient implements TTSClient {
         }
         String instruction = STEP_PLAN_MODEL.equals(parts[0])
                 ? limitCodePoints(preset.instruction(), MAX_INSTRUCTION_LENGTH) : "";
-        List<String> chunks = SentenceTextSplitter.split(message, MAX_HTTP_INPUT_LENGTH);
+        // The outer streaming reply already decides its speaking chunks. Splitting again at every
+        // comma/period turns one short answer into a burst and selects the WAV callback path below;
+        // that WAV is not decodable by TLM's ordinary MP3/Ogg player. Only split at the provider's
+        // actual input-size ceiling, so normal replies stay one MP3 request and one callback.
+        List<String> chunks = splitText(message, MAX_HTTP_INPUT_LENGTH);
         if (chunks.size() == 1) {
             playHttp(message, parts[0], parts[1], instruction, callback);
             return;
@@ -150,15 +153,7 @@ public class StepFunTTSClient implements TTSClient {
 
     private HttpRequest buildHttpRequest(String message, String model, String voice,
                                          String instruction, String responseFormat) {
-        JsonObject requestBody = new JsonObject();
-        requestBody.addProperty("model", model);
-        requestBody.addProperty("input", message);
-        requestBody.addProperty("voice", voice);
-        requestBody.addProperty("response_format", responseFormat);
-        requestBody.addProperty("sample_rate", SAMPLE_RATE);
-        if (!instruction.isBlank()) {
-            requestBody.addProperty("instruction", instruction);
-        }
+        JsonObject requestBody = requestBody(message, model, voice, instruction, responseFormat);
 
         HttpRequest.Builder builder = HttpRequest.newBuilder(URI.create(this.site.url()))
                 .header(HttpHeaders.CONTENT_TYPE, MediaType.JSON_UTF_8.toString())
@@ -167,6 +162,24 @@ public class StepFunTTSClient implements TTSClient {
                 .timeout(MAX_TIMEOUT);
         this.site.headers().forEach(builder::header);
         return builder.build();
+    }
+
+    static JsonObject requestBody(String message, String model, String voice,
+                                  String instruction, String responseFormat) {
+        JsonObject requestBody = new JsonObject();
+        requestBody.addProperty("model", model);
+        requestBody.addProperty("input", message);
+        requestBody.addProperty("voice", voice);
+        // StepAudio 2.5's current HTTP contract returns MP3 by default and documents neither of
+        // these legacy fields. Keep them only for the older step-tts models that still use them.
+        if (!STEP_PLAN_MODEL.equals(model)) {
+            requestBody.addProperty("response_format", responseFormat);
+            requestBody.addProperty("sample_rate", SAMPLE_RATE);
+        }
+        if (!instruction.isBlank()) {
+            requestBody.addProperty("instruction", instruction);
+        }
+        return requestBody;
     }
 
     private static int codePointLength(String value) {
@@ -180,7 +193,7 @@ public class StepFunTTSClient implements TTSClient {
         return value.substring(0, value.offsetByCodePoints(0, maxCodePoints));
     }
 
-    private static List<String> splitText(String value, int maxCodePoints) {
+    static List<String> splitText(String value, int maxCodePoints) {
         List<String> chunks = new ArrayList<>();
         int start = 0;
         while (start < value.length()) {

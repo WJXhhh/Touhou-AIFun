@@ -43,7 +43,7 @@ public final class TouhouAIFunConfig {
                 .defineInRange("contextInputBudgetTokens", 24576, 4096, 131072);
         MEMORY_RECENT_TURNS = builder
                 .comment("Number of completed conversation turns kept verbatim in the visible context.")
-                .defineInRange("memoryRecentTurns", 8, 2, 32);
+                .defineInRange("recentTurns", 8, 2, 32);
         BACKGROUND_MEMORY_EXTRACTION = builder
                 .comment("Extract durable facts and older episodes asynchronously after long conversations.")
                 .define("backgroundMemoryExtraction", true);

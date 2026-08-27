@@ -1,0 +1,44 @@
+站点: id=zhipu provider=zhipu model=glm-4.6v-flash
+endpoint: https://open.bigmodel.cn/api/paas/v4/chat/completions
+api_key: 3d47f84f... (masked)
+测试图: E:\forge-dev\touhou-aifun\scripts\vision-test.jpg (8599 bytes)
+======================================================================
+[T1 无图(验证字段兼容)] POST https://open.bigmodel.cn/api/paas/v4/chat/completions  model=glm-4.6v-flash
+[T1 无图(验证字段兼容)] HTTP 429, 耗时 0.1s
+[T1 无图(验证字段兼容)] 响应体(截断): {"error":{"code":"1305","message":"该模型当前访问量过大，请您稍后再试"}}
+[T1 无图(验证字段兼容)] 429 负载限流，等待 10s 后重试 (1/5)...
+[T1 无图(验证字段兼容)] HTTP 200, 耗时 4.3s
+T1 响应 keys: ['choices', 'created', 'id', 'model', 'object', 'request_id', 'usage']
+T1 extractText 结果: ```json
+{
+    "scene_summary": "A room with a bed, a chair, and a small table. The bed has a white blanket and pillows. The chair is near the table. The room appears tidy and has a window with curtains on the left wall.",
+    "answer_to_focus": "The position of the bed relative to the window and the
+T1 observationFromText: {"status": "ok", "scene_summary": "A room with a bed, a chair, and a small table. The bed has a white blanket and pillows. The chair is near the table. The room appears tidy and has a window with curtains on the left wall.", "answer_to_focus": "The position of the bed relative to the window and the chair.", "raw_len": 761}
+======================================================================
+[T2 单图] POST https://open.bigmodel.cn/api/paas/v4/chat/completions  model=glm-4.6v-flash
+[T2 单图] HTTP 200, 耗时 5.9s
+T2 extractText 结果: ```json
+{
+    "scene_summary": "A blue background with text 'MAID TEST 42' and a yellow rectangle, plus a green circle outline on the left.",
+    "answer_to_focus": "An orange block and text are present, but the text is 'MAID TEST 42' and the block is yellow.",
+    "grounded_matches": "A yellow rectangle (orange-like in color) and text 'MAID TEST 42' are visible.",
+    "visible_text": "MAID TEST 42",
+    "hazards": "None identified.",
+    "uncertainties": "The text and block are labeled as 'data
+T2 observationFromText: {"status": "ok", "scene_summary": "A blue background with text 'MAID TEST 42' and a yellow rectangle, plus a green circle outline on the left.", "answer_to_focus": "An orange block and text are present, but the text is 'MAID TEST 42' and the block is yellow.", "raw_len": 571}
+======================================================================
+[T3 六面 cubemap(完整模拟)] POST https://open.bigmodel.cn/api/paas/v4/chat/completions  model=glm-4.6v-flash
+[T3 六面 cubemap(完整模拟)] HTTP 429, 耗时 0.1s
+[T3 六面 cubemap(完整模拟)] 响应体(截断): {"error":{"code":"1305","message":"该模型当前访问量过大，请您稍后再试"}}
+[T3 六面 cubemap(完整模拟)] 429 负载限流，等待 10s 后重试 (1/5)...
+[T3 六面 cubemap(完整模拟)] HTTP 429, 耗时 0.2s
+[T3 六面 cubemap(完整模拟)] 响应体(截断): {"error":{"code":"1305","message":"该模型当前访问量过大，请您稍后再试"}}
+[T3 六面 cubemap(完整模拟)] 429 负载限流，等待 20s 后重试 (2/5)...
+[T3 六面 cubemap(完整模拟)] HTTP 429, 耗时 0.2s
+[T3 六面 cubemap(完整模拟)] 响应体(截断): {"error":{"code":"1305","message":"该模型当前访问量过大，请您稍后再试"}}
+[T3 六面 cubemap(完整模拟)] 429 负载限流，等待 30s 后重试 (3/5)...
+[T3 六面 cubemap(完整模拟)] HTTP 429, 耗时 0.2s
+[T3 六面 cubemap(完整模拟)] 响应体(截断): {"error":{"code":"1305","message":"该模型当前访问量过大，请您稍后再试"}}
+[T3 六面 cubemap(完整模拟)] 429 负载限流，等待 40s 后重试 (4/5)...
+[T3 六面 cubemap(完整模拟)] HTTP 429, 耗时 0.1s
+[T3 六面 cubemap(完整模拟)] 响应体(截断): {"error":{"code":"1305","message":"该模型当前访问量过大，请您稍后再试"}}

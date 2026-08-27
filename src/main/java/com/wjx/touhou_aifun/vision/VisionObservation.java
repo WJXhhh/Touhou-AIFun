@@ -4,6 +4,8 @@ import com.google.gson.GsonBuilder;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 
+import java.nio.charset.StandardCharsets;
+
 /** Structured envelope returned to the main LLM after the visual provider call. */
 public record VisionObservation(String status, String siteId, String sceneSummary, String answerToFocus,
                                 String rawText, String scanStatus, String error, long imageTick, long scanTick) {
@@ -33,18 +35,32 @@ public record VisionObservation(String status, String siteId, String sceneSummar
             }
         }
         String json = new GsonBuilder().disableHtmlEscaping().create().toJson(result);
-        if (json.length() <= 16 * 1024) return json;
+        if (fits(json)) return json;
         JsonObject compact = new JsonObject();
         compact.addProperty("status", status);
         compact.addProperty("site_id", siteId == null ? "" : siteId);
-        compact.addProperty("scene_summary", truncate(sceneSummary, 4096));
-        compact.addProperty("answer_to_focus", truncate(answerToFocus, 2048));
+        compact.addProperty("scene_summary", truncate(sceneSummary, 2048));
+        compact.addProperty("answer_to_focus", truncate(answerToFocus, 1024));
         compact.addProperty("scan_status", scanStatus == null ? "not_run" : scanStatus);
         compact.addProperty("image_tick", imageTick);
         compact.addProperty("scan_tick", scanTick);
         compact.addProperty("truncated", true);
         compact.addProperty("uncertainty", "visual provider response exceeded 16 KiB; raw text omitted");
-        return new GsonBuilder().disableHtmlEscaping().create().toJson(compact);
+        json = new GsonBuilder().disableHtmlEscaping().create().toJson(compact);
+        if (fits(json)) return json;
+        compact.addProperty("scene_summary", truncate(sceneSummary, 768));
+        compact.addProperty("answer_to_focus", truncate(answerToFocus, 384));
+        json = new GsonBuilder().disableHtmlEscaping().create().toJson(compact);
+        if (fits(json)) return json;
+
+        JsonObject emergency = new JsonObject();
+        emergency.addProperty("status", safeStatus(status, "failed"));
+        emergency.addProperty("scan_status", safeStatus(scanStatus, "unknown"));
+        emergency.addProperty("image_tick", imageTick);
+        emergency.addProperty("scan_tick", scanTick);
+        emergency.addProperty("truncated", true);
+        emergency.addProperty("uncertainty", "visual response contained oversized metadata; variable text was omitted");
+        return new GsonBuilder().disableHtmlEscaping().create().toJson(emergency);
     }
 
     private static String stripJsonFence(String value) {
@@ -59,5 +75,18 @@ public record VisionObservation(String status, String siteId, String sceneSummar
     private static String truncate(String value, int max) {
         if (value == null) return "";
         return value.length() <= max ? value : value.substring(0, max) + "…";
+    }
+
+    private static boolean fits(String json) {
+        return json.getBytes(StandardCharsets.UTF_8).length <= 16 * 1024;
+    }
+
+    private static String safeStatus(String value, String fallback) {
+        if (value == null || value.isBlank() || value.length() > 32
+                || !value.chars().allMatch(character -> Character.isLetterOrDigit(character)
+                || character == '_' || character == '-')) {
+            return fallback;
+        }
+        return value;
     }
 }

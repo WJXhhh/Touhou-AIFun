@@ -28,6 +28,7 @@ import net.minecraft.world.level.chunk.ChunkStatus;
 import net.minecraft.world.level.material.FluidState;
 import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
+import net.minecraft.world.phys.shapes.VoxelShape;
 import net.minecraftforge.registries.ForgeRegistries;
 
 import java.util.ArrayList;
@@ -52,6 +53,7 @@ public final class ShallowEnvironmentScanner {
     private static final int MAX_SURFACE_GROUPS = 120;
     private static final int MAX_IMPORTANT_BLOCKS = 96;
     private static final int MAX_ENTITIES = 48;
+    private static final int MAX_ENTITY_CANDIDATES = 512;
     private static final int MAX_DDA_VISITS = 400_000;
     private static final Map<ScanDirection, Vec3[]> CUBEMAP_DIRECTIONS = precomputeCubemapDirections();
 
@@ -133,6 +135,7 @@ public final class ShallowEnvironmentScanner {
         private final List<ScanDirection> faces;
         private final List<SectionWork> sections;
         private final Set<Long> blockEntityCandidates = new HashSet<>();
+        private final List<Long> blockEntityWork;
         private final Set<Long> importantFound = new HashSet<>();
         private int faceIndex;
         private int row;
@@ -141,7 +144,12 @@ public final class ShallowEnvironmentScanner {
         private int sectionLocalX;
         private int sectionLocalY;
         private int sectionLocalZ;
+        private int blockEntityIndex;
+        private List<Entity> entityCandidates = List.of();
+        private int entityIndex;
+        private boolean entitiesPrepared;
         private boolean surfaceDone;
+        private boolean blockEntitiesDone;
         private boolean importantDone;
         private boolean entitiesDone;
         private boolean finished;
@@ -155,7 +163,16 @@ public final class ShallowEnvironmentScanner {
             this.faces = request.mode().includesBlocks() ? faces(request.direction()) : List.of();
             this.surfaceDone = faces.isEmpty();
             this.sections = request.mode().includesBlocks() ? discoverSections() : List.of();
-            this.importantDone = !request.mode().includesBlocks() || sections.isEmpty();
+            this.blockEntityWork = blockEntityCandidates.stream().sorted(Comparator.comparingDouble(packed -> {
+                BlockPos pos = BlockPos.of(packed);
+                double dx = pos.getX() + 0.5 - accumulator.originX;
+                double dy = pos.getY() + 0.5 - accumulator.eye.y;
+                double dz = pos.getZ() + 0.5 - accumulator.originZ;
+                return dx * dx + dy * dy + dz * dz;
+            })).toList();
+            this.blockEntitiesDone = !request.mode().includesBlocks() || blockEntityWork.isEmpty();
+            this.importantDone = !request.mode().includesBlocks()
+                    || blockEntitiesDone && sections.isEmpty();
             this.entitiesDone = !request.mode().includesEntities();
         }
 
@@ -165,30 +182,49 @@ public final class ShallowEnvironmentScanner {
             }
             int rays = 0;
             int startVisits = accumulator.ddaVisits;
-            int safeRayBudget = Math.max(1, rayBudget);
-            int safeDdaBudget = Math.max(1, ddaBudget);
-            int safeSectionBudget = Math.max(1, sectionBudget);
+            int safeRayBudget = Math.max(0, rayBudget);
+            int safeDdaBudget = Math.max(0, ddaBudget);
+            int safeSectionBudget = Math.max(0, sectionBudget);
+            int primaryRayReserve = maxDdaVisitsPerRay(request.maxDistance());
 
-            while (!surfaceDone && rays < safeRayBudget
-                    && accumulator.ddaVisits - startVisits < safeDdaBudget) {
+            while (!surfaceDone && faceIndex < faces.size() && rays < safeRayBudget
+                    && accumulator.ddaVisits - startVisits + primaryRayReserve <= safeDdaBudget) {
                 if (accumulator.ddaVisits >= MAX_DDA_VISITS) {
-                    accumulator.truncated = true;
+                    accumulator.markTruncated("dda_visit_limit");
                     surfaceDone = true;
                     break;
                 }
                 ScanDirection face = faces.get(faceIndex);
-                Vec3 direction = rotateYaw(cubemapDirection(face, row, column), maid.getYRot());
-                trace(level, accumulator, direction, face.name().toLowerCase(Locale.ROOT));
+                Vec3 direction = VisionDirectionMath.rotateYaw(
+                        cubemapDirection(face, row, column), accumulator.originYaw);
+                if (trace(level, accumulator, direction, face.name().toLowerCase(Locale.ROOT))) {
+                    accumulator.surfaceRaysWithHits++;
+                }
                 accumulator.primaryRays++;
                 rays++;
                 advanceRay();
             }
-            if (!surfaceDone && faceIndex >= faces.size()) {
+            if (faceIndex >= faces.size()) {
                 surfaceDone = true;
             }
 
+            while (surfaceDone && !blockEntitiesDone
+                    && accumulator.ddaVisits - startVisits < safeDdaBudget) {
+                if (blockEntityIndex >= blockEntityWork.size()) {
+                    blockEntitiesDone = true;
+                    break;
+                }
+                if (!processBlockEntityCandidate(blockEntityWork.get(blockEntityIndex), startVisits, safeDdaBudget)) {
+                    break;
+                }
+                blockEntityIndex++;
+            }
+            if (blockEntityIndex >= blockEntityWork.size()) {
+                blockEntitiesDone = true;
+            }
+
             int expandedSections = 0;
-            while (surfaceDone && !importantDone && expandedSections < safeSectionBudget
+            while (surfaceDone && blockEntitiesDone && !importantDone && expandedSections < safeSectionBudget
                     && accumulator.ddaVisits - startVisits < safeDdaBudget) {
                 if (sectionIndex >= sections.size()) {
                     importantDone = true;
@@ -208,26 +244,45 @@ public final class ShallowEnvironmentScanner {
                     break;
                 }
             }
-            if (surfaceDone && sectionIndex >= sections.size()) {
+            if (surfaceDone && blockEntitiesDone && sectionIndex >= sections.size()) {
                 importantDone = true;
             }
 
             if (surfaceDone && importantDone && !entitiesDone
                     && accumulator.ddaVisits - startVisits < safeDdaBudget) {
-                scanEntities(level, accumulator);
-                entitiesDone = true;
+                if (!entitiesPrepared) {
+                    prepareEntities();
+                }
+                processEntities(startVisits, safeDdaBudget);
+                entitiesDone = entityIndex >= entityCandidates.size();
             }
             finished = surfaceDone && importantDone && entitiesDone;
             return finished;
         }
 
         void abort() {
-            accumulator.truncated = true;
+            abort("cancelled");
+        }
+
+        void abort(String reason) {
+            accumulator.markTruncated(reason);
             finished = true;
         }
 
         EntityMaid maid() {
             return maid;
+        }
+
+        int primaryRays() {
+            return accumulator.primaryRays;
+        }
+
+        int ddaVisits() {
+            return accumulator.ddaVisits;
+        }
+
+        int expandedSections() {
+            return accumulator.importantSectionKeys.size();
         }
 
         EnvironmentScanResult result() {
@@ -242,8 +297,96 @@ public final class ShallowEnvironmentScanner {
                 if (row >= RAYS_PER_FACE) {
                     row = 0;
                     faceIndex++;
+                    if (faceIndex >= faces.size()) {
+                        surfaceDone = true;
+                    }
                 }
             }
+        }
+
+        /** Query once, then spread the comparatively expensive visibility rays over later ticks. */
+        private void prepareEntities() {
+            entitiesPrepared = true;
+            double radius = request.maxDistance();
+            AABB box = new AABB(accumulator.originX - radius, accumulator.originY - radius,
+                    accumulator.originZ - radius, accumulator.originX + radius,
+                    accumulator.originY + radius, accumulator.originZ + radius);
+            List<Entity> found = level.getEntities(maid, box,
+                    entity -> entity.isAlive() && isVisualEntity(entity));
+            found.removeIf(entity -> frozenDistanceSqr(entity.getBoundingBox().getCenter()) > radius * radius
+                    || request.direction() != ScanDirection.ALL && !matchesDirection(request.direction(),
+                    directionFor(accumulator, entity.getBoundingBox().getCenter())));
+            found.sort(Comparator
+                    .comparingInt((Entity entity) -> entity instanceof Player ? 0 : entity instanceof Enemy ? 1 : 2)
+                    .thenComparingDouble(entity -> frozenDistanceSqr(entity.getBoundingBox().getCenter())));
+            if (found.size() > MAX_ENTITY_CANDIDATES) {
+                for (int index = MAX_ENTITY_CANDIDATES; index < found.size(); index++) {
+                    accumulator.omitEntity(found.get(index));
+                }
+                accumulator.markTruncated("entity_candidate_limit");
+                found = new ArrayList<>(found.subList(0, MAX_ENTITY_CANDIDATES));
+            }
+            entityCandidates = found;
+        }
+
+        private void processEntities(int startVisits, int ddaBudget) {
+            // A normalized DDA ray can cross sqrt(3) voxels per travelled block. Reserving the
+            // worst case for all three samples prevents one entity from blowing past this tick's
+            // global DDA allowance.
+            int maxVisitsPerRay = maxDdaVisitsPerRay(request.maxDistance() + 2);
+            int reservePerEntity = 3 * maxVisitsPerRay;
+            while (entityIndex < entityCandidates.size()) {
+                int remaining = ddaBudget - (accumulator.ddaVisits - startVisits);
+                if (remaining < reservePerEntity) {
+                    return;
+                }
+                Entity entity = entityCandidates.get(entityIndex++);
+                if (!entity.isAlive()) {
+                    continue;
+                }
+                Vec3 center = entity.getBoundingBox().getCenter();
+                double dx = center.x - accumulator.originX;
+                double dy = center.y - accumulator.originY;
+                double dz = center.z - accumulator.originZ;
+                double radius = request.maxDistance();
+                if (dx * dx + dy * dy + dz * dz > radius * radius) {
+                    continue;
+                }
+                Visibility visibility = entityVisibility(level, accumulator.eye, entity, accumulator);
+                accumulator.addEntity(entity, center, visibility);
+            }
+        }
+
+        private double frozenDistanceSqr(Vec3 point) {
+            double dx = point.x - accumulator.originX;
+            double dy = point.y - accumulator.originY;
+            double dz = point.z - accumulator.originZ;
+            return dx * dx + dy * dy + dz * dz;
+        }
+
+        /** Block entities already have an indexed position list; never enumerate their section. */
+        private boolean processBlockEntityCandidate(long packed, int startVisits, int ddaBudget) {
+            BlockPos pos = BlockPos.of(packed);
+            if (!level.hasChunkAt(pos) || importantFound.contains(packed)) {
+                return true;
+            }
+            int visibilityReserve = 7 * maxDdaVisitsPerRay(request.maxDistance() + 2);
+            if (accumulator.ddaVisits - startVisits + visibilityReserve > ddaBudget) {
+                return false;
+            }
+            importantFound.add(packed);
+            BlockState state = level.getBlockState(pos);
+            Visibility visibility = blockVisibility(level, accumulator.eye, pos, accumulator);
+            if (!visibility.visible) {
+                return true;
+            }
+            String direction = directionFor(accumulator, center(pos));
+            if (!matchesDirection(request.direction(), direction)) {
+                return true;
+            }
+            accumulator.addImportant(state, pos, accumulator.eye.distanceTo(center(pos)),
+                    direction, level.getBlockEntity(pos));
+            return true;
         }
 
         /** Process one section's local palette without asking the level to load anything. */
@@ -255,21 +398,12 @@ public final class ShallowEnvironmentScanner {
                 int worldX = (work.chunkX << 4) + sectionLocalX;
                 int worldY = (work.sectionY << 4) + sectionLocalY;
                 int worldZ = (work.chunkZ << 4) + sectionLocalZ;
-                BlockPos pos = new BlockPos(worldX, worldY, worldZ);
-                sectionLocalZ++;
-                if (sectionLocalZ >= 16) {
-                    sectionLocalZ = 0;
-                    sectionLocalY++;
-                    if (sectionLocalY >= 16) {
-                        sectionLocalY = 0;
-                        sectionLocalX++;
-                    }
-                }
                 int dx = worldX - accumulator.maidPos.getX();
                 int dy = worldY - accumulator.maidPos.getY();
                 int dz = worldZ - accumulator.maidPos.getZ();
                 int radius = request.maxDistance();
                 if (dx * dx + dy * dy + dz * dz > radius * radius) {
+                    advanceSectionPosition();
                     continue;
                 }
                 // Read the palette state using local coordinates; no world chunk lookup occurs in
@@ -278,28 +412,54 @@ public final class ShallowEnvironmentScanner {
                 int localY = Math.floorMod(worldY, 16);
                 int localZ = Math.floorMod(worldZ, 16);
                 BlockState state = work.section.getBlockState(localX, localY, localZ);
-                long packed = pos.asLong();
-                if (!potentialImportant(state) && !blockEntityCandidates.contains(packed)) {
+                long packed = BlockPos.asLong(worldX, worldY, worldZ);
+                if (!potentialImportant(state)) {
+                    advanceSectionPosition();
                     continue;
                 }
                 if (!importantFound.add(packed)) {
+                    advanceSectionPosition();
                     continue;
                 }
-                if (!isImportant(level, pos, state, blockEntityCandidates.contains(packed))) {
+                BlockPos pos = BlockPos.of(packed);
+                if (!isImportant(level, pos, state, false)) {
+                    advanceSectionPosition();
                     continue;
+                }
+                int visibilityReserve = 7 * maxDdaVisitsPerRay(request.maxDistance() + 2);
+                if (accumulator.ddaVisits - startVisits + visibilityReserve > ddaBudget) {
+                    // Do not consume the cursor until this candidate has enough allowance. Also
+                    // undo the de-dup insertion so it remains eligible on the next tick.
+                    importantFound.remove(packed);
+                    return false;
                 }
                 Visibility visibility = blockVisibility(level, accumulator.eye, pos, accumulator);
                 if (!visibility.visible) {
+                    advanceSectionPosition();
                     continue;
                 }
                 String direction = directionFor(accumulator, center(pos));
                 if (!matchesDirection(request.direction(), direction)) {
+                    advanceSectionPosition();
                     continue;
                 }
                 accumulator.addImportant(state, pos, accumulator.eye.distanceTo(center(pos)),
                         direction, level.getBlockEntity(pos));
+                advanceSectionPosition();
             }
             return true;
+        }
+
+        private void advanceSectionPosition() {
+            sectionLocalZ++;
+            if (sectionLocalZ >= 16) {
+                sectionLocalZ = 0;
+                sectionLocalY++;
+                if (sectionLocalY >= 16) {
+                    sectionLocalY = 0;
+                    sectionLocalX++;
+                }
+            }
         }
 
         private List<SectionWork> discoverSections() {
@@ -311,8 +471,6 @@ public final class ShallowEnvironmentScanner {
             int maxChunkZ = Math.floorDiv(accumulator.maidPos.getZ() + radius, 16);
             for (int chunkX = minChunkX; chunkX <= maxChunkX; chunkX++) {
                 for (int chunkZ = minChunkZ; chunkZ <= maxChunkZ; chunkZ++) {
-                    final int currentChunkX = chunkX;
-                    final int currentChunkZ = chunkZ;
                     BlockPos probe = new BlockPos(chunkX << 4, accumulator.maidPos.getY(), chunkZ << 4);
                     if (!level.hasChunkAt(probe)) {
                         continue;
@@ -338,21 +496,16 @@ public final class ShallowEnvironmentScanner {
                                 || sectionMinY + 15 < accumulator.maidPos.getY() - radius) {
                             continue;
                         }
-                        boolean hasBlockEntity = blockEntityCandidates.stream().anyMatch(packed -> {
-                            BlockPos pos = BlockPos.of(packed);
-                            return pos.getX() >> 4 == currentChunkX && pos.getZ() >> 4 == currentChunkZ
-                                    && pos.getY() >> 4 == sectionY;
-                        });
-                        if (hasBlockEntity || section.maybeHas(ShallowEnvironmentScanner::potentialImportant)) {
+                        if (section.maybeHas(ShallowEnvironmentScanner::potentialImportant)) {
                             discovered.add(new SectionWork(chunkX, sectionY, chunkZ, section));
                         }
                     }
                 }
             }
             discovered.sort(Comparator.comparingDouble(work -> {
-                double x = (work.chunkX * 16 + 8) - accumulator.maid.getX();
+                double x = (work.chunkX * 16 + 8) - accumulator.originX;
                 double y = (work.sectionY * 16 + 8) - accumulator.eye.y;
-                double z = (work.chunkZ * 16 + 8) - accumulator.maid.getZ();
+                double z = (work.chunkZ * 16 + 8) - accumulator.originZ;
                 return x * x + y * y + z * z;
             }));
             return discovered;
@@ -397,11 +550,14 @@ public final class ShallowEnvironmentScanner {
             for (int row = 0; row < RAYS_PER_FACE; row++) {
                 for (int column = 0; column < RAYS_PER_FACE; column++) {
                     if (accumulator.ddaVisits >= MAX_DDA_VISITS) {
-                        accumulator.truncated = true;
+                        accumulator.markTruncated("dda_visit_limit");
                         return;
                     }
-                    Vec3 direction = rotateYaw(cubemapDirection(face, row, column), accumulator.maid.getYRot());
-                    trace(level, accumulator, direction, face.name().toLowerCase(Locale.ROOT));
+                    Vec3 direction = VisionDirectionMath.rotateYaw(
+                            cubemapDirection(face, row, column), accumulator.originYaw);
+                    if (trace(level, accumulator, direction, face.name().toLowerCase(Locale.ROOT))) {
+                        accumulator.surfaceRaysWithHits++;
+                    }
                     accumulator.primaryRays++;
                 }
             }
@@ -427,7 +583,8 @@ public final class ShallowEnvironmentScanner {
             Vec3[] directions = new Vec3[RAYS_PER_FACE * RAYS_PER_FACE];
             for (int row = 0; row < RAYS_PER_FACE; row++) {
                 for (int column = 0; column < RAYS_PER_FACE; column++) {
-                    directions[row * RAYS_PER_FACE + column] = rawCubemapDirection(face, row, column);
+                    directions[row * RAYS_PER_FACE + column] = VisionDirectionMath.rawCubemapDirection(
+                            face, row, column, RAYS_PER_FACE);
                 }
             }
             values.put(face, directions);
@@ -435,29 +592,7 @@ public final class ShallowEnvironmentScanner {
         return Map.copyOf(values);
     }
 
-    private static Vec3 rawCubemapDirection(ScanDirection face, int row, int column) {
-        double u = ((column + 0.5) / RAYS_PER_FACE) * 2.0 - 1.0;
-        double v = ((row + 0.5) / RAYS_PER_FACE) * 2.0 - 1.0;
-        Vec3 direction = switch (face) {
-            case FRONT -> new Vec3(u, -v, 1);
-            case RIGHT -> new Vec3(1, -v, -u);
-            case BACK -> new Vec3(-u, -v, -1);
-            case LEFT -> new Vec3(-1, -v, u);
-            case UP -> new Vec3(u, 1, v);
-            case DOWN -> new Vec3(u, -1, -v);
-            case ALL -> new Vec3(0, 0, 1);
-        };
-        return direction.normalize();
-    }
-
-    private static Vec3 rotateYaw(Vec3 local, float yawDegrees) {
-        double yaw = Math.toRadians(yawDegrees);
-        double cos = Math.cos(yaw);
-        double sin = Math.sin(yaw);
-        return new Vec3(cos * local.x - sin * local.z, local.y, sin * local.x + cos * local.z);
-    }
-
-    private static void trace(Level level, ScanAccumulator accumulator, Vec3 direction, String face) {
+    private static boolean trace(Level level, ScanAccumulator accumulator, Vec3 direction, String face) {
         double x = accumulator.eye.x;
         double y = accumulator.eye.y;
         double z = accumulator.eye.z;
@@ -474,47 +609,52 @@ public final class ShallowEnvironmentScanner {
         double tMaxY = direction.y > 0 ? (blockY + 1 - y) * tDeltaY : (y - blockY) * tDeltaY;
         double tMaxZ = direction.z > 0 ? (blockZ + 1 - z) * tDeltaZ : (z - blockZ) * tDeltaZ;
         int budget = VISIBILITY_BUDGET;
+        boolean hit = false;
         BlockPos.MutableBlockPos mutable = new BlockPos.MutableBlockPos(blockX, blockY, blockZ);
-        Set<Long> visited = new HashSet<>();
-
         while (Math.min(tMaxX, Math.min(tMaxY, tMaxZ)) <= accumulator.request.maxDistance()) {
-            if (tMaxX < tMaxY && tMaxX < tMaxZ) {
+            double entryDistance = Math.min(tMaxX, Math.min(tMaxY, tMaxZ));
+            if (tMaxX == entryDistance) {
                 blockX += stepX;
                 tMaxX += tDeltaX;
-            } else if (tMaxY < tMaxZ) {
+            }
+            if (tMaxY == entryDistance) {
                 blockY += stepY;
                 tMaxY += tDeltaY;
-            } else {
+            }
+            if (tMaxZ == entryDistance) {
                 blockZ += stepZ;
                 tMaxZ += tDeltaZ;
             }
             accumulator.ddaVisits++;
             mutable.set(blockX, blockY, blockZ);
             if (!level.hasChunkAt(mutable)) {
-                // Loaded chunks are not a requirement for a visual probe. Treat the boundary as empty.
-                continue;
+                // Unknown world data is not transparent. Stop without loading a chunk or claiming
+                // that something behind the unloaded boundary is visible.
+                return hit;
             }
             BlockState state = level.getBlockState(mutable);
             OpacityClass opacity = accumulator.classify(level, state, mutable);
             if (opacity == null) {
                 continue;
             }
-            long packed = mutable.asLong();
-            double distance = Math.min(tMaxX, Math.min(tMaxY, tMaxZ));
-            if (visited.add(packed)) {
-                accumulator.addSurface(state, mutable, distance, face, opacity,
-                        Math.max(0, budget - opacity.cost()));
-            }
+            hit = true;
+            accumulator.addSurface(state, mutable, entryDistance, face, opacity,
+                    Math.max(0, budget - opacity.cost()));
             budget -= opacity.cost();
             if (budget <= 0 || opacity == OpacityClass.OPAQUE) {
-                return;
+                return true;
             }
         }
+        return hit;
     }
 
     private static int floor(double value) {
         int integer = (int) value;
         return value < integer ? integer - 1 : integer;
+    }
+
+    private static int maxDdaVisitsPerRay(int distance) {
+        return (int) Math.ceil(Math.sqrt(3.0) * distance) + 3;
     }
 
     private static void scanImportant(Level level, ScanAccumulator accumulator) {
@@ -593,35 +733,9 @@ public final class ShallowEnvironmentScanner {
                 center.add(0, 0, 0.48), center.add(0, 0, -0.48));
         int visible = 0;
         for (Vec3 point : points) {
-            if (visibility(level, eye, point, accumulator).visible) visible++;
+            if (visibility(level, eye, point, pos.asLong(), accumulator).visible) visible++;
         }
         return new Visibility(visible > 0, visible == points.size(), visible);
-    }
-
-    private static void scanEntities(Level level, ScanAccumulator accumulator) {
-        double radius = accumulator.request.maxDistance();
-        AABB box = accumulator.maid.getBoundingBox().inflate(radius);
-        List<Entity> entities = level.getEntities(accumulator.maid, box,
-                entity -> entity.isAlive() && isVisualEntity(entity));
-        entities.removeIf(entity -> accumulator.maid.distanceToSqr(entity) > radius * radius);
-        entities.sort(Comparator.comparingInt((Entity entity) -> entity instanceof Player ? 0 : entity instanceof Enemy ? 1 : 2)
-                .thenComparingDouble(entity -> accumulator.maid.distanceToSqr(entity)));
-
-        for (Entity entity : entities) {
-            Vec3 origin = entity.getBoundingBox().getCenter();
-            if (accumulator.request.direction() != ScanDirection.ALL
-                    && !matchesDirection(accumulator.request.direction(), directionFor(accumulator, origin))) {
-                continue;
-            }
-            if (accumulator.entities.size() >= MAX_ENTITIES) {
-                accumulator.omittedEntities++;
-                String direction = directionFor(accumulator, origin);
-                accumulator.omittedEntityGroups.merge(entityCategory(entity) + "|" + direction, 1, Integer::sum);
-                continue;
-            }
-            Visibility visibility = entityVisibility(level, accumulator.eye, entity, accumulator);
-            accumulator.addEntity(entity, origin, visibility);
-        }
     }
 
     private static boolean isVisualEntity(Entity entity) {
@@ -645,7 +759,7 @@ public final class ShallowEnvironmentScanner {
                 new Vec3(entity.getX(), entity.getBoundingBox().maxY, entity.getZ()));
         int visible = 0;
         for (Vec3 point : points) {
-            Visibility value = visibility(level, eye, point, accumulator);
+            Visibility value = visibility(level, eye, point, Long.MIN_VALUE, accumulator);
             if (value.visible) {
                 visible++;
             }
@@ -653,7 +767,8 @@ public final class ShallowEnvironmentScanner {
         return new Visibility(visible > 0, visible == points.size(), visible);
     }
 
-    private static Visibility visibility(Level level, Vec3 eye, Vec3 target, ScanAccumulator accumulator) {
+    private static Visibility visibility(Level level, Vec3 eye, Vec3 target, long targetBlock,
+                                         ScanAccumulator accumulator) {
         // Clip is the authoritative fast path for opaque shapes. The explicit weighted walk below
         // handles leaves/glass/fluids so that visual and entity scans agree about partial cover.
         Vec3 delta = target.subtract(eye);
@@ -677,23 +792,37 @@ public final class ShallowEnvironmentScanner {
         BlockPos.MutableBlockPos mutable = new BlockPos.MutableBlockPos(blockX, blockY, blockZ);
         int budget = VISIBILITY_BUDGET;
         while (Math.min(tMaxX, Math.min(tMaxY, tMaxZ)) < length) {
-            if (tMaxX < tMaxY && tMaxX < tMaxZ) {
+            double entryDistance = Math.min(tMaxX, Math.min(tMaxY, tMaxZ));
+            if (tMaxX == entryDistance) {
                 blockX += stepX;
                 tMaxX += tDeltaX;
-            } else if (tMaxY < tMaxZ) {
+            }
+            if (tMaxY == entryDistance) {
                 blockY += stepY;
                 tMaxY += tDeltaY;
-            } else {
+            }
+            if (tMaxZ == entryDistance) {
                 blockZ += stepZ;
                 tMaxZ += tDeltaZ;
             }
             accumulator.ddaVisits++;
             mutable.set(blockX, blockY, blockZ);
+            // Visibility is measured up to the target surface. The target block must never
+            // consume its own opacity budget (opaque chests/ores used to hide themselves here).
+            if (targetBlock != Long.MIN_VALUE && mutable.asLong() == targetBlock) {
+                return new Visibility(true, true, 1);
+            }
             if (!level.hasChunkAt(mutable)) {
+                return new Visibility(false, false, 0);
+            }
+            BlockState state = level.getBlockState(mutable);
+            OpacityClass opacity = accumulator.classify(level, state, mutable);
+            if (opacity == null) {
                 continue;
             }
-            OpacityClass opacity = accumulator.classify(level, level.getBlockState(mutable), mutable);
-            if (opacity == null) {
+            if (!visibilityShapeIntersects(state, level, mutable, eye, target)) {
+                // Important/entity visibility uses the actual outline. Empty space inside stairs,
+                // fences and open doors must not behave like a completely filled opaque voxel.
                 continue;
             }
             budget -= opacity.cost();
@@ -704,20 +833,16 @@ public final class ShallowEnvironmentScanner {
         return new Visibility(true, true, 1);
     }
 
+    private static boolean visibilityShapeIntersects(BlockState state, Level level, BlockPos pos,
+                                                     Vec3 start, Vec3 end) {
+        if (!state.getFluidState().isEmpty()) return true;
+        VoxelShape shape = state.getShape(level, pos);
+        return shape.isEmpty() || shape.clip(start, end, pos) != null;
+    }
+
     private static String directionFor(ScanAccumulator accumulator, Vec3 point) {
-        double dx = point.x - accumulator.maid.getX();
-        double dy = point.y - accumulator.eye.y;
-        double dz = point.z - accumulator.maid.getZ();
-        double yaw = Math.toRadians(accumulator.maid.getYRot());
-        double front = -Math.sin(yaw) * dx + Math.cos(yaw) * dz;
-        double right = Math.cos(yaw) * dx + Math.sin(yaw) * dz;
-        if (Math.abs(dy) > Math.max(Math.abs(front), Math.abs(right)) * 0.7) {
-            return dy > 0 ? "up" : "down";
-        }
-        if (Math.abs(front) >= Math.abs(right)) {
-            return front >= 0 ? "front" : "back";
-        }
-        return right >= 0 ? "right" : "left";
+        return VisionDirectionMath.relativeDirection(accumulator.originX, accumulator.eye.y,
+                accumulator.originZ, accumulator.originYaw, point);
     }
 
     private static boolean matchesDirection(ScanDirection requested, String direction) {
@@ -732,25 +857,60 @@ public final class ShallowEnvironmentScanner {
         private final EnvironmentScanRequest request;
         private final Vec3 eye;
         private final BlockPos maidPos;
+        private final double originX;
+        private final double originY;
+        private final double originZ;
+        private final float originYaw;
+        private final long originTick;
         private final Map<String, SurfaceAggregate> surfaceMap = new LinkedHashMap<>();
+        private final Set<String> omittedSurfaceKeys = new HashSet<>();
+        private final Map<String, Integer> surfaceDirectionSamples = new LinkedHashMap<>();
         private final Map<BlockState, OpacityClass> opacityByState = new HashMap<>();
         private final List<ImportantBlockHit> importantBlocks = new ArrayList<>();
         private final List<ScannedEntity> entities = new ArrayList<>();
         private final Set<Long> importantSectionKeys = new HashSet<>();
         private int primaryRays;
+        private int surfaceRaysWithHits;
+        private int surfaceHitSamples;
         private int ddaVisits;
         private int importantSections;
         private int omittedSurfaceGroups;
         private int omittedImportantBlocks;
         private int omittedEntities;
         private final Map<String, Integer> omittedEntityGroups = new LinkedHashMap<>();
+        private final Map<String, Integer> importantDirectionCounts = new LinkedHashMap<>();
+        private final Map<String, Integer> entityDirectionCounts = new LinkedHashMap<>();
         private boolean truncated;
+        private final Set<String> truncationReasons = new java.util.LinkedHashSet<>();
+        private int minSurfaceDx = Integer.MAX_VALUE;
+        private int minSurfaceDy = Integer.MAX_VALUE;
+        private int minSurfaceDz = Integer.MAX_VALUE;
+        private int maxSurfaceDx = Integer.MIN_VALUE;
+        private int maxSurfaceDy = Integer.MIN_VALUE;
+        private int maxSurfaceDz = Integer.MIN_VALUE;
+        private int minImportantDx = Integer.MAX_VALUE;
+        private int minImportantDy = Integer.MAX_VALUE;
+        private int minImportantDz = Integer.MAX_VALUE;
+        private int maxImportantDx = Integer.MIN_VALUE;
+        private int maxImportantDy = Integer.MIN_VALUE;
+        private int maxImportantDz = Integer.MIN_VALUE;
+        private double minEntityDx = Double.POSITIVE_INFINITY;
+        private double minEntityDy = Double.POSITIVE_INFINITY;
+        private double minEntityDz = Double.POSITIVE_INFINITY;
+        private double maxEntityDx = Double.NEGATIVE_INFINITY;
+        private double maxEntityDy = Double.NEGATIVE_INFINITY;
+        private double maxEntityDz = Double.NEGATIVE_INFINITY;
 
         private ScanAccumulator(EntityMaid maid, EnvironmentScanRequest request, Vec3 eye, BlockPos maidPos) {
             this.maid = maid;
             this.request = request;
             this.eye = eye;
             this.maidPos = maidPos;
+            this.originX = maid.getX();
+            this.originY = maid.getY();
+            this.originZ = maid.getZ();
+            this.originYaw = maid.getYRot();
+            this.originTick = maid.level().getGameTime();
         }
 
         private OpacityClass classify(Level level, BlockState state, BlockPos pos) {
@@ -772,12 +932,25 @@ public final class ShallowEnvironmentScanner {
             if (!matchesDirection(request.direction(), direction)) {
                 return;
             }
-            String key = id + "|" + direction + "|" + Math.min(20, (int) distance / 4);
+            int dx = pos.getX() - maidPos.getX();
+            int dy = pos.getY() - maidPos.getY();
+            int dz = pos.getZ() - maidPos.getZ();
+            surfaceHitSamples++;
+            surfaceDirectionSamples.merge(direction, 1, Integer::sum);
+            minSurfaceDx = Math.min(minSurfaceDx, dx);
+            minSurfaceDy = Math.min(minSurfaceDy, dy);
+            minSurfaceDz = Math.min(minSurfaceDz, dz);
+            maxSurfaceDx = Math.max(maxSurfaceDx, dx);
+            maxSurfaceDy = Math.max(maxSurfaceDy, dy);
+            maxSurfaceDz = Math.max(maxSurfaceDz, dz);
+            String key = id + "|" + direction + "|" + opacity + "|" + Math.min(20, (int) distance / 4);
             SurfaceAggregate aggregate = surfaceMap.get(key);
             if (aggregate == null) {
                 if (surfaceMap.size() >= MAX_SURFACE_GROUPS) {
-                    omittedSurfaceGroups++;
-                    truncated = true;
+                    if (omittedSurfaceKeys.add(key)) {
+                        omittedSurfaceGroups++;
+                    }
+                    markTruncated("surface_group_limit");
                     return;
                 }
                 aggregate = new SurfaceAggregate(id.toString(), direction, opacity);
@@ -787,21 +960,30 @@ public final class ShallowEnvironmentScanner {
             aggregate.nearest = Math.min(aggregate.nearest, distance);
             aggregate.farthest = Math.max(aggregate.farthest, distance);
             if (aggregate.representatives.size() < 3) {
-                aggregate.representatives.add(new SurfaceBlockHit(id.toString(),
-                        pos.getX() - maidPos.getX(), pos.getY() - maidPos.getY(), pos.getZ() - maidPos.getZ(),
-                        distance, direction, opacity, remainingBudget, 1, distance));
+                aggregate.representatives.add(new SurfaceBlockHit.Representative(
+                        dx, dy, dz, distance, remainingBudget));
             }
         }
 
         private void addImportant(BlockState state, BlockPos pos, double distance, String direction,
                                   net.minecraft.world.level.block.entity.BlockEntity blockEntity) {
-            if (importantBlocks.size() >= MAX_IMPORTANT_BLOCKS) {
-                omittedImportantBlocks++;
-                truncated = true;
-                return;
-            }
             ResourceLocation id = ForgeRegistries.BLOCKS.getKey(state.getBlock());
             if (id == null) {
+                return;
+            }
+            int dx = pos.getX() - maidPos.getX();
+            int dy = pos.getY() - maidPos.getY();
+            int dz = pos.getZ() - maidPos.getZ();
+            importantDirectionCounts.merge(direction, 1, Integer::sum);
+            minImportantDx = Math.min(minImportantDx, dx);
+            minImportantDy = Math.min(minImportantDy, dy);
+            minImportantDz = Math.min(minImportantDz, dz);
+            maxImportantDx = Math.max(maxImportantDx, dx);
+            maxImportantDy = Math.max(maxImportantDy, dy);
+            maxImportantDz = Math.max(maxImportantDz, dz);
+            if (importantBlocks.size() >= MAX_IMPORTANT_BLOCKS) {
+                omittedImportantBlocks++;
+                markTruncated("important_block_limit");
                 return;
             }
             Map<String, String> properties = new LinkedHashMap<>();
@@ -812,8 +994,7 @@ public final class ShallowEnvironmentScanner {
             if (blockEntity != null && ForgeRegistries.BLOCK_ENTITY_TYPES.getKey(blockEntity.getType()) != null) {
                 blockEntityType = ForgeRegistries.BLOCK_ENTITY_TYPES.getKey(blockEntity.getType()).toString();
             }
-            importantBlocks.add(new ImportantBlockHit(id.toString(), pos.getX() - maidPos.getX(),
-                    pos.getY() - maidPos.getY(), pos.getZ() - maidPos.getZ(), distance, direction,
+            importantBlocks.add(new ImportantBlockHit(id.toString(), dx, dy, dz, distance, direction,
                     properties, blockEntityType));
         }
 
@@ -850,51 +1031,109 @@ public final class ShallowEnvironmentScanner {
                 itemId = itemKey == null ? "" : itemKey.toString();
                 itemCount = item.getItem().getCount();
             }
-            double dx = center.x - maid.getX();
+            double dx = center.x - originX;
             double dy = center.y - eye.y;
-            double dz = center.z - maid.getZ();
+            double dz = center.z - originZ;
             double distance = Math.sqrt(dx * dx + dy * dy + dz * dz);
             String elevation = Math.abs(dy) < 1.0 ? "level" : dy > 0 ? "above" : "below";
             String visibilityName = visibility.fullyVisible ? "visible" : visibility.visible ? "partial" : "occluded";
             if (!visibility.visible && request.mode() != ScanMode.ENTITIES) {
                 return;
             }
+            recordEntityExtent(category, directionFor(this, center), dx, dy, dz);
             entities.add(new ScannedEntity(id.toString(), entity.getId(), customName, category, dx, dy, dz,
                     distance, directionFor(this, center), elevation, visibilityName, health, maxHealth, pose,
                     List.copyOf(states), itemId, itemCount));
         }
 
+        private void omitEntity(Entity entity) {
+            Vec3 center = entity.getBoundingBox().getCenter();
+            double dx = center.x - originX;
+            double dy = center.y - eye.y;
+            double dz = center.z - originZ;
+            String direction = directionFor(this, center);
+            recordEntityExtent(entityCategory(entity), direction, dx, dy, dz);
+            omittedEntities++;
+            omittedEntityGroups.merge(entityCategory(entity) + "|" + direction, 1, Integer::sum);
+        }
+
+        private void omitEntity(ScannedEntity entity) {
+            omittedEntities++;
+            omittedEntityGroups.merge(entity.category() + "|" + entity.direction(), 1, Integer::sum);
+        }
+
+        private void recordEntityExtent(String category, String direction, double dx, double dy, double dz) {
+            entityDirectionCounts.merge(direction, 1, Integer::sum);
+            minEntityDx = Math.min(minEntityDx, dx);
+            minEntityDy = Math.min(minEntityDy, dy);
+            minEntityDz = Math.min(minEntityDz, dz);
+            maxEntityDx = Math.max(maxEntityDx, dx);
+            maxEntityDy = Math.max(maxEntityDy, dy);
+            maxEntityDz = Math.max(maxEntityDz, dz);
+        }
+
         private EnvironmentScanResult finish(String dimension) {
             List<SurfaceBlockHit> surfaces = new ArrayList<>();
             for (SurfaceAggregate aggregate : surfaceMap.values()) {
-                for (SurfaceBlockHit representative : aggregate.representatives) {
-                    surfaces.add(new SurfaceBlockHit(representative.registryId(), representative.dx(), representative.dy(),
-                            representative.dz(), representative.distance(), representative.direction(), representative.opacity(),
-                            representative.remainingBudget(), aggregate.count, aggregate.farthest));
-                }
+                surfaces.add(new SurfaceBlockHit(aggregate.id, aggregate.direction, aggregate.opacity,
+                        aggregate.count, aggregate.nearest, aggregate.farthest, aggregate.representatives));
             }
             String focus = request.focus().toLowerCase(Locale.ROOT);
             Comparator<String> focusFirst = (left, right) -> {
-                boolean leftMatch = !focus.isBlank() && left.toLowerCase(Locale.ROOT).contains(focus);
-                boolean rightMatch = !focus.isBlank() && right.toLowerCase(Locale.ROOT).contains(focus);
+                boolean leftMatch = VisionFocusMatcher.matches(focus, left);
+                boolean rightMatch = VisionFocusMatcher.matches(focus, right);
                 return Boolean.compare(rightMatch, leftMatch);
             };
             surfaces.sort(Comparator.comparing(SurfaceBlockHit::registryId, focusFirst)
-                    .thenComparingDouble(SurfaceBlockHit::distance));
+                    .thenComparingDouble(SurfaceBlockHit::nearestDistance));
             importantBlocks.sort(Comparator.comparing(ImportantBlockHit::registryId, focusFirst)
                     .thenComparingDouble(ImportantBlockHit::distance));
             entities.sort(Comparator.comparing(ScannedEntity::registryId, focusFirst)
                     .thenComparingInt(entity -> entityPriority(entity.category(), entity.visibility()))
                     .thenComparingDouble(ScannedEntity::distance));
-            return new EnvironmentScanResult(maid.level().getGameTime(), dimension, request, primaryRays,
+            if (entities.size() > MAX_ENTITIES) {
+                for (int index = MAX_ENTITIES; index < entities.size(); index++) {
+                    omitEntity(entities.get(index));
+                }
+                entities.subList(MAX_ENTITIES, entities.size()).clear();
+                markTruncated("entity_detail_limit");
+            }
+            return new EnvironmentScanResult(originTick, dimension, request, primaryRays,
                     ddaVisits, importantSectionKeys.size(), surfaces, importantBlocks, entities, omittedSurfaceGroups,
-                    omittedImportantBlocks, omittedEntities, omittedEntityGroups, truncated);
+                    omittedImportantBlocks, omittedEntities, omittedEntityGroups, surfaceHitSamples,
+                    surfaceRaysWithHits, surfaceDirectionSamples, surfaceBounds(), importantDirectionCounts,
+                    importantBounds(), entityDirectionCounts, entityBounds(), truncated,
+                    List.copyOf(truncationReasons));
+        }
+
+        private void markTruncated(String reason) {
+            truncated = true;
+            if (reason != null && !reason.isBlank()) truncationReasons.add(reason);
+        }
+
+        private int[] surfaceBounds() {
+            return surfaceHitSamples == 0 ? new int[0] : new int[]{minSurfaceDx, minSurfaceDy, minSurfaceDz,
+                    maxSurfaceDx, maxSurfaceDy, maxSurfaceDz};
+        }
+
+        private int[] importantBounds() {
+            return importantDirectionCounts.isEmpty() ? new int[0] : new int[]{minImportantDx, minImportantDy,
+                    minImportantDz, maxImportantDx, maxImportantDy, maxImportantDz};
+        }
+
+        private double[] entityBounds() {
+            return entityDirectionCounts.isEmpty() ? new double[0] : new double[]{minEntityDx, minEntityDy,
+                    minEntityDz, maxEntityDx, maxEntityDy, maxEntityDz};
         }
 
         private static long sectionKey(BlockPos pos) {
-            long x = ((long) (pos.getX() >> 4)) & 0x3ffffffL;
-            long z = ((long) (pos.getZ() >> 4)) & 0x3ffffffL;
-            long y = ((long) (pos.getY() >> 4)) & 0xfffL;
+            return sectionKey(pos.getX() >> 4, pos.getY() >> 4, pos.getZ() >> 4);
+        }
+
+        private static long sectionKey(int sectionX, int sectionY, int sectionZ) {
+            long x = ((long) sectionX) & 0x3ffffffL;
+            long z = ((long) sectionZ) & 0x3ffffffL;
+            long y = ((long) sectionY) & 0xfffL;
             return x | (z << 26) | (y << 52);
         }
 
@@ -915,7 +1154,7 @@ public final class ShallowEnvironmentScanner {
         private final String id;
         private final String direction;
         private final OpacityClass opacity;
-        private final List<SurfaceBlockHit> representatives = new ArrayList<>();
+        private final List<SurfaceBlockHit.Representative> representatives = new ArrayList<>();
         private int count;
         private double nearest = Double.MAX_VALUE;
         private double farthest;

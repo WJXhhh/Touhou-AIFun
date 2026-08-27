@@ -95,26 +95,51 @@ Write-Host "SSE event types seen: $($sseTypes.Keys -join ', ')"
 Write-Host "streamed text chars: $textLen (应 > 0，且应包含 content_block_start/delta/stop、message_start/stop)"
 Write-Host ""
 
-Write-Host "== 4) Tool-use round trip (request ENDS with tool_result, like the agent loop after a tool call) =="
-$body4 = @{
+Write-Host "== 4) Tool-use round trip (preserve provider thinking like the mod client) =="
+$timeTool = @{ name = "get_time"; description = "Get the current time"; input_schema = @{ type = "object"; properties = @{} } }
+$toolStartBody = @{
     model      = $Model
-    max_tokens = 256
+    max_tokens = 512
     messages   = @(
-        @{ role = "user"; content = @(@{ type = "text"; text = "现在几点了？请使用 get_time 工具" }) },
-        @{ role = "assistant"; content = @(@{ type = "tool_use"; id = "call_01"; name = "get_time"; input = @{} }) },
-        @{ role = "user"; content = @(@{ type = "tool_result"; tool_use_id = "call_01"; content = "现在是 14:30" }) }
+        @{ role = "user"; content = @(@{ type = "text"; text = "现在几点了？请立即使用 get_time 工具，不要猜测" }) }
     )
-    tools      = @(
-        @{ name = "get_time"; description = "Get the current time"; input_schema = @{ type = "object"; properties = @{} } }
-    )
+    tools      = @($timeTool)
 } | ConvertTo-Json -Depth 10
 try {
-    $resp4 = Invoke-RestMethod -Uri $endpoint -Method Post -Headers $headers -Body $body4 -TimeoutSec 30
-    $resp4.content | ForEach-Object { Write-Host "[$($_.type)] $($_.text)" }
+    $toolStart = Invoke-RestMethod -Uri $endpoint -Method Post -Headers $headers -Body $toolStartBody -TimeoutSec 30
+    $thinking = $toolStart.content | Where-Object { $_.type -eq "thinking" } | Select-Object -First 1
+    $toolUse = $toolStart.content | Where-Object { $_.type -eq "tool_use" } | Select-Object -First 1
+    if ($null -eq $toolUse) { throw "Provider did not return tool_use" }
+
+    # Match AnthropicCompatLLMClient: preserve thinking text and rebuild tool_use. DeepSeek currently
+    # accepts this without the optional signature field; the real callback stores the thinking in
+    # ReasoningContentCodec across the base-mod agent loop.
+    $assistantBlocks = @()
+    if ($null -ne $thinking) {
+        $assistantBlocks += @{ type = "thinking"; thinking = [string]$thinking.thinking }
+    }
+    $assistantBlocks += @{
+        type = "tool_use"; id = [string]$toolUse.id; name = [string]$toolUse.name; input = $toolUse.input
+    }
+    $toolResultBody = @{
+        model      = $Model
+        max_tokens = 512
+        messages   = @(
+            @{ role = "user"; content = @(@{ type = "text"; text = "现在几点了？请立即使用 get_time 工具，不要猜测" }) },
+            @{ role = "assistant"; content = $assistantBlocks },
+            @{ role = "user"; content = @(@{ type = "tool_result"; tool_use_id = [string]$toolUse.id; content = "现在是 14:30" }) },
+            @{ role = "user"; content = @(@{ type = "text"; text = "" }) }
+        )
+        tools      = @($timeTool)
+    } | ConvertTo-Json -Depth 10
+    $resp4 = Invoke-RestMethod -Uri $endpoint -Method Post -Headers $headers -Body $toolResultBody -TimeoutSec 30
+    Write-Host "first types: $(($toolStart.content.type) -join ', ')"
+    Write-Host "second types: $(($resp4.content.type) -join ', ')"
     Write-Host "stop_reason: $($resp4.stop_reason)"
 } catch {
-    Write-Host "!! 请求失败/挂起：$($_.Exception.Message)"
+    Write-Host "!! tool round trip failed: $($_.Exception.Message)"
     if ($_.ErrorDetails.Message) { Write-Host "响应体：$($_.ErrorDetails.Message)" }
+    throw
 }
 Write-Host ""
-Write-Host "若第 2 步出现 [server_tool_use] + [web_search_tool_result] 即说明联网搜索链路正常；第 3 步 SSE 事件齐全即说明模组流式解析的输入格式正确；第 4 步若失败/超时即复现了 use_skill 卡住（tool_result 结尾请求被端点挂起），模组已加空 user 消息兜底。"
+Write-Host "若第 2 步出现 server tool/result，则独立 DeepSeek 搜索 provider 所依赖的原生结果结构正常；第 3、4 步继续验证 Anthropic 基本协议链路。"

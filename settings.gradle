@@ -1,1 +1,7 @@
+plugins {
+    // Enables Gradle toolchain auto-provisioning when Java 17 is not installed or discoverable.
+    // This keeps the project portable instead of relying on a user-specific JDK path.
+    id 'org.gradle.toolchains.foojay-resolver-convention' version '0.9.0'
+}
+
 rootProject.name = 'Touhou-AIFun'

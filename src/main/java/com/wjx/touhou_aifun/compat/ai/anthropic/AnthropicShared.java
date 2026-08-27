@@ -7,12 +7,9 @@ import net.minecraft.resources.ResourceLocation;
  *
  * <p>The default endpoint is DeepSeek's Anthropic-compatible API
  * ({@code https://api.deepseek.com/anthropic}, {@code POST /v1/messages}, {@code x-api-key}
- * auth). Unlike DeepSeek's OpenAI-compatible endpoint, the Anthropic Messages protocol
- * natively supports <em>server-executed</em> web search: declaring the
- * {@code web_search_20250305} server tool makes DeepSeek run the search itself and return
- * {@code server_tool_use} / {@code web_search_tool_result} blocks in the same turn. The
- * maid's system prompt (see {@code PapiReplacerMixin}) explains this capability to the model.
- * The URL is user-editable, so any other Anthropic Messages compatible endpoint also works.
+ * auth). The URL is user-editable, so any other Anthropic Messages compatible endpoint also
+ * works. Web search is intentionally not part of this chat site: the addon exposes a normal
+ * {@code web_search(query)} tool whose provider layer may use DeepSeek native search separately.
  */
 public final class AnthropicShared {
     /** Serializer registration key and {@code api_type} written to {@code llm.json}. */

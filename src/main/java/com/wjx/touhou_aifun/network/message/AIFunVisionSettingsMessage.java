@@ -28,7 +28,8 @@ public record AIFunVisionSettingsMessage(boolean visionEnabled, boolean shallowS
                 TouhouAIFunConfig.setShallowScanEnabled(message.shallowScanEnabled);
                 TouhouAIFunConfig.setSelectedVisionSite(message.selectedSite);
             }
-            AIFunNetwork.sendVisionSitesToPlayer(sender);
+            AIFunNetwork.sendVisionSitesToPlayer(sender,
+                    sender.hasPermissions(2) ? "settings_saved" : "permission_denied");
         });
         context.setPacketHandled(true);
     }

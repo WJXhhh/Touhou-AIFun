@@ -17,6 +17,7 @@ import com.wjx.touhou_aifun.compat.ai.mimo.MimoLLMSite;
 import com.wjx.touhou_aifun.compat.ai.minimax.tts.MiniMaxCompatTTSSite;
 import com.wjx.touhou_aifun.compat.ai.openai.ReasoningCompatOpenAISite;
 import com.wjx.touhou_aifun.compat.ai.openai.LoadToolSchemaTool;
+import com.wjx.touhou_aifun.compat.ai.opencodego.OpenCodeGoLLMSite;
 import com.wjx.touhou_aifun.compat.ai.stepfun.StepFunLLMSite;
 import com.wjx.touhou_aifun.compat.ai.stepfun.StepFunPlanLLMSite;
 import com.wjx.touhou_aifun.compat.ai.mimo.stt.MimoSTTSite;
@@ -29,8 +30,10 @@ import com.wjx.touhou_aifun.compat.ai.stepfun.stt.StepFunPlanSTTSite;
 import com.wjx.touhou_aifun.compat.ai.stepfun.stt.StepFunSTTSite;
 import com.wjx.touhou_aifun.compat.ai.stepfun.tts.StepFunPlanTTSSite;
 import com.wjx.touhou_aifun.compat.ai.stepfun.tts.StepFunTTSSite;
+import com.wjx.touhou_aifun.compat.ai.time.CurrentDateTimeTool;
 import com.wjx.touhou_aifun.compat.ai.vision.ScanSurroundingsTool;
 import com.wjx.touhou_aifun.compat.ai.vision.ObserveSurroundingsTool;
+import com.wjx.touhou_aifun.compat.ai.web.WebSearchTool;
 
 import java.util.Map;
 import java.util.function.Consumer;
@@ -42,12 +45,15 @@ public final class LittleMaidCompat implements ILittleMaid {
         register.register(new LoadToolSchemaTool());
         register.register(new ScanSurroundingsTool());
         register.register(new ObserveSurroundingsTool());
+        register.register(new WebSearchTool());
+        register.register(new CurrentDateTimeTool());
     }
 
     @Override
     public void registerAIChatSerializer(SerializerRegister register) {
         register.register(ServiceType.LLM, LLMOpenAISite.API_TYPE, new ReasoningCompatOpenAISite.Serializer());
         register.register(ServiceType.LLM, AnthropicLLMSite.API_TYPE, new AnthropicLLMSite.Serializer());
+        register.register(ServiceType.LLM, OpenCodeGoLLMSite.API_TYPE, new OpenCodeGoLLMSite.Serializer());
         register.register(ServiceType.LLM, StepFunLLMSite.API_TYPE, new StepFunLLMSite.Serializer());
         register.register(ServiceType.LLM, StepFunPlanLLMSite.API_TYPE, new StepFunPlanLLMSite.Serializer());
         register.register(ServiceType.LLM, MimoLLMSite.API_TYPE, new MimoLLMSite.Serializer());

@@ -21,7 +21,6 @@ import java.util.Map;
 /** Server-authoritative visual-site registry persisted separately from LLM/STT/TTS sites. */
 public final class AvailableVisionSites {
     private static final Logger LOGGER = LogUtils.getLogger();
-    private static final Path FILE = FMLPaths.CONFIGDIR.get().resolve("touhou_little_maid/sites/vision.json");
     private static final Map<String, VisionSite> SITES = new LinkedHashMap<>();
     private static boolean loaded;
 
@@ -31,9 +30,10 @@ public final class AvailableVisionSites {
     public static synchronized void ensureLoaded() {
         if (loaded) return;
         loaded = true;
+        Path file = configFile();
         try {
-            if (Files.exists(FILE)) {
-                JsonElement parsed = JsonParser.parseString(Files.readString(FILE, StandardCharsets.UTF_8));
+            if (Files.exists(file)) {
+                JsonElement parsed = JsonParser.parseString(Files.readString(file, StandardCharsets.UTF_8));
                 JsonArray array = parsed.isJsonArray() ? parsed.getAsJsonArray()
                         : parsed.getAsJsonObject().getAsJsonArray("sites");
                 if (array != null) {
@@ -46,16 +46,27 @@ public final class AvailableVisionSites {
                 }
             }
         } catch (Exception exception) {
-            LOGGER.warn("Unable to read visual site config {}, using defaults", FILE, exception);
+            LOGGER.warn("Unable to read visual site config {}, using defaults", file, exception);
         }
-        boolean changed = false;
-        for (VisionSite site : defaults()) {
+        boolean changed = migrateKnownLegacyDefaults();
+        for (VisionSite site : defaultSites()) {
             if (!SITES.containsKey(site.id())) {
                 SITES.put(site.id(), site);
                 changed = true;
             }
         }
         if (changed || SITES.isEmpty()) save();
+    }
+
+    /** Migrate only our shipped legacy endpoint; never rewrite a user's custom SenseNova URL. */
+    private static boolean migrateKnownLegacyDefaults() {
+        VisionSite senseNova = SITES.get("sensenova");
+        if (senseNova == null || !"sensenova".equalsIgnoreCase(senseNova.provider())) return false;
+        if (!"https://api.sensenova.cn/v1/llm/chat-completions".equalsIgnoreCase(senseNova.endpoint())) {
+            return false;
+        }
+        senseNova.setEndpoint("https://token.sensenova.cn/v1/chat/completions");
+        return true;
     }
 
     public static synchronized List<VisionSite> all() {
@@ -71,15 +82,29 @@ public final class AvailableVisionSites {
     public static synchronized VisionSite selected() {
         ensureLoaded();
         String selected = com.wjx.touhou_aifun.config.TouhouAIFunConfig.VISION_SELECTED_SITE.get();
-        VisionSite preferred = SITES.get(selected);
-        if (preferred != null && usable(preferred)) return preferred;
-        return SITES.values().stream().filter(AvailableVisionSites::usable)
-                .findFirst().orElse(null);
+        return chooseSelected(SITES.values(), selected);
+    }
+
+    /** The provider the runtime would actually use after applying fallback and usability checks. */
+    public static synchronized String effectiveSelectedId() {
+        VisionSite site = selected();
+        return site == null ? "" : site.id();
     }
 
     private static boolean usable(VisionSite site) {
-        return site != null && site.enabled() && !site.apiKey().isBlank()
-                && !site.endpoint().isBlank() && !site.model().isBlank();
+        return site != null && !site.apiKey().isBlank()
+                && site.hasValidHttpEndpoint() && !site.model().isBlank();
+    }
+
+    static VisionSite chooseSelected(Iterable<VisionSite> sites, String selectedId) {
+        VisionSite fallback = null;
+        if (sites == null) return null;
+        for (VisionSite site : sites) {
+            if (!usable(site)) continue;
+            if (fallback == null) fallback = site;
+            if (site.id().equals(selectedId)) return site;
+        }
+        return fallback;
     }
 
     public static synchronized void upsert(VisionSite site) {
@@ -98,6 +123,11 @@ public final class AvailableVisionSites {
         if (existing != null && incoming.apiKey().isBlank() && !existing.apiKey().isBlank()) {
             incoming.setApiKey(existing.apiKey());
         }
+        if (existing != null) {
+            existing.headers().forEach((key, value) -> {
+                if (!incoming.headers().containsKey(key)) incoming.setHeader(key, value);
+            });
+        }
         upsert(incoming);
     }
 
@@ -108,14 +138,19 @@ public final class AvailableVisionSites {
     }
 
     public static synchronized void save() {
+        Path file = configFile();
         try {
-            Files.createDirectories(FILE.getParent());
+            Files.createDirectories(file.getParent());
             JsonArray array = new JsonArray();
             SITES.values().forEach(site -> array.add(site.toJson()));
-            Files.writeString(FILE, new GsonBuilder().setPrettyPrinting().create().toJson(array), StandardCharsets.UTF_8);
+            Files.writeString(file, new GsonBuilder().setPrettyPrinting().create().toJson(array), StandardCharsets.UTF_8);
         } catch (IOException exception) {
-            LOGGER.warn("Unable to save visual site config {}", FILE, exception);
+            LOGGER.warn("Unable to save visual site config {}", file, exception);
         }
+    }
+
+    private static Path configFile() {
+        return FMLPaths.CONFIGDIR.get().resolve("touhou_little_maid/sites/vision.json");
     }
 
     public static synchronized void replaceFrom(List<VisionSite> sites) {
@@ -167,20 +202,20 @@ public final class AvailableVisionSites {
         }
     }
 
-    private static List<VisionSite> defaults() {
+    static List<VisionSite> defaultSites() {
         List<VisionSite> sites = new ArrayList<>();
         sites.add(new VisionSite("tencent_tokenhub", "腾讯 TokenHub", "tencent",
-                "https://tokenhub.tencentmaas.com/v1/chat/completions", "youtu-vita", false, "", false));
+                "https://tokenhub.tencentmaas.com/v1/chat/completions", "youtu-vita", "", false));
         sites.add(new VisionSite("sensenova", "商汤 SenseNova", "sensenova",
-                "https://api.sensenova.cn/v1/llm/chat-completions", "", false, "", false));
+                "https://token.sensenova.cn/v1/chat/completions", "sensenova-6.7-flash-lite", "", false));
         sites.add(new VisionSite("stepfun", "阶跃星辰", "stepfun",
-                "https://api.stepfun.com/v1/chat/completions", "step-3.7-flash", false, "", false));
+                "https://api.stepfun.com/v1/chat/completions", "step-3.7-flash", "", false));
         sites.add(new VisionSite("stepfun_plan", "阶跃星辰 Step Plan", "stepfun_plan",
-                "https://api.stepfun.com/step_plan/v1/chat/completions", "step-3.7-flash", false, "", false));
+                "https://api.stepfun.com/step_plan/v1/chat/completions", "step-3.7-flash", "", false));
         sites.add(new VisionSite("zhipu", "智谱", "zhipu",
-                "https://open.bigmodel.cn/api/paas/v4/chat/completions", "glm-4.6v-flash", false, "", false));
+                "https://open.bigmodel.cn/api/paas/v4/chat/completions", "glm-4.6v-flash", "", false));
         sites.add(new VisionSite("qwen", "通义千问", "qwen",
-                "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions", "qwen3-vl-flash", false, "", false));
+                "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions", "qwen3-vl-flash", "", false));
         return sites;
     }
 }

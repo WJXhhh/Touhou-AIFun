@@ -34,7 +34,10 @@ public final class ContextBudgetPlanner {
             return new Plan(List.of(), new BudgetReport(Math.max(0, budget - Math.max(0, reserveMessages)),
                     0, 0, Math.max(1.0, Math.min(2.0, calibrationFactor)), false));
         }
-        int target = Math.max(2048, budget - Math.max(0, reserveMessages));
+        // A very large immutable tool schema may consume the whole configured target. Do not
+        // manufacture an extra 2K allowance: trim every discretionary unit, preserve fixed
+        // system/current/tool content, and report the unavoidable over-budget request explicitly.
+        int target = Math.max(0, budget - Math.max(0, reserveMessages));
         double factor = Math.max(1.0, Math.min(2.0, calibrationFactor));
         List<LLMMessage> result = new ArrayList<>(source);
         int originalSize = result.size();
@@ -65,6 +68,13 @@ public final class ContextBudgetPlanner {
         // Remove whole old user/assistant turns, preserving the two most recent complete turns.
         int oldTurn = findOldestTurnPair(messages, protectedPrefix);
         if (oldTurn >= 0) return oldTurn;
+
+        // Superseded input is useful for the immediately following request, but it is still
+        // discretionary and must not make a constrained request exceed its target. Remove the
+        // oldest item first when a rapid A -> B -> C chain contains several cancelled inputs.
+        for (int i = protectedPrefix; i < messages.size(); i++) {
+            if (isInterruptedInput(messages.get(i))) return i;
+        }
 
         // Facts are emitted importance-descending, so the last fact is the least important one.
         for (int i = messages.size() - 1; i >= protectedPrefix; i--) {
@@ -136,7 +146,8 @@ public final class ContextBudgetPlanner {
     }
 
     private static boolean isFact(LLMMessage message) {
-        return message.message() != null && message.message().startsWith("### Stable fact");
+        return message.message() != null && (message.message().startsWith("### Stable fact")
+                || message.message().startsWith("### Fallible remembered fact"));
     }
 
     private static boolean isClosedLoop(LLMMessage message) {
@@ -147,8 +158,15 @@ public final class ContextBudgetPlanner {
         String text = message.message();
         return text != null && (text.startsWith("## AIFun Memory")
                 || text.startsWith("### Stable fact")
+                || text.startsWith("### Fallible remembered fact")
                 || text.startsWith("### Open loop")
                 || text.startsWith("### Closed loop")
-                || text.startsWith("### Relevant older episode"));
+                || text.startsWith("### Relevant older episode")
+                || text.startsWith("### Recent interrupted user message"));
+    }
+
+    private static boolean isInterruptedInput(LLMMessage message) {
+        return message.message() != null
+                && message.message().startsWith("### Recent interrupted user message");
     }
 }

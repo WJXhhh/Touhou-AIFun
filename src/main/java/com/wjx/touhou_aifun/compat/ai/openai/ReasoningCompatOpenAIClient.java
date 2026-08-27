@@ -1,14 +1,9 @@
 package com.wjx.touhou_aifun.compat.ai.openai;
 
 import com.github.tartaricacid.touhoulittlemaid.TouhouLittleMaid;
-import com.github.tartaricacid.touhoulittlemaid.ai.agent.tool.ITool;
-import com.github.tartaricacid.touhoulittlemaid.ai.agent.tool.ToolRegister;
 import com.github.tartaricacid.touhoulittlemaid.ai.manager.entity.LLMCallback;
 import com.github.tartaricacid.touhoulittlemaid.ai.manager.response.ResponseChat;
 import com.github.tartaricacid.touhoulittlemaid.ai.service.ErrorCode;
-import com.github.tartaricacid.touhoulittlemaid.ai.service.function.schema.FunctionTool;
-import com.github.tartaricacid.touhoulittlemaid.ai.service.function.schema.parameter.ObjectParameter;
-import com.github.tartaricacid.touhoulittlemaid.ai.service.function.schema.parameter.Parameter;
 import com.github.tartaricacid.touhoulittlemaid.ai.service.llm.DefaultLLMSite;
 import com.github.tartaricacid.touhoulittlemaid.ai.service.llm.LLMMessage;
 import com.github.tartaricacid.touhoulittlemaid.ai.service.llm.Role;
@@ -64,12 +59,13 @@ public class ReasoningCompatOpenAIClient extends LLMOpenAIClient {
         String apiKey = this.site.secretKey();
         String model = maid.getAiChatManager().getLLMModel();
         boolean isReasoningModel = this.site.isReasoningModel(model);
+        ToolCatalogSnapshot toolSnapshot = callback.getClass() == LLMCallback.class
+                ? ToolContextSelector.snapshot(maid, callback) : null;
 
-        if (callback.getClass() == LLMCallback.class && !callback.getMessages().stream()
-                .anyMatch(message -> message.role() == Role.TOOL)) {
+        if (callback.getClass() == LLMCallback.class) {
             var planned = ContextBudgetPlanner.trim(callback.getMessages(),
                     TouhouAIFunConfig.CONTEXT_INPUT_BUDGET_TOKENS.get(),
-                    ToolContextSelector.schemaBudget(maid, callback),
+                    toolSnapshot.schemaBudget(ChatFlowManager.requestedToolIds(maid.getUUID(), callback)),
                     AIFunMemoryManager.calibratedEstimate(maid.getAiChatManager(), callback.getMessages())
                             / (double) Math.max(1, com.wjx.touhou_aifun.chat.context.ContextTokenEstimator.estimate(callback.getMessages())));
             callback.getMessages().clear();
@@ -107,9 +103,7 @@ public class ReasoningCompatOpenAIClient extends LLMOpenAIClient {
         // ordinary maid chat callbacks so setting generation, history summaries, and grounded
         // knowledge extraction retain their own output formats.
         if (callback.getClass() == LLMCallback.class) {
-            chatCompletion.systemChat(ToolContextSelector.compactDirectory(maid,
-                    callback.getMessages().stream().filter(m -> m.role() == Role.USER)
-                            .reduce((first, second) -> second).map(LLMMessage::message).orElse("")));
+            chatCompletion.systemChat(toolSnapshot.directory());
             // If the emotion setting changed since this maid's last reply, announce the switch once so
             // the model stops imitating the old-format replies still present in the conversation history.
             String emotionChange = EmotionControlPrompts.changeNotice(maid);
@@ -131,25 +125,11 @@ public class ReasoningCompatOpenAIClient extends LLMOpenAIClient {
         }
 
         if (callback.needAddTools) {
-            var selectedTools = ToolContextSelector.selected(maid, callback);
-            for (var entry : ToolRegister.getAllTools().entrySet()) {
-                String toolId = entry.getKey();
-                if (!selectedTools.contains(toolId)) {
-                    continue;
-                }
-                ITool<?> tool = entry.getValue();
-                if (tool == null || !ToolContextSelector.isTriggered(maid, tool)) {
-                    continue;
-                }
-
-                String summary = tool.summary(maid);
-                ObjectParameter root = ObjectParameter.create();
-                Parameter parameter = tool.parameters(root, maid);
-                chatCompletion.addTool(FunctionTool.create()
-                        .setName(toolId)
-                        .setDescription(summary)
-                        .setParameters(parameter)
-                        .build());
+            ToolCatalogSnapshot snapshot = toolSnapshot != null
+                    ? toolSnapshot : ToolContextSelector.snapshot(maid, callback);
+            for (ToolCatalogSnapshot.Entry entry : snapshot.selected(
+                    ChatFlowManager.requestedToolIds(maid.getUUID(), callback))) {
+                chatCompletion.addTool(entry.openAITool());
             }
         }
 
@@ -404,7 +384,7 @@ public class ReasoningCompatOpenAIClient extends LLMOpenAIClient {
             return;
         }
         if (firstChoice.hasToolCall()) {
-            callback.onFunctionCall(firstChoice, this);
+            callback.onFunctionCall(firstChoice.toBaseMessage(), this);
         } else {
             this.onTextCall(callback, firstChoice, ttsReply);
         }

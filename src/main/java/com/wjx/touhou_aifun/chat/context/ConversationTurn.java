@@ -67,13 +67,20 @@ public final class ConversationTurn {
         if (outcome == null || outcome.isBlank()) {
             return;
         }
-        String normalized = outcome.length() <= 512
-                ? outcome
-                : outcome.substring(0, 256) + "\n...[tool result shortened]...\n"
-                + outcome.substring(outcome.length() - 256);
+        String combined = this.toolOutcomes.isEmpty()
+                ? outcome.trim()
+                : String.join("\n---\n", this.toolOutcomes) + "\n---\n" + outcome.trim();
+        String normalized = shortenCodePoints(combined, 512);
+        this.toolOutcomes.clear();
         this.toolOutcomes.add(normalized);
-        while (this.toolOutcomes.size() > 12) {
-            this.toolOutcomes.remove(0);
-        }
+    }
+
+    private static String shortenCodePoints(String value, int maxCodePoints) {
+        int count = value.codePointCount(0, value.length());
+        if (count <= maxCodePoints) return value;
+        int half = Math.max(1, (maxCodePoints - 36) / 2);
+        int headEnd = value.offsetByCodePoints(0, half);
+        int tailStart = value.offsetByCodePoints(0, count - half);
+        return value.substring(0, headEnd) + "\n...[tool outcomes shortened]...\n" + value.substring(tailStart);
     }
 }

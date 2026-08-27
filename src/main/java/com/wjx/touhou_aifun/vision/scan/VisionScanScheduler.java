@@ -6,6 +6,10 @@ import net.minecraftforge.event.TickEvent;
 import net.minecraftforge.eventbus.api.SubscribeEvent;
 import net.minecraftforge.fml.common.Mod;
 
+import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
@@ -22,7 +26,9 @@ public final class VisionScanScheduler {
     private static final int MAX_DDA_VISITS_PER_TICK = 40_000;
     private static final int MAX_SECTIONS_PER_TICK = 4;
     private static final int HARD_TIMEOUT_TICKS = 40;
-    private static final ConcurrentMap<VisionScanCache.Key, Active> ACTIVE = new ConcurrentHashMap<>();
+    /** Exactly one in-progress scan per maid; identical requests share its future. */
+    private static final ConcurrentMap<UUID, Active> ACTIVE = new ConcurrentHashMap<>();
+    private static int roundRobinOffset;
 
     private VisionScanScheduler() {
     }
@@ -35,20 +41,33 @@ public final class VisionScanScheduler {
             return CompletableFuture.completedFuture(cached);
         }
         VisionScanCache.Key key = VisionScanCache.keyOf(maid, normalized);
-        Active active = ACTIVE.computeIfAbsent(key,
-                ignored -> new Active(ShallowEnvironmentScanner.begin(maid, normalized)));
+        Active active = ACTIVE.compute(maid.getUUID(), (ignored, current) -> {
+            if (current != null && current.key.equals(key) && !current.future.isDone()) {
+                return current;
+            }
+            if (current != null) {
+                current.job.abort();
+                current.future.cancel(false);
+            }
+            return new Active(key, ShallowEnvironmentScanner.begin(maid, normalized));
+        });
         return active.future;
     }
 
     public static void cancelForMaid(UUID maidId) {
-        ACTIVE.entrySet().removeIf(entry -> {
-            if (!entry.getKey().maid().equals(maidId)) {
-                return false;
-            }
-            entry.getValue().job.abort();
-            entry.getValue().future.cancel(false);
-            return true;
+        Active active = ACTIVE.remove(maidId);
+        if (active != null) {
+            active.job.abort();
+            active.future.cancel(false);
+        }
+    }
+
+    public static void cancelAll() {
+        ACTIVE.values().forEach(active -> {
+            active.job.abort();
+            active.future.cancel(false);
         });
+        ACTIVE.clear();
     }
 
     @SubscribeEvent
@@ -56,44 +75,84 @@ public final class VisionScanScheduler {
         if (event.phase != TickEvent.Phase.END || ACTIVE.isEmpty()) {
             return;
         }
-        ACTIVE.entrySet().removeIf(entry -> advance(entry.getKey(), entry.getValue()));
+        advanceAll();
     }
 
-    private static boolean advance(VisionScanCache.Key key, Active active) {
-        if (active.future.isCancelled()) {
-            return true;
+    /** One shared server-wide allowance, distributed fairly instead of multiplied per maid. */
+    private static void advanceAll() {
+        List<Map.Entry<UUID, Active>> scans = new ArrayList<>(ACTIVE.entrySet());
+        scans.sort(Comparator.comparing(entry -> entry.getKey().toString()));
+        if (scans.isEmpty()) {
+            return;
         }
-        EntityMaid maid = active.job.maid();
-        if (maid.isRemoved() || maid.level().isClientSide
-                || !key.dimension().equals(maid.level().dimension().location().toString())) {
-            active.future.cancel(false);
-            return true;
+        for (Map.Entry<UUID, Active> entry : scans) {
+            entry.getValue().ticks++;
         }
-        try {
-            active.ticks++;
-            boolean done = active.job.step(MAX_RAYS_PER_TICK, MAX_DDA_VISITS_PER_TICK, MAX_SECTIONS_PER_TICK);
-            if (!done && active.ticks < HARD_TIMEOUT_TICKS) {
-                return false;
+
+        int start = Math.floorMod(roundRobinOffset, scans.size());
+        int remainingRays = MAX_RAYS_PER_TICK;
+        int remainingVisits = MAX_DDA_VISITS_PER_TICK;
+        int remainingSections = MAX_SECTIONS_PER_TICK;
+        for (int offset = 0; offset < scans.size(); offset++) {
+            Map.Entry<UUID, Active> entry = scans.get((start + offset) % scans.size());
+            UUID maidId = entry.getKey();
+            Active active = entry.getValue();
+            if (active.future.isDone()) {
+                ACTIVE.remove(maidId, active);
+                continue;
             }
-            if (!done) {
+            EntityMaid maid = active.job.maid();
+            if (maid.isRemoved() || maid.level().isClientSide
+                    || !active.key.dimension().equals(maid.level().dimension().location().toString())) {
                 active.job.abort();
+                active.future.cancel(false);
+                ACTIVE.remove(maidId, active);
+                continue;
             }
-            EnvironmentScanResult result = active.job.result();
-            VisionScanCache.put(key, result);
-            active.future.complete(result);
-        } catch (Throwable throwable) {
-            active.future.completeExceptionally(throwable);
-            TouhouAIFun.LOGGER.error("Incremental visual scan failed", throwable);
+
+            int jobsLeft = scans.size() - offset;
+            int rayShare = ceilingShare(remainingRays, jobsLeft);
+            int visitShare = ceilingShare(remainingVisits, jobsLeft);
+            int sectionShare = ceilingShare(remainingSections, jobsLeft);
+            int beforeRays = active.job.primaryRays();
+            int beforeVisits = active.job.ddaVisits();
+            int beforeSections = active.job.expandedSections();
+            try {
+                boolean done = active.job.step(rayShare, visitShare, sectionShare);
+                remainingRays = Math.max(0, remainingRays - (active.job.primaryRays() - beforeRays));
+                remainingVisits = Math.max(0, remainingVisits - (active.job.ddaVisits() - beforeVisits));
+                remainingSections = Math.max(0,
+                        remainingSections - (active.job.expandedSections() - beforeSections));
+                if (done || active.ticks >= HARD_TIMEOUT_TICKS) {
+                    if (!done) {
+                        active.job.abort("hard_timeout");
+                    }
+                    EnvironmentScanResult result = active.job.result();
+                    VisionScanCache.put(active.key, result);
+                    active.future.complete(result);
+                    ACTIVE.remove(maidId, active);
+                }
+            } catch (Throwable throwable) {
+                active.future.completeExceptionally(throwable);
+                ACTIVE.remove(maidId, active);
+                TouhouAIFun.LOGGER.error("Incremental visual scan failed", throwable);
+            }
         }
-        return true;
+        roundRobinOffset = (start + 1) % Math.max(1, scans.size());
+    }
+
+    private static int ceilingShare(int remaining, int jobsLeft) {
+        return remaining <= 0 ? 0 : (remaining + jobsLeft - 1) / jobsLeft;
     }
 
     private static final class Active {
+        private final VisionScanCache.Key key;
         private final ShallowEnvironmentScanner.ScanJob job;
         private final CompletableFuture<EnvironmentScanResult> future = new CompletableFuture<>();
         private int ticks;
 
-        private Active(ShallowEnvironmentScanner.ScanJob job) {
+        private Active(VisionScanCache.Key key, ShallowEnvironmentScanner.ScanJob job) {
+            this.key = key;
             this.job = job;
         }
     }

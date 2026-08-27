@@ -8,7 +8,8 @@ import java.util.Collections;
 
 /** Normalized request passed to a provider adapter. Image values are in-memory data URLs. */
 public record VisionRequest(VisionSite site, EntityMaid maid, String focus, String scanJson,
-                            Map<String, String> images, long scanTick, long imageTick) {
+                            Map<String, String> images, long scanTick, long imageStartTick,
+                            long imageTick, float imageYaw) {
     public VisionRequest {
         focus = focus == null ? "" : focus.trim();
         scanJson = scanJson == null ? "" : scanJson;
@@ -16,7 +17,14 @@ public record VisionRequest(VisionSite site, EntityMaid maid, String focus, Stri
     }
 
     public VisionRequest(VisionSite site, EntityMaid maid, String focus, String scanJson,
+                         Map<String, String> images, long scanTick, long imageTick) {
+        this(site, maid, focus, scanJson, images, scanTick, imageTick, imageTick,
+                maid == null ? Float.NaN : maid.getYRot());
+    }
+
+    public VisionRequest(VisionSite site, EntityMaid maid, String focus, String scanJson,
                          Map<String, String> images, long scanTick) {
-        this(site, maid, focus, scanJson, images, scanTick, -1);
+        this(site, maid, focus, scanJson, images, scanTick, -1, -1,
+                maid == null ? Float.NaN : maid.getYRot());
     }
 }

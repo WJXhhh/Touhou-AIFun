@@ -1,13 +1,9 @@
 package com.wjx.touhou_aifun.compat.ai.openai;
 
 import com.github.tartaricacid.touhoulittlemaid.TouhouLittleMaid;
-import com.github.tartaricacid.touhoulittlemaid.ai.agent.tool.ITool;
-import com.github.tartaricacid.touhoulittlemaid.ai.agent.tool.ToolRegister;
 import com.github.tartaricacid.touhoulittlemaid.ai.manager.entity.LLMCallback;
 import com.github.tartaricacid.touhoulittlemaid.ai.manager.response.ResponseChat;
 import com.github.tartaricacid.touhoulittlemaid.ai.service.ErrorCode;
-import com.github.tartaricacid.touhoulittlemaid.ai.service.function.schema.parameter.ObjectParameter;
-import com.github.tartaricacid.touhoulittlemaid.ai.service.function.schema.parameter.Parameter;
 import com.github.tartaricacid.touhoulittlemaid.ai.service.llm.LLMClient;
 import com.github.tartaricacid.touhoulittlemaid.ai.service.llm.LLMMessage;
 import com.github.tartaricacid.touhoulittlemaid.ai.service.llm.Role;
@@ -25,14 +21,12 @@ import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import com.google.gson.JsonSyntaxException;
-import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import org.apache.commons.lang3.StringUtils;
 import com.wjx.touhou_aifun.chat.ChatFlowManager;
 import com.wjx.touhou_aifun.chat.context.AIFunMemoryManager;
 import com.wjx.touhou_aifun.chat.context.ContextBudgetPlanner;
 import com.wjx.touhou_aifun.compat.ai.EmotionControlPrompts;
-import com.wjx.touhou_aifun.compat.ai.openai.response.ReasoningOpenAIMessage;
 import com.wjx.touhou_aifun.compat.ai.openai.response.StreamAccumulator;
 import com.wjx.touhou_aifun.compat.ai.openai.response.StreamChunk;
 import com.wjx.touhou_aifun.config.TouhouAIFunConfig;
@@ -45,10 +39,8 @@ import java.net.http.HttpResponse;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.HashMap;
-import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
@@ -66,11 +58,6 @@ import java.util.stream.Stream;
  *   <li>Messages are content <em>blocks</em>: {@code system} is a top-level field, assistant
  *       tool calls become {@code tool_use} blocks and tool results {@code tool_result} blocks
  *       inside {@code user} messages.</li>
- *   <li>Web search is a <em>server-executed</em> tool: the request declares
- *       {@code {"type": "web_search_20250305", "name": "web_search"}} and DeepSeek runs the
- *       search itself, returning {@code server_tool_use} / {@code web_search_tool_result}
- *       blocks in the same turn. Those blocks are ignored by the parser — the follow-up
- *       {@code text} blocks already contain the answer grounded in the search results.</li>
  * </ul>
  *
  * <p>Text replies flow through the same finalization machinery as the OpenAI clients
@@ -83,29 +70,10 @@ public class AnthropicCompatLLMClient implements LLMClient {
     /** Anthropic requires an explicit {@code max_tokens}; maid replies are short, 2048 is generous. */
     private static final int MAX_TOKENS = 2048;
     private static final String ANTHROPIC_VERSION = "2023-06-01";
-    /** Server tool id used by DeepSeek's Anthropic-compatible endpoint (basic web search; the
-     * {@code 20260209}+ variants need code execution, which DeepSeek does not support). */
-    private static final String WEB_SEARCH_TOOL_TYPE = "web_search_20250305";
-    private static final String WEB_SEARCH_TOOL_NAME = "web_search";
-    private static final int WEB_SEARCH_MAX_USES = 3;
 
     protected final HttpClient httpClient;
     protected final LLMOpenAISite site;
 
-    /** How many empty-text retries (server-tool turns) a single conversation may take. */
-    private static final int MAX_EMPTY_TEXT_RETRIES = 3;
-    private int emptyTextRetries;
-    /**
-     * Server-executed tool calls ({@code server_tool_use} blocks) that returned no matching
-     * {@code web_search_tool_result} in the same turn. The Anthropic protocol requires such
-     * unfinished calls to be echoed back on the next request so the provider keeps executing
-     * them; when a turn produces no text at all, the client retries with these blocks attached.
-     */
-    private final Map<String, JsonObject> pendingServerToolUses = new HashMap<>();
-    /** Streaming: per-block-index accumulation state for an in-flight {@code server_tool_use} block. */
-    private final Map<Integer, ServerToolUseBuilder> streamingServerTools = new HashMap<>();
-    /** Streaming: server tool ids whose result block already arrived in this turn. */
-    private final Set<String> completedServerToolResultIds = new HashSet<>();
 
     public AnthropicCompatLLMClient(HttpClient httpClient, LLMOpenAISite site) {
         this.httpClient = httpClient;
@@ -119,25 +87,16 @@ public class AnthropicCompatLLMClient implements LLMClient {
                 && ChatFlowManager.isSuperseded(maid.getUUID(), callback)) {
             return;
         }
-        if (callback.getClass() == LLMCallback.class && !callback.getMessages().stream()
-                .anyMatch(message -> message.role() == Role.TOOL)) {
+        if (callback.getClass() == LLMCallback.class) {
+            ToolCatalogSnapshot snapshot = ToolContextSelector.snapshot(maid, callback);
             double factor = AIFunMemoryManager.calibratedEstimate(maid.getAiChatManager(), callback.getMessages())
                     / (double) Math.max(1, com.wjx.touhou_aifun.chat.context.ContextTokenEstimator.estimate(callback.getMessages()));
             List<LLMMessage> planned = ContextBudgetPlanner.trim(callback.getMessages(),
                     TouhouAIFunConfig.CONTEXT_INPUT_BUDGET_TOKENS.get(),
-                    ToolContextSelector.schemaBudget(maid, callback), factor);
+                    snapshot.schemaBudget(ChatFlowManager.requestedToolIds(maid.getUUID(), callback)), factor);
             callback.getMessages().clear();
             callback.getMessages().addAll(planned);
         }
-        // Per-request streaming state. The pending server-tool blocks survive only across the
-        // auto-retry of an unfinished server-tool turn (detected by the trailing empty assistant
-        // message); a brand-new conversation starts clean.
-        if (!this.isRetryTurn(callback)) {
-            this.pendingServerToolUses.clear();
-        }
-        this.completedServerToolResultIds.clear();
-        this.streamingServerTools.clear();
-
         JsonObject body = this.buildRequestBody(callback);
 
         if (TouhouLittleMaid.DEBUG) {
@@ -180,8 +139,8 @@ public class AnthropicCompatLLMClient implements LLMClient {
     /**
      * Translates the base mod's {@link LLMMessage} history into an Anthropic Messages request
      * body: {@code system} top-level field, {@code tool_use} / {@code tool_result} blocks,
-     * function tools from {@link ToolRegister}, and the {@code web_search} server tool that
-     * DeepSeek's Anthropic-compatible endpoint executes on its side.
+     * function tools from the addon/base registry. Provider-specific server tools are deliberately
+     * absent; web search is an ordinary addon tool with its own backend seam.
      */
     protected JsonObject buildRequestBody(LLMCallback callback) {
         EntityMaid maid = callback.getMaid();
@@ -200,9 +159,7 @@ public class AnthropicCompatLLMClient implements LLMClient {
         }
         // Keep the emotion reminders adjacent to the model's next response, exactly like the OpenAI path.
         if (callback.getClass() == LLMCallback.class) {
-            systemParts.add(ToolContextSelector.compactDirectory(maid,
-                    callback.getMessages().stream().filter(m -> m.role() == Role.USER)
-                            .reduce((first, second) -> second).map(LLMMessage::message).orElse("")));
+            systemParts.add(ToolContextSelector.compactDirectory(maid, callback));
             String emotionChange = EmotionControlPrompts.changeNotice(maid);
             if (emotionChange != null) {
                 systemParts.add(emotionChange);
@@ -293,18 +250,6 @@ public class AnthropicCompatLLMClient implements LLMClient {
             }
         }
         this.flushToolResults(messages, pendingToolResults);
-        // Unfinished server-executed tool calls (e.g. a web search the provider is still running)
-        // must be echoed back so the provider keeps executing them on the retry turn.
-        if (!this.pendingServerToolUses.isEmpty()) {
-            JsonArray blocks = new JsonArray();
-            for (JsonObject block : this.pendingServerToolUses.values()) {
-                blocks.add(block);
-            }
-            JsonObject assistant = new JsonObject();
-            assistant.addProperty("role", "assistant");
-            assistant.add("content", blocks);
-            messages.add(assistant);
-        }
         // Anthropic-compatible endpoints are not always happy with a request that ENDS in a
         // tool_result block (the agent-loop turn after a tool call); some hang or reject it.
         // Appending an empty user message keeps the conversation open — standard practice for
@@ -324,34 +269,11 @@ public class AnthropicCompatLLMClient implements LLMClient {
 
         // --- tools ---
         if (callback.needAddTools) {
-            Set<String> selectedTools = ToolContextSelector.selected(maid, callback);
+            ToolCatalogSnapshot snapshot = ToolContextSelector.snapshot(maid, callback);
             JsonArray tools = new JsonArray();
-            // Server-executed web search goes first; DeepSeek runs it and returns the results in
-            // the same turn, so no client-side tool_result round trip is needed.
-            JsonObject webSearch = new JsonObject();
-            webSearch.addProperty("type", WEB_SEARCH_TOOL_TYPE);
-            webSearch.addProperty("name", WEB_SEARCH_TOOL_NAME);
-            webSearch.addProperty("max_uses", WEB_SEARCH_MAX_USES);
-            tools.add(webSearch);
-
-            for (var entry : ToolRegister.getAllTools().entrySet()) {
-                String toolId = entry.getKey();
-                if (!selectedTools.contains(toolId)) {
-                    continue;
-                }
-                ITool<?> tool = entry.getValue();
-                if (tool == null || !ToolContextSelector.isTriggered(maid, tool)) {
-                    continue;
-                }
-                JsonObject function = new JsonObject();
-                function.addProperty("name", toolId);
-                function.addProperty("description", tool.summary(maid));
-                ObjectParameter root = ObjectParameter.create();
-                Parameter parameter = tool.parameters(root, maid);
-                // Parameter subclasses serialize as a plain JSON Schema (type/properties/required/...),
-                // which is exactly what Anthropic's input_schema expects.
-                function.add("input_schema", GSON.toJsonTree(parameter));
-                tools.add(function);
+            for (ToolCatalogSnapshot.Entry entry : snapshot.selected(
+                    ChatFlowManager.requestedToolIds(maid.getUUID(), callback))) {
+                tools.add(entry.anthropicTool().deepCopy());
             }
             body.add("tools", tools);
         }
@@ -501,12 +423,6 @@ public class AnthropicCompatLLMClient implements LLMClient {
                     reasoning += optString(block, "thinking");
                 } else if ("tool_use".equals(type)) {
                     toolUses.add(new ToolUse(optString(block, "id"), optString(block, "name"), block.get("input")));
-                } else if ("server_tool_use".equals(type)) {
-                    // Executed by the provider; keep the block only while it has no matching result
-                    // yet (see onTextCall's retry), otherwise it is dropped right away.
-                    this.pendingServerToolUses.put(optString(block, "id"), block);
-                } else if ("web_search_tool_result".equals(type)) {
-                    this.pendingServerToolUses.remove(optString(block, "tool_use_id"));
                 }
             }
         } else {
@@ -536,12 +452,8 @@ public class AnthropicCompatLLMClient implements LLMClient {
         }
 
         if (!toolUses.isEmpty()) {
-            this.pendingServerToolUses.clear();
             callback.onFunctionCall(this.buildFunctionCallMessage(text, reasoning, toolUses), this);
             return;
-        }
-        if (StringUtils.isNotBlank(text)) {
-            this.pendingServerToolUses.clear();
         }
         this.onTextCall(callback, text, reasoning, ttsReply);
     }
@@ -553,10 +465,7 @@ public class AnthropicCompatLLMClient implements LLMClient {
     private Message buildFunctionCallMessage(String text, String reasoning, List<ToolUse> toolUses) {
         JsonObject message = new JsonObject();
         message.addProperty("role", "assistant");
-        message.addProperty("content", text);
-        if (StringUtils.isNotBlank(reasoning)) {
-            message.addProperty("reasoning_content", reasoning);
-        }
+        message.addProperty("content", ReasoningContentCodec.encode(text, reasoning));
         JsonArray toolCalls = new JsonArray();
         for (ToolUse toolUse : toolUses) {
             JsonObject function = new JsonObject();
@@ -572,7 +481,7 @@ public class AnthropicCompatLLMClient implements LLMClient {
             toolCalls.add(toolCall);
         }
         message.add("tool_calls", toolCalls);
-        return GSON.fromJson(message, ReasoningOpenAIMessage.class);
+        return GSON.fromJson(message, Message.class);
     }
 
     /** Token accounting shared with the OpenAI path: per-maid cache and per-player quota check. */
@@ -599,14 +508,6 @@ public class AnthropicCompatLLMClient implements LLMClient {
     protected void onTextCall(LLMCallback callback, String content, String reasoning,
                               @Nullable StreamingTtsReply ttsReply) {
         if (StringUtils.isBlank(content)) {
-            // A server-tool turn (e.g. web search kicked off by the provider) may legitimately
-            // produce no text yet. Echo the unfinished server_tool_use blocks back and retry once
-            // (a bounded number of times) so the provider finishes the tool and answers; an empty
-            // reply with nothing pending keeps the old behaviour.
-            if (!this.pendingServerToolUses.isEmpty() && this.emptyTextRetries < MAX_EMPTY_TEXT_RETRIES) {
-                this.retryTurn(callback);
-                return;
-            }
             callback.onSuccess(new ReasoningOpenAIResponseChat(StringUtils.EMPTY, reasoning));
             return;
         }
@@ -623,35 +524,6 @@ public class AnthropicCompatLLMClient implements LLMClient {
         } else {
             callback.onSuccess(responseChat);
         }
-    }
-
-    /**
-     * Re-issues the conversation with the empty reply recorded in the history. A fresh
-     * {@link LLMCallback} is required because the base mod's callbacks hold an immutable message
-     * list; its constructor registers it as the latest request (via {@code LLMCallbackMixin}) and
-     * creates the waiting bubble, so it must run on the server thread.
-     */
-    private void retryTurn(LLMCallback callback) {
-        this.emptyTextRetries++;
-        EntityMaid maid = callback.getMaid();
-        List<LLMMessage> history = new ArrayList<>(callback.getMessages());
-        history.add(LLMMessage.assistantChat(maid, StringUtils.EMPTY));
-        if (maid.level() instanceof ServerLevel serverLevel) {
-            serverLevel.getServer().submit(() -> this.chat(new LLMCallback(callback.getChatManager(), history)));
-        } else {
-            this.chat(new LLMCallback(callback.getChatManager(), history));
-        }
-    }
-
-    /** True when this request is the auto-retry of an unfinished server-tool turn. */
-    private boolean isRetryTurn(LLMCallback callback) {
-        List<LLMMessage> messages = callback.getMessages();
-        if (messages.isEmpty()) {
-            return false;
-        }
-        LLMMessage last = messages.get(messages.size() - 1);
-        return last.role() == Role.ASSISTANT && StringUtils.isBlank(last.message())
-                && (last.toolCalls() == null || last.toolCalls().isEmpty());
     }
 
     /** Same-language replies are one body with no {@code ---} (see {@code PapiReplacerMixin}). */
@@ -679,13 +551,6 @@ public class AnthropicCompatLLMClient implements LLMClient {
 
     /** A function {@code tool_use} block from the model. */
     private record ToolUse(String id, String name, @Nullable JsonElement input) {
-    }
-
-    /** Streaming accumulation state for an in-flight {@code server_tool_use} block. */
-    private static final class ServerToolUseBuilder {
-        private String id = StringUtils.EMPTY;
-        private String name = StringUtils.EMPTY;
-        private final StringBuilder input = new StringBuilder();
     }
 
     // ------------------------------------------------------------------
@@ -842,30 +707,6 @@ public class AnthropicCompatLLMClient implements LLMClient {
         JsonObject block = event.has("content_block") && event.get("content_block").isJsonObject()
                 ? event.getAsJsonObject("content_block") : null;
         String type = block == null ? "skip" : optString(block, "type");
-        if ("server_tool_use".equals(type)) {
-            // Unfinished server tool: accumulate its input deltas; if no result block pairs up
-            // with it this turn, it is echoed back on the retry turn (see onTextCall).
-            blockTypes.put(index, "server_tool_use");
-            ServerToolUseBuilder builder = new ServerToolUseBuilder();
-            builder.id = optString(block, "id");
-            builder.name = optString(block, "name");
-            JsonElement input = block.get("input");
-            if (input != null && input.isJsonObject() && input.getAsJsonObject().size() > 0) {
-                builder.input.append(GSON.toJson(input));
-            }
-            this.streamingServerTools.put(index, builder);
-            return;
-        }
-        if ("web_search_tool_result".equals(type)) {
-            // The result paired with its server_tool_use arrived: mark the call as completed so
-            // its block is not echoed back. The payload itself is provider-internal, never shown.
-            String toolUseId = block == null ? StringUtils.EMPTY : optString(block, "tool_use_id");
-            if (StringUtils.isNotBlank(toolUseId)) {
-                this.completedServerToolResultIds.add(toolUseId);
-            }
-            blockTypes.put(index, "skip");
-            return;
-        }
         if (!"text".equals(type) && !"thinking".equals(type) && !"tool_use".equals(type)) {
             // redacted_thinking etc.: never accumulate their payloads.
             blockTypes.put(index, "skip");
@@ -907,11 +748,6 @@ public class AnthropicCompatLLMClient implements LLMClient {
             case "input_json_delta" -> {
                 if ("tool_use".equals(blockType)) {
                     accumulator.accept(toolUseArgumentsChunk(index, optString(delta, "partial_json")));
-                } else if ("server_tool_use".equals(blockType)) {
-                    ServerToolUseBuilder builder = this.streamingServerTools.get(index);
-                    if (builder != null) {
-                        builder.input.append(optString(delta, "partial_json"));
-                    }
                 }
             }
             default -> {
@@ -920,23 +756,10 @@ public class AnthropicCompatLLMClient implements LLMClient {
         }
     }
 
-    /** {@code content_block_stop}: finalizes an in-flight {@code server_tool_use} block. */
+    /** {@code content_block_stop}: releases the block-kind entry. */
     private void onBlockStop(JsonObject event, Map<Integer, String> blockTypes) {
         int index = optInt(event, "index");
         blockTypes.remove(index);
-        ServerToolUseBuilder builder = this.streamingServerTools.remove(index);
-        if (builder == null || StringUtils.isBlank(builder.id)) {
-            return;
-        }
-        if (this.completedServerToolResultIds.contains(builder.id)) {
-            return;
-        }
-        JsonObject block = new JsonObject();
-        block.addProperty("type", "server_tool_use");
-        block.addProperty("id", builder.id);
-        block.addProperty("name", builder.name);
-        block.add("input", parseArguments(builder.input.toString()));
-        this.pendingServerToolUses.put(builder.id, block);
     }
 
     /** {@code message_delta}: final usage and stop reason. */

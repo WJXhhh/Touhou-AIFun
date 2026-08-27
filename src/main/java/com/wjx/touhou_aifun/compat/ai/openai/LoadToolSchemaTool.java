@@ -10,10 +10,8 @@ import com.github.tartaricacid.touhoulittlemaid.ai.service.llm.LLMClient;
 import com.github.tartaricacid.touhoulittlemaid.entity.passive.EntityMaid;
 import com.mojang.serialization.Codec;
 import com.wjx.touhou_aifun.chat.ChatFlowManager;
+import com.wjx.touhou_aifun.compat.ai.opencodego.OpenCodeGoLLMClient;
 
-import java.util.ArrayList;
-import java.util.List;
-import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 
 /** Stable meta-tool that requests a full schema for one extension tool on the next agent turn. */
@@ -35,7 +33,8 @@ public final class LoadToolSchemaTool implements ITool<String> {
         try {
             LLMClient client = maid.getAiChatManager().getLLMSite().client();
             return client instanceof ReasoningCompatOpenAIClient
-                    || client instanceof AnthropicCompatLLMClient;
+                    || client instanceof AnthropicCompatLLMClient
+                    || client instanceof OpenCodeGoLLMClient;
         } catch (RuntimeException e) {
             return false;
         }
@@ -44,13 +43,9 @@ public final class LoadToolSchemaTool implements ITool<String> {
     @Override
     public Parameter parameters(ObjectParameter root, EntityMaid maid) {
         StringParameter value = StringParameter.create();
-        value.setDescription("Exact extension tool id from the optional tool directory.");
-        List<String> ids = new ArrayList<>();
-        for (Map.Entry<String, ITool<?>> entry : ToolRegister.getAllTools().entrySet()) {
-            if (!ToolContextSelector.isCore(entry.getKey()) && entry.getValue() != null
-                    && ToolContextSelector.isTriggered(maid, entry.getValue())) ids.add(entry.getKey());
-        }
-        if (!ids.isEmpty()) value.addEnumValues(ids.toArray(String[]::new));
+        // The immutable per-turn directory is authoritative. Avoid rebuilding every third-party
+        // trigger/schema here merely to duplicate a potentially huge enum in the meta-tool schema.
+        value.setDescription("Exact extension tool id listed in the optional tool directory.");
         root.addProperties("tool_name", value);
         return root;
     }
@@ -62,7 +57,7 @@ public final class LoadToolSchemaTool implements ITool<String> {
     public LLMCallback onCall(String toolId, String result, LLMCallback callback) {
         ITool<?> tool = ToolRegister.getTool(result);
         if (tool == null || ToolContextSelector.isCore(result)
-                || !ToolContextSelector.isTriggered(callback.getMaid(), tool)) {
+                || !ToolContextSelector.optionalAvailable(callback.getMaid(), callback, result)) {
             return callback.addToolResult("Unknown optional extension tool: " + result, toolId);
         }
         ChatFlowManager.requestToolSchema(callback.getMaid().getUUID(), callback, result);

@@ -3,6 +3,7 @@
 /out/
 /run/
 /run-data/
+/logs/
 /.idea/
 *.iml
 *.ipr

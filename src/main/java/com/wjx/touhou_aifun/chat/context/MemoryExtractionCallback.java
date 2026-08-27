@@ -20,14 +20,12 @@ import java.util.List;
 public final class MemoryExtractionCallback extends LLMCallback {
     private final MaidAIChatManager manager;
     private final List<Long> batchIds;
-    private final long expectedRevision;
 
     public MemoryExtractionCallback(MaidAIChatManager manager, List<LLMMessage> messages,
-                                    List<Long> batchIds, long expectedRevision) {
+                                    List<Long> batchIds) {
         super(manager, messages, true);
         this.manager = manager;
         this.batchIds = List.copyOf(batchIds);
-        this.expectedRevision = expectedRevision;
         this.needAddTools = false;
     }
 
@@ -42,8 +40,8 @@ public final class MemoryExtractionCallback extends LLMCallback {
             MemoryExtractionDelta delta = parseDelta(response.getChatText());
             if (delta == null) throw new IllegalArgumentException("empty or invalid memory delta");
             this.runOnServerThread(() -> {
-                boolean applied = AIFunMemoryManager.applyExtraction(manager, batchIds, expectedRevision, delta);
-                if (!applied && AIFunMemoryManager.extractionSnapshotStillCurrent(manager, expectedRevision)) {
+                boolean applied = AIFunMemoryManager.applyExtraction(manager, batchIds, delta);
+                if (!applied && AIFunMemoryManager.extractionBatchStillPresent(manager, batchIds)) {
                     AIFunMemoryManager.extractionFailed(manager);
                 }
                 AIFunMemoryManager.finishExtraction(manager.getMaid().getUUID());
@@ -51,8 +49,13 @@ public final class MemoryExtractionCallback extends LLMCallback {
         } catch (RuntimeException e) {
             TouhouLittleMaid.LOGGER.warn("Ignoring invalid AIFun memory extraction response", e);
             this.runOnServerThread(() -> {
-                AIFunMemoryManager.extractionFailed(manager);
-                AIFunMemoryManager.finishExtraction(manager.getMaid().getUUID());
+                try {
+                    if (AIFunMemoryManager.extractionBatchStillPresent(manager, batchIds)) {
+                        AIFunMemoryManager.extractionFailed(manager);
+                    }
+                } finally {
+                    AIFunMemoryManager.finishExtraction(manager.getMaid().getUUID());
+                }
             });
         }
     }
@@ -61,8 +64,15 @@ public final class MemoryExtractionCallback extends LLMCallback {
     public void onFailure(@Nullable HttpRequest request, Throwable throwable, int errorCode) {
         TouhouLittleMaid.LOGGER.warn("AIFun background memory extraction failed ({}): {}", errorCode,
                 throwable == null ? "unknown" : throwable.getMessage());
-        this.runOnServerThread(() -> AIFunMemoryManager.extractionFailed(manager));
-        AIFunMemoryManager.finishExtraction(manager.getMaid().getUUID());
+        this.runOnServerThread(() -> {
+            try {
+                if (AIFunMemoryManager.extractionBatchStillPresent(manager, batchIds)) {
+                    AIFunMemoryManager.extractionFailed(manager);
+                }
+            } finally {
+                AIFunMemoryManager.finishExtraction(manager.getMaid().getUUID());
+            }
+        });
     }
 
     static MemoryExtractionDelta parseDelta(String content) {

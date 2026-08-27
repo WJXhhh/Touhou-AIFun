@@ -2,7 +2,7 @@ package com.wjx.touhou_aifun.mixin.client;
 
 import com.github.tartaricacid.touhoulittlemaid.client.gui.entity.maid.ai.settings.AIChatSettingsHubScreen;
 import com.wjx.touhou_aifun.client.gui.VisionSettingsScreen;
-import net.minecraft.client.gui.components.Button;
+import com.github.tartaricacid.touhoulittlemaid.client.gui.widget.button.FlatColorButton;
 import net.minecraft.network.chat.Component;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Shadow;
@@ -24,8 +24,8 @@ public abstract class AIChatSettingsHubVisionMixin {
         int x = startX;
         // TLM's STT site button occupies startY + 115 through +135.
         int y = startY + 145;
-        screen.addRenderableWidget(Button.builder(Component.literal("视觉理解"),
-                button -> screen.getMinecraft().setScreen(new VisionSettingsScreen(screen)))
-                .bounds(x, y, 95, 20).build());
+        screen.addRenderableWidget(new FlatColorButton(x, y, 95, 20,
+                Component.translatable("gui.touhou_aifun.vision"),
+                button -> screen.getMinecraft().setScreen(new VisionSettingsScreen(screen))));
     }
 }

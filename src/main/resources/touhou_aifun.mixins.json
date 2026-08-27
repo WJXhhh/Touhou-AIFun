@@ -13,7 +13,8 @@
     "LLMCallbackAccessor",
     "LLMCallbackMixin",
     "MaidAIChatManagerMixin",
-    "PapiReplacerMixin"
+    "PapiReplacerMixin",
+    "SyncMaidAIDataMessageMixin"
   ],
   "client": [
     "client.AIChatSettingsHubAccessor",
@@ -23,6 +24,7 @@
     "client.AIChatSettingsSTTConfigScreenMixin",
     "client.AIChatSettingsTTSSiteScreenMixin",
     "client.LLMSiteEditorScreenMixin",
+    "client.MinecraftRenderTargetAccessor",
     "client.ModelRowAccessor",
     "client.SoundManagerMixin",
     "client.STTChatKeyMixin",

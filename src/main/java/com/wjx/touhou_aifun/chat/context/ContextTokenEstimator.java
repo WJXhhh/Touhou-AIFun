@@ -1,6 +1,8 @@
 package com.wjx.touhou_aifun.chat.context;
 
 import com.github.tartaricacid.touhoulittlemaid.ai.service.llm.LLMMessage;
+import com.github.tartaricacid.touhoulittlemaid.ai.service.llm.openai.response.FunctionToolCall;
+import com.github.tartaricacid.touhoulittlemaid.ai.service.llm.openai.response.ToolCall;
 
 import java.util.List;
 
@@ -42,6 +44,26 @@ public final class ContextTokenEstimator {
         int total = 0;
         for (LLMMessage message : messages) {
             total += estimate(message.message());
+            if (message.toolCallId() != null && !message.toolCallId().isBlank()) {
+                total += estimate(message.toolCallId());
+            }
+            if (message.toolCalls() != null) {
+                for (ToolCall toolCall : message.toolCalls()) {
+                    if (toolCall == null) continue;
+                    if (toolCall.getId() != null && !toolCall.getId().isBlank()) {
+                        total += estimate(toolCall.getId());
+                    }
+                    FunctionToolCall function = toolCall.getFunction();
+                    if (function != null) {
+                        if (function.getName() != null && !function.getName().isBlank()) {
+                            total += estimate(function.getName());
+                        }
+                        if (function.getArguments() != null && !function.getArguments().isBlank()) {
+                            total += estimate(function.getArguments());
+                        }
+                    }
+                }
+            }
         }
         return total;
     }

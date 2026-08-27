@@ -1,0 +1,11 @@
+== 对照：1图 vs 6图，各 3 轮，间隔 15s ==
+[轮1] 1图 (body≈11KB) FAIL 0.6s -> HTTP 429 {"error":{"code":"1305","message":"该模型当前访问量过大，请您稍后再试"}}
+[轮1] 6图 (body≈68KB) FAIL 0.2s -> HTTP 429 {"error":{"code":"1305","message":"该模型当前访问量过大，请您稍后再试"}}
+[轮2] 1图 (body≈11KB) FAIL 0.5s -> HTTP 429 {"error":{"code":"1305","message":"该模型当前访问量过大，请您稍后再试"}}
+[轮2] 6图 (body≈68KB) OK 7.1s -> '```json\n{\n    "scene_summary": "A simple graphic with a light blue background, containing text and two shapes: a yellow '
+[轮3] 1图 (body≈11KB) FAIL 0.1s -> HTTP 429 {"error":{"code":"1305","message":"该模型当前访问量过大，请您稍后再试"}}
+[轮3] 6图 (body≈68KB) FAIL 0.1s -> HTTP 429 {"error":{"code":"1305","message":"该模型当前访问量过大，请您稍后再试"}}
+
+== T4: 视觉结果 -> 智谱 LLM glm-5 ==
+LLM HTTP 429
+LLM 错误: {"error":{"code":"1113","message":"余额不足或无可用资源包,请充值。"}}

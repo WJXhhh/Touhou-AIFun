@@ -10,17 +10,15 @@ import java.util.UUID;
 import java.util.function.Supplier;
 
 /** Server -> owner client: capture the six camera faces for one observation. */
-public record AIFunVisionCaptureRequestMessage(UUID requestId, int maidId, String focus, String scanJson) {
+public record AIFunVisionCaptureRequestMessage(UUID requestId, int maidId, UUID maidUuid) {
     public static void encode(AIFunVisionCaptureRequestMessage message, FriendlyByteBuf buffer) {
         buffer.writeUUID(message.requestId);
         buffer.writeVarInt(message.maidId);
-        buffer.writeUtf(message.focus == null ? "" : message.focus, 512);
-        buffer.writeUtf(message.scanJson == null ? "" : message.scanJson, 20 * 1024);
+        buffer.writeUUID(message.maidUuid);
     }
 
     public static AIFunVisionCaptureRequestMessage decode(FriendlyByteBuf buffer) {
-        return new AIFunVisionCaptureRequestMessage(buffer.readUUID(), buffer.readVarInt(),
-                buffer.readUtf(512), buffer.readUtf(20 * 1024));
+        return new AIFunVisionCaptureRequestMessage(buffer.readUUID(), buffer.readVarInt(), buffer.readUUID());
     }
 
     public static void handle(AIFunVisionCaptureRequestMessage message, Supplier<NetworkEvent.Context> contextSupplier) {
