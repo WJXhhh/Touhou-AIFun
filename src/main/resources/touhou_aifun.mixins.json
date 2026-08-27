@@ -8,13 +8,15 @@
     "AvailableSitesMixin",
     "ChatBubbleManagerMixin",
     "HistorySummaryManagerMixin",
+    "EntityMaidPublicDataMixin",
     "NearbyEntitiesContextMixin",
     "MaidAIChatDataMixin",
     "LLMCallbackAccessor",
     "LLMCallbackMixin",
     "MaidAIChatManagerMixin",
     "PapiReplacerMixin",
-    "SyncMaidAIDataMessageMixin"
+    "SyncMaidAIDataMessageMixin",
+    "TamableAnimalPublicAccessMixin"
   ],
   "client": [
     "client.AIChatSettingsHubAccessor",
@@ -24,6 +26,7 @@
     "client.AIChatSettingsSTTConfigScreenMixin",
     "client.AIChatSettingsTTSSiteScreenMixin",
     "client.LLMSiteEditorScreenMixin",
+    "client.MaidConfigContainerGuiMixin",
     "client.MinecraftRenderTargetAccessor",
     "client.ModelRowAccessor",
     "client.SoundManagerMixin",

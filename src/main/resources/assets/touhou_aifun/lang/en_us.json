@@ -69,5 +69,7 @@
   "gui.touhou_aifun.vision.status.permission_denied": "Permission denied for server visual settings",
   "gui.touhou_aifun.vision.status.site_not_found": "Provider not found",
   "gui.touhou_aifun.vision.status.invalid_site_payload": "Invalid provider configuration; save failed",
-  "gui.touhou_aifun.vision.status.site_id_mismatch": "Provider ID mismatch; save failed"
+  "gui.touhou_aifun.vision.status.site_id_mismatch": "Provider ID mismatch; save failed",
+  "gui.touhou_aifun.maid_config.public_maid": "Public maid",
+  "gui.touhou_aifun.maid_config.friendly_fire": "Allow friendly fire"
 }

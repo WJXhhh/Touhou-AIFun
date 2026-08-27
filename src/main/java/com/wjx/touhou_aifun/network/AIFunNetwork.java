@@ -9,6 +9,7 @@ import net.minecraftforge.network.PacketDistributor;
 import net.minecraftforge.network.simple.SimpleChannel;
 import com.wjx.touhou_aifun.TouhouAIFun;
 import com.wjx.touhou_aifun.network.message.AIFunSettingsMessage;
+import com.wjx.touhou_aifun.network.message.AIFunMaidAccessMessage;
 import com.wjx.touhou_aifun.network.message.AIFunTTSInterruptMessage;
 import com.wjx.touhou_aifun.network.message.AIFunTTSStreamMessage;
 import com.wjx.touhou_aifun.network.message.AIFunVisionCaptureRequestMessage;
@@ -26,9 +27,8 @@ import com.wjx.touhou_aifun.vision.VisionCaptureTransport;
 import java.util.Optional;
 
 public final class AIFunNetwork {
-    // Version 4 makes visual capture cancellation request-specific, avoiding a stale cancel racing
-    // with the next capture for the same maid.
-    private static final String VERSION = "4";
+    // Version 5 adds owner-authorized, per-maid public access and friendly-fire settings.
+    private static final String VERSION = "5";
     private static final SimpleChannel CHANNEL = NetworkRegistry.newSimpleChannel(
             new ResourceLocation(TouhouAIFun.MOD_ID, "network"),
             () -> VERSION, VERSION::equals, VERSION::equals);
@@ -80,6 +80,9 @@ public final class AIFunNetwork {
         CHANNEL.registerMessage(10, AIFunVisionCaptureCancelMessage.class,
                 AIFunVisionCaptureCancelMessage::encode, AIFunVisionCaptureCancelMessage::decode,
                 AIFunVisionCaptureCancelMessage::handle, Optional.of(NetworkDirection.PLAY_TO_CLIENT));
+        CHANNEL.registerMessage(11, AIFunMaidAccessMessage.class,
+                AIFunMaidAccessMessage::encode, AIFunMaidAccessMessage::decode,
+                AIFunMaidAccessMessage::handle, Optional.of(NetworkDirection.PLAY_TO_SERVER));
     }
 
     public static void sendToPlayer(AIFunTTSStreamMessage message, ServerPlayer player) {
@@ -95,6 +98,10 @@ public final class AIFunNetwork {
     public static void sendSettingsToServer(boolean sentenceStreaming, boolean llmStreaming,
                                             boolean emotionControl, boolean emotionInText) {
         CHANNEL.sendToServer(new AIFunSettingsMessage(sentenceStreaming, llmStreaming, emotionControl, emotionInText));
+    }
+
+    public static void sendMaidAccessToServer(int maidId, boolean publicMaid, boolean friendlyFireAllowed) {
+        CHANNEL.sendToServer(new AIFunMaidAccessMessage(maidId, publicMaid, friendlyFireAllowed));
     }
 
     public static void sendVisionCaptureRequest(ServerPlayer player, java.util.UUID requestId, int maidId,
