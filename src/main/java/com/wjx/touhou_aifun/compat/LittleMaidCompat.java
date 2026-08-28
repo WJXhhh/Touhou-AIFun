@@ -12,6 +12,7 @@ import com.github.tartaricacid.touhoulittlemaid.ai.service.tts.fishaudio.TTSFish
 import com.github.tartaricacid.touhoulittlemaid.ai.service.tts.minimax.TTSMiniMaxSite;
 import com.github.tartaricacid.touhoulittlemaid.ai.service.tts.siliconflow.TTSSiliconflowSite;
 import com.wjx.touhou_aifun.compat.ai.anthropic.AnthropicLLMSite;
+import com.wjx.touhou_aifun.compat.ai.action.EatFoodBlockTool;
 import com.wjx.touhou_aifun.compat.ai.fishaudio.tts.FishAudioCompatTTSSite;
 import com.wjx.touhou_aifun.compat.ai.mimo.MimoLLMSite;
 import com.wjx.touhou_aifun.compat.ai.minimax.tts.MiniMaxCompatTTSSite;
@@ -42,6 +43,7 @@ import java.util.function.Consumer;
 public final class LittleMaidCompat implements ILittleMaid {
     @Override
     public void registerAITool(com.github.tartaricacid.touhoulittlemaid.ai.agent.tool.ToolRegister register) {
+        register.register(new EatFoodBlockTool());
         register.register(new LoadToolSchemaTool());
         register.register(new ScanSurroundingsTool());
         register.register(new ObserveSurroundingsTool());

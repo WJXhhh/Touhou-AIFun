@@ -58,7 +58,10 @@ public final class MaidAIConfigScreen extends Screen {
         this.customSettingValue = config.customSetting();
         this.publicMaid = entry.publicMaid();
         this.friendlyFireAllowed = entry.friendlyFireAllowed();
-        this.dirtyMask = entry.configKnown() ? MaidAIConfigSnapshot.ALL : 0;
+        int writableMask = entry.ownedByViewer() ? MaidAIConfigSnapshot.ALL
+                : MaidAIConfigSnapshot.ALL
+                & ~(MaidAIConfigSnapshot.PUBLIC_MAID | MaidAIConfigSnapshot.FRIENDLY_FIRE);
+        this.dirtyMask = entry.configKnown() ? writableMask : 0;
     }
 
     @Override
@@ -105,6 +108,7 @@ public final class MaidAIConfigScreen extends Screen {
             init();
         });
         publicButton.setSelect(publicMaid);
+        publicButton.active = entry.ownedByViewer();
         addRenderableWidget(publicButton);
 
         FlatColorButton friendlyFireButton = new FlatColorButton(rightX, top + 46, columnWidth, 20,
@@ -114,6 +118,7 @@ public final class MaidAIConfigScreen extends Screen {
             init();
         });
         friendlyFireButton.setSelect(friendlyFireAllowed);
+        friendlyFireButton.active = entry.ownedByViewer();
         addRenderableWidget(friendlyFireButton);
 
         int ownerLabelWidth = Math.min(72, columnWidth / 3);
@@ -275,6 +280,11 @@ public final class MaidAIConfigScreen extends Screen {
         graphics.drawString(font,
                 Component.translatable("gui.touhou_little_maid.button.maid_ai_chat_config.custom_setting"),
                 startX + 10, top + 101, 0xFFAAAAAA, false);
+        if (!entry.ownedByViewer()) {
+            graphics.drawCenteredString(font,
+                    Component.translatable("gui.touhou_aifun.maid_management.public_guest_hint"),
+                    width / 2, startY + 19, 0xFFFFCC66);
+        }
         super.render(graphics, mouseX, mouseY, partialTick);
     }
 

@@ -15,6 +15,7 @@ import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.entity.LivingEntity;
 import org.apache.commons.lang3.StringUtils;
 import com.wjx.touhou_aifun.chat.ChatFlowManager;
+import com.wjx.touhou_aifun.chat.ChatFavorability;
 import com.wjx.touhou_aifun.chat.context.AIFunMemoryManager;
 import com.wjx.touhou_aifun.compat.ai.tts.SentenceTextSplitter;
 import com.wjx.touhou_aifun.config.TouhouAIFunConfig;
@@ -227,6 +228,7 @@ final class StreamingTtsReply {
             // Commit the durable turn and legacy history on the same server thread that starts a
             // new player turn. This makes the turn check and the assistant write one ordered event.
             AIFunMemoryManager.completeCallback(this.callback, response.getChatText());
+            ChatFavorability.awardCompletedChat(this.maid);
             ChatFlowManager.finishRequest(this.maidId, this.callback);
             this.chatManager.addAssistantHistory(response.toString());
             // Take over speaking (interrupt any previous reply), then surface the COMPLETE chat

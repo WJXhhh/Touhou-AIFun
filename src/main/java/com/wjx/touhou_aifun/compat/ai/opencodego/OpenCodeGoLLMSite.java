@@ -95,6 +95,7 @@ public final class OpenCodeGoLLMSite extends LLMOpenAISite {
                     new ModelEntry("minimax-m3"),
                     new ModelEntry("minimax-m2.7"),
                     new ModelEntry("minimax-m2.5"),
+                    new ModelEntry(OpenCodeGoShared.MUSE_SPARK_1_2_CONTRIBUTOR),
                     new ModelEntry("qwen3.8-max"),
                     new ModelEntry("qwen3.7-max"),
                     new ModelEntry("qwen3.7-plus"),

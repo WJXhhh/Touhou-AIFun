@@ -68,27 +68,54 @@ public final class MaidManagementScreen extends Screen {
         addRenderableWidget(new FlatColorButton(startX + 5, footerY, 72, 20,
                 Component.translatable("gui.touhou_aifun.maid_management.refresh"),
                 button -> AIFunNetwork.requestMaidList(false)));
+        addRenderableWidget(new FlatColorButton(startX + 81, footerY, 73, 20,
+                CommonComponents.GUI_DONE, button -> onClose()));
 
         MaidManagementEntry selected = selected();
+        addRenderableWidget(new FlatColorButton(startX + panelWidth - 205, startY + 5, 86, 20,
+                Component.translatable("gui.touhou_aifun.maid_management.stt_settings"),
+                button -> openSttSettings()));
         FlatColorButton copyAll = new FlatColorButton(startX + panelWidth - 115, startY + 5, 110, 20,
                 Component.translatable("gui.touhou_aifun.maid_management.copy_all"),
                 button -> confirmCopyToAll());
-        copyAll.active = selected != null && selected.configKnown() && entries.size() > 1;
+        long ownedCount = entries.stream().filter(MaidManagementEntry::ownedByViewer).count();
+        copyAll.active = selected != null && selected.ownedByViewer() && selected.configKnown()
+                && ownedCount > 1;
         addRenderableWidget(copyAll);
-        FlatColorButton edit = new FlatColorButton(rightX, footerY, Math.max(70, (rightWidth - 166) / 2), 20,
+
+        int actionGap = 3;
+        int actionWidth = Math.max(35, (rightWidth - actionGap * 3) / 4);
+        FlatColorButton edit = new FlatColorButton(rightX, footerY, actionWidth, 20,
                 Component.translatable("gui.touhou_aifun.maid_management.edit"), button -> openEditor());
         edit.active = selected != null;
         addRenderableWidget(edit);
 
-        int recallX = rightX + edit.getWidth() + 4;
+        int behaviorX = rightX + actionWidth + actionGap;
+        FlatColorButton behavior = new FlatColorButton(behaviorX, footerY, actionWidth, 20,
+                Component.translatable("gui.touhou_aifun.maid_management.behavior"),
+                button -> openBehaviorSelected());
+        behavior.active = selected != null && selected.state() == MaidManagementEntry.State.LOADED_HERE;
+        addRenderableWidget(behavior);
+
+        int highlightX = behaviorX + actionWidth + actionGap;
+        FlatColorButton highlight = new FlatColorButton(highlightX, footerY, actionWidth, 20,
+                Component.translatable("gui.touhou_aifun.maid_management.highlight"),
+                button -> highlightSelected());
+        highlight.active = selected != null && selected.state() == MaidManagementEntry.State.LOADED_HERE;
+        addRenderableWidget(highlight);
+
+        int recallX = highlightX + actionWidth + actionGap;
         FlatColorButton recall = new FlatColorButton(recallX, footerY,
-                Math.max(70, rightWidth - edit.getWidth() - 86), 20,
+                rightX + rightWidth - recallX, 20,
                 Component.translatable("gui.touhou_aifun.maid_management.recall"), button -> recallSelected());
         recall.active = selected != null;
         addRenderableWidget(recall);
+    }
 
-        addRenderableWidget(new FlatColorButton(startX + panelWidth - 78, footerY, 73, 20,
-                CommonComponents.GUI_DONE, button -> onClose()));
+    private void openSttSettings() {
+        if (minecraft != null) {
+            minecraft.setScreen(MaidManagementSttSettings.create(this));
+        }
     }
 
     private void openEditor() {
@@ -102,6 +129,20 @@ public final class MaidManagementScreen extends Screen {
         MaidManagementEntry selected = selected();
         if (selected != null) {
             AIFunNetwork.recallManagedMaid(selected.maidId());
+        }
+    }
+
+    private void openBehaviorSelected() {
+        MaidManagementEntry selected = selected();
+        if (selected != null) {
+            AIFunNetwork.openManagedMaidBehavior(selected.maidId());
+        }
+    }
+
+    private void highlightSelected() {
+        MaidManagementEntry selected = selected();
+        if (selected != null) {
+            AIFunNetwork.highlightManagedMaid(selected.maidId());
         }
     }
 
@@ -214,6 +255,9 @@ public final class MaidManagementScreen extends Screen {
         y += 16;
         y = detailLine(graphics, x, y, maxWidth, "gui.touhou_aifun.maid_management.state",
                 stateLabel(entry.state()));
+        y = detailLine(graphics, x, y, maxWidth, "gui.touhou_aifun.maid_management.relationship",
+                Component.translatable("gui.touhou_aifun.maid_management.relationship."
+                        + (entry.ownedByViewer() ? "owner" : "public")));
         y = detailLine(graphics, x, y, maxWidth, "gui.touhou_aifun.maid_management.dimension",
                 Component.literal(entry.dimension()));
         y = detailLine(graphics, x, y, maxWidth, "gui.touhou_aifun.maid_management.position",
@@ -342,8 +386,10 @@ public final class MaidManagementScreen extends Screen {
     private boolean statusIsError() {
         String text = statusMessage.getString().toLowerCase(java.util.Locale.ROOT);
         return text.contains("无法") || text.contains("失败") || text.contains("不能")
+                || text.contains("太远") || text.contains("睡眠") || text.contains("只能")
                 || text.contains("not ") || text.contains("cannot") || text.contains("unloaded")
-                || text.contains("cooldown");
+                || text.contains("cooldown") || text.contains("too far") || text.contains("sleeping")
+                || text.contains("only the owner");
     }
 
     @Override

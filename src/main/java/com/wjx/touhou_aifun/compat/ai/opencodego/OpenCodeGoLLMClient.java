@@ -4,6 +4,7 @@ import com.github.tartaricacid.touhoulittlemaid.ai.manager.entity.LLMCallback;
 import com.github.tartaricacid.touhoulittlemaid.ai.service.llm.LLMClient;
 import com.github.tartaricacid.touhoulittlemaid.ai.service.llm.openai.LLMOpenAISite;
 import com.wjx.touhou_aifun.compat.ai.openai.AnthropicCompatLLMClient;
+import com.wjx.touhou_aifun.compat.ai.openai.OpenAIResponsesCompatLLMClient;
 import com.wjx.touhou_aifun.compat.ai.openai.ReasoningCompatOpenAIClient;
 import com.wjx.touhou_aifun.compat.ai.openai.ReasoningCompatOpenAISite;
 
@@ -23,6 +24,10 @@ public final class OpenCodeGoLLMClient implements LLMClient {
     @Override
     public void chat(LLMCallback callback) {
         String model = callback.getMaid().getAiChatManager().getLLMModel();
+        if (OpenCodeGoShared.usesResponses(model)) {
+            new OpenAIResponsesCompatLLMClient(this.httpClient, this.copyForResponses()).chat(callback);
+            return;
+        }
         if (OpenCodeGoShared.usesAnthropicMessages(model)) {
             new AnthropicCompatLLMClient(this.httpClient, this.copyForMessages()).chat(callback);
             return;
@@ -42,6 +47,14 @@ public final class OpenCodeGoLLMClient implements LLMClient {
         return new LLMOpenAISite(
                 this.site.id(), this.site.icon(),
                 OpenCodeGoShared.messagesEndpoint(this.site.url()),
+                this.site.enabled(), this.site.secretKey(), false,
+                this.site.headers(), new ArrayList<>(this.site.modelEntries().values()));
+    }
+
+    private LLMOpenAISite copyForResponses() {
+        return new LLMOpenAISite(
+                this.site.id(), this.site.icon(),
+                OpenCodeGoShared.responsesEndpoint(this.site.url()),
                 this.site.enabled(), this.site.secretKey(), false,
                 this.site.headers(), new ArrayList<>(this.site.modelEntries().values()));
     }

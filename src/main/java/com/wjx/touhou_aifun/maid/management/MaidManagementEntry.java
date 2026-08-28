@@ -11,6 +11,7 @@ public record MaidManagementEntry(UUID maidId, Component name, String dimension,
                                   long lastSeen, State state, String modelId, float health,
                                   float maxHealth, String taskId, boolean homeMode,
                                   boolean publicMaid, boolean friendlyFireAllowed,
+                                  boolean ownedByViewer,
                                   boolean configKnown, boolean configPending,
                                   MaidAIConfigSnapshot config) {
     public void write(FriendlyByteBuf buffer) {
@@ -27,6 +28,7 @@ public record MaidManagementEntry(UUID maidId, Component name, String dimension,
         buffer.writeBoolean(homeMode);
         buffer.writeBoolean(publicMaid);
         buffer.writeBoolean(friendlyFireAllowed);
+        buffer.writeBoolean(ownedByViewer);
         buffer.writeBoolean(configKnown);
         buffer.writeBoolean(configPending);
         config.write(buffer);
@@ -37,6 +39,7 @@ public record MaidManagementEntry(UUID maidId, Component name, String dimension,
                 buffer.readBlockPos(), buffer.readLong(), buffer.readEnum(State.class), buffer.readUtf(512),
                 buffer.readFloat(), buffer.readFloat(), buffer.readUtf(256), buffer.readBoolean(),
                 buffer.readBoolean(), buffer.readBoolean(), buffer.readBoolean(), buffer.readBoolean(),
+                buffer.readBoolean(),
                 MaidAIConfigSnapshot.read(buffer));
     }
 

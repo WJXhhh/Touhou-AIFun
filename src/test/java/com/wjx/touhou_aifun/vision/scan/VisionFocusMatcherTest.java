@@ -12,6 +12,8 @@ class VisionFocusMatcherTest {
         assertTrue(VisionFocusMatcher.matches("有没有苦力怕", "minecraft:creeper"));
         assertTrue(VisionFocusMatcher.matches("检查危险", "minecraft:lava"));
         assertTrue(VisionFocusMatcher.matches("find a portal", "minecraft:nether_portal"));
+        assertTrue(VisionFocusMatcher.matches("吃掉零食箱上的蛋糕", "minecraft:cake"));
+        assertTrue(VisionFocusMatcher.matches("看看零食柜", "touhou_little_maid:snack_cabinet"));
         assertFalse(VisionFocusMatcher.matches("找箱子", "minecraft:zombie"));
     }
 }

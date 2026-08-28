@@ -16,6 +16,7 @@ import org.spongepowered.asm.mixin.injection.Redirect;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 import com.wjx.touhou_aifun.chat.ChatFlowManager;
+import com.wjx.touhou_aifun.chat.ChatFavorability;
 import com.wjx.touhou_aifun.chat.context.AIFunMemoryManager;
 import com.wjx.touhou_aifun.chat.context.ContextBudgetPlanner;
 import com.wjx.touhou_aifun.chat.context.ContextTokenEstimator;
@@ -161,6 +162,7 @@ public abstract class LLMCallbackMixin {
                 // translation and provider reasoning envelope remain in legacy/current tool-chain
                 // messages but must not double the next ordinary request.
                 AIFunMemoryManager.completeCallback(self, responseChat.getChatText());
+                ChatFavorability.awardCompletedChat(self.getMaid());
             }
         } finally {
             ChatFlowManager.finishRequest(maidId, this);

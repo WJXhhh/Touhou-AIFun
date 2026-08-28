@@ -2,6 +2,7 @@ package com.wjx.touhou_aifun.chat;
 
 import com.github.tartaricacid.touhoulittlemaid.entity.passive.EntityMaid;
 import com.wjx.touhou_aifun.TouhouAIFun;
+import com.wjx.touhou_aifun.maid.action.MaidEatFoodActionManager;
 import net.minecraftforge.event.entity.EntityLeaveLevelEvent;
 import net.minecraftforge.event.server.ServerStoppedEvent;
 import net.minecraftforge.eventbus.api.SubscribeEvent;
@@ -16,12 +17,14 @@ public final class ChatRuntimeLifecycle {
     @SubscribeEvent
     public static void onEntityLeave(EntityLeaveLevelEvent event) {
         if (!event.getLevel().isClientSide() && event.getEntity() instanceof EntityMaid maid) {
+            MaidEatFoodActionManager.cancelForMaid(maid.getUUID(), "The maid left the level.");
             ChatFlowManager.forgetMaid(maid.getUUID());
         }
     }
 
     @SubscribeEvent
     public static void onServerStopped(ServerStoppedEvent event) {
+        MaidEatFoodActionManager.clearAll();
         ChatFlowManager.clearAllRuntimeState();
     }
 }

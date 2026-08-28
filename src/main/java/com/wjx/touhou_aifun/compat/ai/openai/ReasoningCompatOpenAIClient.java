@@ -346,8 +346,8 @@ public class ReasoningCompatOpenAIClient extends LLMOpenAIClient {
      * answer is finalized through it (so the early-spoken sentences are not re-synthesized);
      * otherwise it falls back to {@link LLMCallback#onSuccess}.
      */
-    private void processChatResponse(LLMCallback callback, ReasoningOpenAIChatCompletionResponse chat,
-                                     HttpRequest request, @Nullable StreamingTtsReply ttsReply) {
+    protected void processChatResponse(LLMCallback callback, ReasoningOpenAIChatCompletionResponse chat,
+                                       HttpRequest request, @Nullable StreamingTtsReply ttsReply) {
         if (TouhouLittleMaid.DEBUG) {
             TouhouLittleMaid.LOGGER.info(GSON.toJson(chat));
         }

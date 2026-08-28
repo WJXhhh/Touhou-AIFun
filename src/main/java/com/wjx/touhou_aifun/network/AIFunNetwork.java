@@ -17,6 +17,8 @@ import com.wjx.touhou_aifun.network.message.AIFunMaidBatchConfigMessage;
 import com.wjx.touhou_aifun.network.message.AIFunMaidListRequestMessage;
 import com.wjx.touhou_aifun.network.message.AIFunMaidListSyncMessage;
 import com.wjx.touhou_aifun.network.message.AIFunMaidRecallMessage;
+import com.wjx.touhou_aifun.network.message.AIFunMaidHighlightMessage;
+import com.wjx.touhou_aifun.network.message.AIFunMaidOpenBehaviorMessage;
 import com.wjx.touhou_aifun.network.message.AIFunTTSInterruptMessage;
 import com.wjx.touhou_aifun.network.message.AIFunTTSStreamMessage;
 import com.wjx.touhou_aifun.network.message.AIFunVisionCaptureRequestMessage;
@@ -38,8 +40,8 @@ import java.util.Optional;
 import java.util.UUID;
 
 public final class AIFunNetwork {
-    // Version 6 adds the player-owned maid directory and UUID-based management actions.
-    private static final String VERSION = "6";
+    // Version 8 adds viewer ownership to management rows for public-maid authorization.
+    private static final String VERSION = "8";
     private static final SimpleChannel CHANNEL = NetworkRegistry.newSimpleChannel(
             new ResourceLocation(TouhouAIFun.MOD_ID, "network"),
             () -> VERSION, VERSION::equals, VERSION::equals);
@@ -109,6 +111,12 @@ public final class AIFunNetwork {
         CHANNEL.registerMessage(16, AIFunMaidBatchConfigMessage.class,
                 AIFunMaidBatchConfigMessage::encode, AIFunMaidBatchConfigMessage::decode,
                 AIFunMaidBatchConfigMessage::handle, Optional.of(NetworkDirection.PLAY_TO_SERVER));
+        CHANNEL.registerMessage(17, AIFunMaidOpenBehaviorMessage.class,
+                AIFunMaidOpenBehaviorMessage::encode, AIFunMaidOpenBehaviorMessage::decode,
+                AIFunMaidOpenBehaviorMessage::handle, Optional.of(NetworkDirection.PLAY_TO_SERVER));
+        CHANNEL.registerMessage(18, AIFunMaidHighlightMessage.class,
+                AIFunMaidHighlightMessage::encode, AIFunMaidHighlightMessage::decode,
+                AIFunMaidHighlightMessage::handle, Optional.of(NetworkDirection.PLAY_TO_SERVER));
     }
 
     /**
@@ -186,6 +194,14 @@ public final class AIFunNetwork {
 
     public static void recallManagedMaid(UUID maidId) {
         CHANNEL.sendToServer(new AIFunMaidRecallMessage(maidId));
+    }
+
+    public static void openManagedMaidBehavior(UUID maidId) {
+        CHANNEL.sendToServer(new AIFunMaidOpenBehaviorMessage(maidId));
+    }
+
+    public static void highlightManagedMaid(UUID maidId) {
+        CHANNEL.sendToServer(new AIFunMaidHighlightMessage(maidId));
     }
 
     public static void copyManagedMaidConfigToAll(UUID sourceMaidId) {

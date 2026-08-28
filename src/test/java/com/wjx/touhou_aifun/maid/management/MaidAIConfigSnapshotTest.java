@@ -39,4 +39,14 @@ class MaidAIConfigSnapshotTest {
         assertEquals("keep-persona", target.customSetting);
         assertEquals("ja_jp", target.ttsLanguage);
     }
+
+    @Test
+    void publicGuestCannotChangeOwnerOnlyAccessFields() {
+        int requested = MaidAIConfigSnapshot.LLM | MaidAIConfigSnapshot.TTS
+                | MaidAIConfigSnapshot.PUBLIC_MAID | MaidAIConfigSnapshot.FRIENDLY_FIRE;
+
+        assertEquals(MaidAIConfigSnapshot.LLM | MaidAIConfigSnapshot.TTS,
+                MaidManagementService.allowedConfigMask(false, requested));
+        assertEquals(requested, MaidManagementService.allowedConfigMask(true, requested));
+    }
 }

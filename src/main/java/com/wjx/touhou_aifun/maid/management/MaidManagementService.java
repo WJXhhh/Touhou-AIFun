@@ -6,6 +6,7 @@ import com.github.tartaricacid.touhoulittlemaid.ai.service.SupportModelSelect;
 import com.github.tartaricacid.touhoulittlemaid.ai.service.llm.LLMSite;
 import com.github.tartaricacid.touhoulittlemaid.ai.service.tts.TTSSite;
 import com.github.tartaricacid.touhoulittlemaid.entity.passive.EntityMaid;
+import com.github.tartaricacid.touhoulittlemaid.entity.passive.TabIndex;
 import com.github.tartaricacid.touhoulittlemaid.world.data.MaidInfo;
 import com.github.tartaricacid.touhoulittlemaid.world.data.MaidWorldData;
 import com.wjx.touhou_aifun.maid.PublicMaidAccess;
@@ -30,6 +31,7 @@ import java.util.UUID;
 
 public final class MaidManagementService {
     private static final int RECALL_COOLDOWN_TICKS = 20;
+    private static final int HIGHLIGHT_DURATION_TICKS = 30 * 20;
     private static final Map<UUID, Long> LAST_RECALL = new LinkedHashMap<>();
 
     private MaidManagementService() {
@@ -43,7 +45,8 @@ public final class MaidManagementService {
 
         for (ServerLevel level : server.getAllLevels()) {
             List<? extends EntityMaid> loaded = level.getEntities(EntityMaid.TYPE,
-                    maid -> maid.isAlive() && owner.equals(maid.getOwnerUUID()));
+                    maid -> maid.isAlive() && (owner.equals(maid.getOwnerUUID())
+                            || PublicMaidAccess.isPublic(maid)));
             for (EntityMaid maid : loaded) {
                 directory.snapshot(maid);
                 result.put(maid.getUUID(), fromLoaded(player, maid));
@@ -51,6 +54,9 @@ public final class MaidManagementService {
         }
 
         for (MaidDirectoryRecord record : directory.getAll(owner)) {
+            result.putIfAbsent(record.maidId(), fromRecord(player, record));
+        }
+        for (MaidDirectoryRecord record : directory.getPublic()) {
             result.putIfAbsent(record.maidId(), fromRecord(player, record));
         }
 
@@ -64,6 +70,7 @@ public final class MaidManagementService {
 
         List<MaidManagementEntry> entries = new ArrayList<>(result.values());
         entries.sort(Comparator.comparingInt((MaidManagementEntry entry) -> entry.state().ordinal())
+                .thenComparing(entry -> !entry.ownedByViewer())
                 .thenComparing(entry -> entry.name().getString().toLowerCase(Locale.ROOT))
                 .thenComparing(MaidManagementEntry::maidId));
         return entries;
@@ -71,16 +78,17 @@ public final class MaidManagementService {
 
     public static String saveConfig(ServerPlayer player, UUID maidId, MaidAIConfigSnapshot requested,
                                     boolean publicMaid, boolean friendlyFireAllowed, int requestedMask) {
-        int mask = requestedMask & MaidAIConfigSnapshot.ALL;
-        if (mask == 0) {
-            return "no_changes";
-        }
-        MaidAIConfigSnapshot config = sanitize(requested);
         EntityMaid loaded = findLoaded(player.server, maidId);
         if (loaded != null) {
-            if (!PublicMaidAccess.isActualOwner(loaded, player) || !loaded.isAlive()) {
+            if (!loaded.isAlive() || !canControl(loaded, player)) {
                 return "not_owner";
             }
+            boolean actualOwner = PublicMaidAccess.isActualOwner(loaded, player);
+            int mask = allowedConfigMask(actualOwner, requestedMask);
+            if (mask == 0) {
+                return actualOwner ? "no_changes" : "access_owner_only";
+            }
+            MaidAIConfigSnapshot config = sanitize(requested);
             config.applyTo(loaded.getAiChatManager(), mask);
             PublicMaidData access = PublicMaidAccess.data(loaded);
             if ((mask & MaidAIConfigSnapshot.PUBLIC_MAID) != 0) {
@@ -93,11 +101,17 @@ public final class MaidManagementService {
             return "config_saved";
         }
 
-        MaidDirectoryRecord record = findRecord(player, maidId);
-        if (record == null || !player.getUUID().equals(record.ownerId())) {
+        MaidDirectoryRecord record = findAccessibleRecord(player, maidId);
+        if (record == null) {
             return "not_found";
         }
-        MaidManagementData.get(player.server).storePending(player.getUUID(), maidId, record, config,
+        boolean actualOwner = player.getUUID().equals(record.ownerId());
+        int mask = allowedConfigMask(actualOwner, requestedMask);
+        if (mask == 0) {
+            return actualOwner ? "no_changes" : "access_owner_only";
+        }
+        MaidAIConfigSnapshot config = sanitize(requested);
+        MaidManagementData.get(player.server).storePending(record.ownerId(), maidId, record, config,
                 publicMaid, friendlyFireAllowed, mask);
         return "config_queued";
     }
@@ -105,9 +119,9 @@ public final class MaidManagementService {
     public static String recall(ServerPlayer player, UUID maidId) {
         EntityMaid maid = findLoaded(player.server, maidId);
         if (maid == null) {
-            return findRecord(player, maidId) == null ? "not_found" : "unloaded";
+            return findAccessibleRecord(player, maidId) == null ? "not_found" : "unloaded";
         }
-        if (!maid.isAlive() || !PublicMaidAccess.isActualOwner(maid, player)) {
+        if (!maid.isAlive() || !canControl(maid, player)) {
             return "not_owner";
         }
         if (maid.level() != player.level()) {
@@ -133,6 +147,45 @@ public final class MaidManagementService {
         return "recalled";
     }
 
+    public static String highlight(ServerPlayer player, UUID maidId) {
+        EntityMaid maid = findLoaded(player.server, maidId);
+        if (maid == null) {
+            return findAccessibleRecord(player, maidId) == null ? "not_found" : "unloaded";
+        }
+        if (!maid.isAlive() || !canControl(maid, player)) {
+            return "not_owner";
+        }
+        if (maid.level() != player.level()) {
+            return "other_dimension";
+        }
+        maid.addEffect(new MobEffectInstance(MobEffects.GLOWING, HIGHLIGHT_DURATION_TICKS,
+                0, false, false, false));
+        return "highlighted";
+    }
+
+    /** Opens TLM's native behavior/config window when its entity-backed menu is safe to use. */
+    public static String openBehavior(ServerPlayer player, UUID maidId) {
+        EntityMaid maid = findLoaded(player.server, maidId);
+        if (maid == null) {
+            return findAccessibleRecord(player, maidId) == null ? "not_found" : "unloaded";
+        }
+        if (!maid.isAlive() || !canControl(maid, player)) {
+            return "not_owner";
+        }
+        if (maid.level() != player.level()) {
+            return "other_dimension";
+        }
+        if (maid.isSleeping()) {
+            return "sleeping";
+        }
+        // TLM's entity-backed container requires this distance both while opening and every tick.
+        if (maid.distanceTo(player) >= 5.0F) {
+            return "too_far";
+        }
+        maid.openMaidGui(player, TabIndex.MAID_CONFIG);
+        return "behavior_opened";
+    }
+
     public static String copyConfigToAll(ServerPlayer player, UUID sourceMaidId) {
         MaidAIConfigSnapshot sourceConfig;
         EntityMaid loadedSource = findLoaded(player.server, sourceMaidId);
@@ -142,7 +195,7 @@ public final class MaidManagementService {
             }
             sourceConfig = MaidAIConfigSnapshot.from(loadedSource.getAiChatManager());
         } else {
-            MaidDirectoryRecord sourceRecord = findRecord(player, sourceMaidId);
+            MaidDirectoryRecord sourceRecord = findOwnedRecord(player, sourceMaidId);
             if (sourceRecord == null || !player.getUUID().equals(sourceRecord.ownerId())) {
                 return "not_found";
             }
@@ -157,7 +210,7 @@ public final class MaidManagementService {
                 | MaidAIConfigSnapshot.OWNER_NAME | MaidAIConfigSnapshot.CUSTOM_SETTING;
         int changed = 0;
         for (MaidManagementEntry target : list(player)) {
-            if (target.maidId().equals(sourceMaidId)) {
+            if (target.maidId().equals(sourceMaidId) || !target.ownedByViewer()) {
                 continue;
             }
             String result = saveConfig(player, target.maidId(), sourceConfig, target.publicMaid(),
@@ -181,7 +234,7 @@ public final class MaidManagementService {
     }
 
     @Nullable
-    private static MaidDirectoryRecord findRecord(ServerPlayer player, UUID maidId) {
+    private static MaidDirectoryRecord findOwnedRecord(ServerPlayer player, UUID maidId) {
         MaidDirectoryRecord record = MaidManagementData.get(player.server).get(player.getUUID(), maidId);
         if (record != null) {
             return record;
@@ -193,6 +246,24 @@ public final class MaidManagementService {
         }
         return infos.stream().filter(info -> maidId.equals(info.getEntityId())).findFirst()
                 .map(info -> fallback(player.getUUID(), info)).orElse(null);
+    }
+
+    @Nullable
+    private static MaidDirectoryRecord findAccessibleRecord(ServerPlayer player, UUID maidId) {
+        MaidDirectoryRecord owned = findOwnedRecord(player, maidId);
+        return owned != null ? owned : MaidManagementData.get(player.server).findPublic(maidId);
+    }
+
+    private static boolean canControl(EntityMaid maid, ServerPlayer player) {
+        return PublicMaidAccess.isActualOwner(maid, player) || PublicMaidAccess.isPublicPlayer(maid, player);
+    }
+
+    static int allowedConfigMask(boolean actualOwner, int requestedMask) {
+        int mask = requestedMask & MaidAIConfigSnapshot.ALL;
+        if (!actualOwner) {
+            mask &= ~(MaidAIConfigSnapshot.PUBLIC_MAID | MaidAIConfigSnapshot.FRIENDLY_FIRE);
+        }
+        return mask;
     }
 
     private static MaidDirectoryRecord fallback(UUID owner, MaidInfo info) {
@@ -209,7 +280,8 @@ public final class MaidManagementService {
                 maid.level().dimension().location().toString(), maid.blockPosition(), System.currentTimeMillis(),
                 state, maid.getModelId(), maid.getHealth(), maid.getMaxHealth(),
                 maid.getTask().getUid().toString(), maid.isHomeModeEnable(), PublicMaidAccess.isPublic(maid),
-                PublicMaidAccess.isFriendlyFireAllowed(maid), true, false,
+                PublicMaidAccess.isFriendlyFireAllowed(maid), PublicMaidAccess.isActualOwner(maid, player),
+                true, false,
                 MaidAIConfigSnapshot.from(maid.getAiChatManager()));
     }
 
@@ -217,7 +289,8 @@ public final class MaidManagementService {
         return new MaidManagementEntry(record.maidId(), record.displayName(), record.dimension(),
                 record.position(), record.lastSeen(), MaidManagementEntry.State.UNLOADED, record.modelId(),
                 record.health(), record.maxHealth(), record.taskId(), record.homeMode(), record.publicMaid(),
-                record.friendlyFireAllowed(), record.configKnown(), record.configPending(), record.config());
+                record.friendlyFireAllowed(), player.getUUID().equals(record.ownerId()), record.configKnown(),
+                record.configPending(), record.config());
     }
 
     private static MaidAIConfigSnapshot sanitize(MaidAIConfigSnapshot source) {

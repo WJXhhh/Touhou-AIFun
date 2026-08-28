@@ -15,6 +15,7 @@ import com.google.gson.Gson;
 import com.wjx.touhou_aifun.chat.ChatFlowManager;
 import com.wjx.touhou_aifun.chat.context.ContextTokenEstimator;
 import com.wjx.touhou_aifun.compat.ai.opencodego.OpenCodeGoLLMClient;
+import com.wjx.touhou_aifun.compat.ai.action.EatFoodBlockTool;
 import com.wjx.touhou_aifun.compat.ai.time.CurrentDateTimeTool;
 import com.wjx.touhou_aifun.compat.ai.web.WebSearchTool;
 
@@ -30,6 +31,7 @@ public final class ToolContextSelector {
     private static final List<String> CORE_TOOLS = List.of(
             "use_skill", "query_minecraft_wiki", "query_game_context",
             "switch_follow_state", "switch_work_task", "switch_schedule", "switch_sit",
+            EatFoodBlockTool.TOOL_ID,
             LOAD_SCHEMA_TOOL, WebSearchTool.TOOL_ID, CurrentDateTimeTool.TOOL_ID);
     private static final Set<String> CORE_TOOL_SET = Set.copyOf(CORE_TOOLS);
     private static final Map<Object, ToolCatalogSnapshot> SNAPSHOTS = new ConcurrentHashMap<>();

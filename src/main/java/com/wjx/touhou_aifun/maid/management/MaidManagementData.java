@@ -106,6 +106,22 @@ public final class MaidManagementData extends SavedData {
         return ownerRecords == null ? java.util.List.of() : java.util.List.copyOf(ownerRecords.values());
     }
 
+    public Collection<MaidDirectoryRecord> getPublic() {
+        return records.values().stream()
+                .flatMap(ownerRecords -> ownerRecords.values().stream())
+                .filter(MaidDirectoryRecord::publicMaid)
+                .toList();
+    }
+
+    public MaidDirectoryRecord findPublic(UUID maidId) {
+        return records.values().stream()
+                .map(ownerRecords -> ownerRecords.get(maidId))
+                .filter(java.util.Objects::nonNull)
+                .filter(MaidDirectoryRecord::publicMaid)
+                .findFirst()
+                .orElse(null);
+    }
+
     public void remove(EntityMaid maid) {
         UUID owner = maid.getOwnerUUID();
         if (owner == null) {

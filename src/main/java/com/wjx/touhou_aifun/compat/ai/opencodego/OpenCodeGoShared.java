@@ -9,6 +9,7 @@ import java.util.Set;
 public final class OpenCodeGoShared {
     public static final String API_TYPE = "opencode_go";
     public static final String DEFAULT_URL = "https://opencode.ai/zen/go";
+    public static final String MUSE_SPARK_1_2_CONTRIBUTOR = "muse-spark-1.2-contributor";
     public static final ResourceLocation ICON = new ResourceLocation(
             "touhou_little_maid", "textures/gui/ai_chat/openrouter.png");
 
@@ -28,12 +29,22 @@ public final class OpenCodeGoShared {
         return normalized.startsWith("minimax-") || normalized.startsWith("qwen");
     }
 
+    /** Models documented by OpenCode Go as using the OpenAI Responses API. */
+    public static boolean usesResponses(String model) {
+        String normalized = model == null ? "" : model.trim().toLowerCase(Locale.ROOT);
+        return normalized.startsWith("muse-spark-");
+    }
+
     public static String chatCompletionsEndpoint(String configuredUrl) {
         return endpoint(configuredUrl, CHAT_COMPLETIONS_PATH);
     }
 
     public static String messagesEndpoint(String configuredUrl) {
         return endpoint(configuredUrl, MESSAGES_PATH);
+    }
+
+    public static String responsesEndpoint(String configuredUrl) {
+        return endpoint(configuredUrl, RESPONSES_PATH);
     }
 
     static String endpoint(String configuredUrl, String path) {

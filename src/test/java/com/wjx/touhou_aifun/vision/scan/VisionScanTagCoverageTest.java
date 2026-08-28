@@ -19,6 +19,8 @@ class VisionScanTagCoverageTest {
         Set<String> entries = readValues("data/touhou_aifun/tags/blocks/vision_scan_important.json");
         for (String required : Set.of(
                 "#forge:ores",
+                "minecraft:cake",
+                "touhou_little_maid:snack_cabinet",
                 "minecraft:ancient_debris",
                 "minecraft:ladder",
                 "minecraft:nether_portal",

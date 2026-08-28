@@ -3,6 +3,7 @@ package com.wjx.touhou_aifun.network.message;
 import com.github.tartaricacid.touhoulittlemaid.entity.passive.EntityMaid;
 import com.wjx.touhou_aifun.maid.PublicMaidAccess;
 import com.wjx.touhou_aifun.maid.PublicMaidData;
+import com.wjx.touhou_aifun.maid.management.MaidManagementData;
 import net.minecraft.network.FriendlyByteBuf;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.entity.Entity;
@@ -38,6 +39,7 @@ public record AIFunMaidAccessMessage(int maidId, boolean publicMaid, boolean fri
             PublicMaidData data = PublicMaidAccess.data(maid);
             data.touhouAIFun$setPublicMaid(message.publicMaid);
             data.touhouAIFun$setFriendlyFireAllowed(message.friendlyFireAllowed);
+            MaidManagementData.get(sender.server).snapshot(maid);
         });
         context.setPacketHandled(true);
     }

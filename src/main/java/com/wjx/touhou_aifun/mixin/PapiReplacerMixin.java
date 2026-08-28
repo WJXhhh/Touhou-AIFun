@@ -50,6 +50,7 @@ public abstract class PapiReplacerMixin {
         // The guidance applies to every LLM capable of receiving tools, not one wire protocol.
         result += touhouAIFun$webSearchGuidance();
         result += touhouAIFun$currentDateTimeGuidance();
+        result += touhouAIFun$physicalActionGuidance();
 
         // The visual tools are addon-owned and are intentionally described here instead of being
         // baked into the base mod's ServiceType enum. This makes the grounding rule visible to every
@@ -127,6 +128,19 @@ public abstract class PapiReplacerMixin {
                 If the user asks for the current real-world date or time, or uses a relative calendar
                 reference such as today, yesterday, tomorrow, or this week, you MUST call
                 `get_current_datetime` before answering. Never infer the current date from model knowledge.
+                """;
+    }
+
+    private static String touhouAIFun$physicalActionGuidance() {
+        return """
+
+                ## Physical action grounding
+                - When the user asks you to go eat cake or another placed edible block, call
+                  `eat_food_block`. It performs its own authoritative nearby search, so a visual scan is
+                  unnecessary unless the user also asks what you can see.
+                - Never claim that a physical action succeeded before its tool result reports
+                  `success=true`. If the action fails, acknowledge the natural obstacle briefly; do not
+                  pretend that walking, reaching, or eating occurred.
                 """;
     }
 
