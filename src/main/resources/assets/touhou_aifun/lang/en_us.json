@@ -72,6 +72,7 @@
   "gui.touhou_aifun.vision.status.site_id_mismatch": "Provider ID mismatch; save failed",
   "gui.touhou_aifun.maid_config.public_maid": "Public maid",
   "gui.touhou_aifun.maid_config.friendly_fire": "Allow friendly fire",
+  "gui.touhou_aifun.maid_config.options": "Maid behavior settings",
   "key.categories.touhou_aifun": "Touhou AIFun",
   "key.touhou_aifun.maid_management": "Open Maid Management",
   "gui.touhou_aifun.maid_management": "My Maids",
