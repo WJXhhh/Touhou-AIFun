@@ -72,7 +72,7 @@
   "gui.touhou_aifun.vision.status.site_id_mismatch": "服务商 ID 不一致，保存失败",
   "gui.touhou_aifun.maid_config.public_maid": "公共女仆",
   "gui.touhou_aifun.maid_config.friendly_fire": "允许友伤",
-  "gui.touhou_aifun.maid_config.friendly_fire.tooltip": "关闭后阻止主人和队友误伤；主人潜行攻击可强制绕过。公共玩家不会因此被视为盟友。",
+  "gui.touhou_aifun.maid_config.friendly_fire.tooltip": "关闭后阻止主人和队友造成伤害；启用后所有伤害均按正常规则处理。公共玩家不会因此被视为盟友。",
   "gui.touhou_aifun.maid_config.options": "女仆行为设置",
   "key.categories.touhou_aifun": "Touhou AIFun",
   "key.touhou_aifun.maid_management": "打开女仆管理",
