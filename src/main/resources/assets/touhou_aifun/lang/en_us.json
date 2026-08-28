@@ -72,7 +72,7 @@
   "gui.touhou_aifun.vision.status.site_id_mismatch": "Provider ID mismatch; save failed",
   "gui.touhou_aifun.maid_config.public_maid": "Public maid",
   "gui.touhou_aifun.maid_config.friendly_fire": "Allow friendly fire",
-  "gui.touhou_aifun.maid_config.friendly_fire.tooltip": "When disabled, owner and team damage is blocked. When enabled, all damage follows normal rules. Public users are not made allies.",
+  "gui.touhou_aifun.maid_config.friendly_fire.tooltip": "When disabled, the maid, her owner, and teammates cannot damage one another. When enabled, the base mod's reduced owner and team damage still applies. Public users are not made allies.",
   "gui.touhou_aifun.maid_config.options": "Maid behavior settings",
   "key.categories.touhou_aifun": "Touhou AIFun",
   "key.touhou_aifun.maid_management": "Open Maid Management",
