@@ -9,6 +9,7 @@ import com.wjx.touhou_aifun.maid.PublicMaidAccess;
 import com.wjx.touhou_aifun.maid.PublicMaidData;
 import com.wjx.touhou_aifun.network.AIFunNetwork;
 import net.minecraft.client.Minecraft;
+import net.minecraft.client.gui.components.Tooltip;
 import net.minecraft.network.chat.Component;
 import net.minecraft.world.entity.player.Inventory;
 import org.spongepowered.asm.mixin.Mixin;
@@ -64,6 +65,8 @@ public abstract class MaidConfigContainerGuiMixin extends AbstractMaidContainerG
                     sendAccessSettings(data);
                 });
         friendlyFireButton.active = actualOwner;
+        friendlyFireButton.setTooltip(Tooltip.create(
+                Component.translatable("gui.touhou_aifun.maid_config.friendly_fire.tooltip")));
         rows.add(friendlyFireButton);
 
         // Eight rows remain visible, matching the original TLM layout; extra rows scroll in-place.

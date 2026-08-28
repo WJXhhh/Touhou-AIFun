@@ -2,7 +2,6 @@ package com.wjx.touhou_aifun.mixin;
 
 import com.github.tartaricacid.touhoulittlemaid.entity.passive.EntityMaid;
 import com.wjx.touhou_aifun.maid.PublicMaidAccess;
-import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.TamableAnimal;
 import net.minecraft.world.entity.player.Player;
@@ -27,13 +26,4 @@ public abstract class TamableAnimalPublicAccessMixin {
         }
     }
 
-    /** Public users are allies, so a public maid will not select or sweep-attack them. */
-    @Inject(method = "isAlliedTo", at = @At("HEAD"), cancellable = true)
-    private void touhouAIFun$makePublicPlayersAllies(Entity entity, CallbackInfoReturnable<Boolean> cir) {
-        if ((Object) this instanceof EntityMaid maid
-                && entity instanceof Player player
-                && PublicMaidAccess.isPublicPlayer(maid, player)) {
-            cir.setReturnValue(true);
-        }
-    }
 }

@@ -1,6 +1,7 @@
 package com.wjx.touhou_aifun.mixin;
 
 import com.github.tartaricacid.touhoulittlemaid.entity.passive.EntityMaid;
+import com.wjx.touhou_aifun.maid.PublicMaidAccess;
 import com.wjx.touhou_aifun.maid.PublicMaidData;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.nbt.Tag;
@@ -59,6 +60,8 @@ public abstract class EntityMaidPublicDataMixin implements PublicMaidData {
         EntityMaid maid = (EntityMaid) (Object) this;
         if (!touhouAIFun$isFriendlyFireAllowed()
                 && source.getEntity() instanceof Player player
+                // Sneaking is an explicit owner override: protection prevents accidents, not disposal.
+                && !(PublicMaidAccess.isActualOwner(maid, player) && player.isShiftKeyDown())
                 && maid.isAlliedTo(player)) {
             cir.setReturnValue(false);
         }
