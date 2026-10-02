@@ -61,6 +61,7 @@
   "tool.touhou_aifun.observe_surroundings.capturing": "Capturing six surrounding views",
   "tool.touhou_aifun.observe_surroundings.analyzing": "Waiting for the visual model",
   "tool.touhou_aifun.web_search": "Searching the web (%s)",
+  "tool.touhou_aifun.web_fetch": "Reading webpage (%s)",
   "tool.touhou_aifun.get_current_datetime": "Checking the current date and time",
   "tool.touhou_aifun.eat_food_block": "Walking to and eating the food",
   "gui.touhou_aifun.vision.status.settings_saved": "Visual settings saved",

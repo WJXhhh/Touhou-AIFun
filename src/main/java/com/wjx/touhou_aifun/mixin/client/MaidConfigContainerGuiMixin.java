@@ -43,7 +43,13 @@ public abstract class MaidConfigContainerGuiMixin extends AbstractMaidContainerG
             }
         }
         rows.sort(Comparator.comparingInt(MaidConfigButton::getY));
-        rows.forEach(this::removeWidget);
+        // Do not use rows.forEach(this::removeWidget) here. javac lowers that bound method
+        // reference to an invokedynamic bridge whose descriptor contains this mixin class. When
+        // MaidConfigContainerGui is verified, ModLauncher then tries to load the mixin class as an
+        // ordinary runtime type and Mixin rejects it as "is invalid".
+        for (MaidConfigButton row : rows) {
+            this.removeWidget(row);
+        }
 
         MaidConfigButton publicButton = new MaidConfigButton(buttonLeft, panelTop,
                 Component.translatable("gui.touhou_aifun.maid_config.public_maid"),

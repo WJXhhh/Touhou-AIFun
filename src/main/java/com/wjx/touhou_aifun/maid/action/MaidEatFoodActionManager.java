@@ -41,7 +41,10 @@ import java.util.concurrent.ConcurrentHashMap;
 public final class MaidEatFoodActionManager {
     private static final int MAX_SEARCH_DISTANCE = 16;
     private static final int VERTICAL_SEARCH_DISTANCE = 4;
-    private static final int ACTION_TIMEOUT_TICKS = 20 * 20;
+    private static final int SINGLE_ACTION_TIMEOUT_TICKS = 20 * 20;
+    private static final int FINISH_ACTION_TIMEOUT_TICKS = 20 * 60;
+    private static final int CONSUME_INTERVAL_TICKS = 10;
+    private static final int MAX_CONSUMED_SERVINGS = 64;
     private static final double CONSUME_DISTANCE_SQR = 2.25 * 2.25;
     private static final float WALK_SPEED = 0.65f;
 
@@ -52,7 +55,7 @@ public final class MaidEatFoodActionManager {
 
     /** Must be called on the owning server thread. */
     public static CompletableFuture<Result> start(EntityMaid maid, String requestedFood, int maxDistance,
-                                                   Object callback) {
+                                                   boolean untilFinished, Object callback) {
         CompletableFuture<Result> future = new CompletableFuture<>();
         if (!(maid.level() instanceof ServerLevel level) || maid.isRemoved() || !maid.isAlive()) {
             future.complete(Result.failure("maid_unavailable", "The maid is not available in a server level."));
@@ -104,8 +107,9 @@ public final class MaidEatFoodActionManager {
             previous.complete(Result.failure("superseded", "A newer eat-food action replaced this one."));
         }
 
-        ActiveAction action = new ActiveAction(maid, callback, search.target, future,
-                level.getGameTime() + ACTION_TIMEOUT_TICKS);
+        int timeout = untilFinished ? FINISH_ACTION_TIMEOUT_TICKS : SINGLE_ACTION_TIMEOUT_TICKS;
+        ActiveAction action = new ActiveAction(maid, callback, search.target, untilFinished, future,
+                level.getGameTime() + timeout);
         ACTIVE.put(maidId, action);
         action.takeControl();
         return future;
@@ -286,14 +290,18 @@ public final class MaidEatFoodActionManager {
     private record SearchResult(Target target, boolean outsideRestriction, boolean matchingButUnreachable) {
     }
 
-    public record Result(boolean success, String status, String detail, String blockId, BlockPos position) {
-        static Result success(String blockId, BlockPos position) {
-            return new Result(true, "success", "The maid reached and consumed the edible block.",
-                    blockId, position);
+    public record Result(boolean success, String status, String detail, String blockId, BlockPos position,
+                         int servingsConsumed, boolean finished) {
+        static Result success(String blockId, BlockPos position, int servingsConsumed, boolean finished) {
+            String status = finished ? "finished" : "success";
+            String detail = finished
+                    ? "The maid consumed successive servings until the target food was finished."
+                    : "The maid reached the edible block and consumed one serving.";
+            return new Result(true, status, detail, blockId, position, servingsConsumed, finished);
         }
 
         static Result failure(String status, String detail) {
-            return new Result(false, status, detail, "", null);
+            return new Result(false, status, detail, "", null, 0, false);
         }
 
         public String toJson() {
@@ -301,6 +309,8 @@ public final class MaidEatFoodActionManager {
             root.addProperty("success", success);
             root.addProperty("status", status);
             root.addProperty("detail", detail);
+            root.addProperty("servings_consumed", servingsConsumed);
+            root.addProperty("finished", finished);
             if (blockId != null && !blockId.isBlank()) {
                 root.addProperty("block_id", blockId);
             }
@@ -319,14 +329,18 @@ public final class MaidEatFoodActionManager {
         private final EntityMaid maid;
         private final Object callback;
         private final Target target;
+        private final boolean untilFinished;
         private final CompletableFuture<Result> future;
         private final long deadline;
+        private int servingsConsumed;
+        private long nextConsumeTick;
 
-        private ActiveAction(EntityMaid maid, Object callback, Target target,
-                             CompletableFuture<Result> future, long deadline) {
+        private ActiveAction(EntityMaid maid, Object callback, Target target, boolean untilFinished,
+                              CompletableFuture<Result> future, long deadline) {
             this.maid = maid;
             this.callback = callback;
             this.target = target;
+            this.untilFinished = untilFinished;
             this.future = future;
             this.deadline = deadline;
         }
@@ -352,16 +366,37 @@ public final class MaidEatFoodActionManager {
 
             BlockState current = level.getBlockState(target.foodPos);
             if (!safeShouldMoveTo(target.edible, maid, target.foodPos, current)) {
-                finish(Result.failure("target_lost", "The target is no longer an edible block."));
+                if (untilFinished && servingsConsumed > 0) {
+                    finish(Result.success(target.blockId, target.foodPos, servingsConsumed, true));
+                } else {
+                    finish(Result.failure("target_lost", "The target is no longer an edible block."));
+                }
                 return;
             }
 
             if (maid.distanceToSqr(Vec3.atCenterOf(target.foodPos)) <= CONSUME_DISTANCE_SQR) {
+                if (level.getGameTime() < nextConsumeTick) {
+                    takeControl();
+                    return;
+                }
                 int points = target.edible.getFavorabilityPoints(maid, target.foodPos, current);
                 if (target.edible.consume(maid, target.foodPos, current)) {
                     maid.getFavorabilityManager().apply(Type.STEAL_EDIBLE_BLOCK, points);
                     maid.swing(InteractionHand.MAIN_HAND);
-                    finish(Result.success(target.blockId, target.foodPos));
+                    servingsConsumed++;
+                    BlockState afterConsume = level.getBlockState(target.foodPos);
+                    boolean targetFinished = !safeShouldMoveTo(
+                            target.edible, maid, target.foodPos, afterConsume);
+                    if (!untilFinished || targetFinished) {
+                        finish(Result.success(target.blockId, target.foodPos, servingsConsumed,
+                                targetFinished));
+                    } else if (servingsConsumed >= MAX_CONSUMED_SERVINGS) {
+                        finish(Result.failure("serving_limit",
+                                "The target was still edible after the safe serving limit."));
+                    } else {
+                        nextConsumeTick = level.getGameTime() + CONSUME_INTERVAL_TICKS;
+                        takeControl();
+                    }
                 } else {
                     finish(Result.failure("consume_failed", "The edible block refused the consume action."));
                 }

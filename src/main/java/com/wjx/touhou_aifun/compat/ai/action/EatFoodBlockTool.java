@@ -2,6 +2,7 @@ package com.wjx.touhou_aifun.compat.ai.action;
 
 import com.github.tartaricacid.touhoulittlemaid.ai.agent.tool.ITool;
 import com.github.tartaricacid.touhoulittlemaid.ai.manager.entity.LLMCallback;
+import com.github.tartaricacid.touhoulittlemaid.ai.service.function.schema.parameter.BoolParameter;
 import com.github.tartaricacid.touhoulittlemaid.ai.service.function.schema.parameter.IntegerParameter;
 import com.github.tartaricacid.touhoulittlemaid.ai.service.function.schema.parameter.ObjectParameter;
 import com.github.tartaricacid.touhoulittlemaid.ai.service.function.schema.parameter.Parameter;
@@ -22,7 +23,8 @@ public final class EatFoodBlockTool implements ITool<EatFoodBlockTool.Request> {
     public static final String TOOL_ID = "eat_food_block";
     private static final Codec<Request> CODEC = RecordCodecBuilder.create(instance -> instance.group(
             Codec.STRING.optionalFieldOf("food", "any").forGetter(Request::food),
-            Codec.INT.optionalFieldOf("max_distance", 12).forGetter(Request::maxDistance)
+            Codec.INT.optionalFieldOf("max_distance", 12).forGetter(Request::maxDistance),
+            Codec.BOOL.optionalFieldOf("until_finished", false).forGetter(Request::untilFinished)
     ).apply(instance, Request::new));
 
     @Override
@@ -34,7 +36,9 @@ public final class EatFoodBlockTool implements ITool<EatFoodBlockTool.Request> {
     public String summary(EntityMaid maid) {
         return "Use when the user orders the maid to go eat a placed edible block, especially cake on a snack cabinet. "
                 + "The tool finds a valid edible through TLM's edible-block registry, walks to it, revalidates it, "
-                + "and returns success only after it is actually consumed.";
+                + "and returns success only after it is actually consumed. Set until_finished=true when the user "
+                + "asks to eat the whole cake, finish it, keep eating, or eat until none remains; one tool call then "
+                + "performs all remaining servings without repeated calls.";
     }
 
     @Override
@@ -47,8 +51,15 @@ public final class EatFoodBlockTool implements ITool<EatFoodBlockTool.Request> {
         IntegerParameter maxDistance = IntegerParameter.create()
                 .setDescription("Search radius in blocks; clamped to 1..16.")
                 .setMinimum(1).setMaximum(16).setDefaultValue("12");
+        Parameter untilFinished = BoolParameter.create()
+                .setDescription("Set true when the user says to finish the whole placed food, keep eating, eat it all, "
+                        + "or eat until it is gone. The single call will consume successive servings until that target "
+                        + "is no longer edible. Set false for exactly one bite/serving.");
         root.addProperties("food", food, false);
         root.addProperties("max_distance", maxDistance, false);
+        // Required so even weaker models must choose the intended action scope instead of silently
+        // omitting it and falling back to one bite before issuing repeated identical tool calls.
+        root.addProperties("until_finished", untilFinished, true);
         return root;
     }
 
@@ -74,7 +85,7 @@ public final class EatFoodBlockTool implements ITool<EatFoodBlockTool.Request> {
                 return;
             }
             CompletableFuture<MaidEatFoodActionManager.Result> action = MaidEatFoodActionManager.start(
-                    callback.getMaid(), request.food(), request.maxDistance(), callback);
+                    callback.getMaid(), request.food(), request.maxDistance(), request.untilFinished(), callback);
             ChatFlowManager.setInFlight(callback.getMaid().getUUID(), callback, action);
             action.whenComplete((outcome, throwable) -> {
                 if (ChatFlowManager.isSuperseded(callback.getMaid().getUUID(), callback)) {
@@ -102,7 +113,7 @@ public final class EatFoodBlockTool implements ITool<EatFoodBlockTool.Request> {
                 .withStyle(ChatFormatting.GRAY);
     }
 
-    public record Request(String food, int maxDistance) {
+    public record Request(String food, int maxDistance, boolean untilFinished) {
         public Request {
             food = food == null || food.isBlank() ? "any" : food.trim();
             if (food.length() > 128) {

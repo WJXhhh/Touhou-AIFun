@@ -1,7 +1,9 @@
 package com.wjx.touhou_aifun.maid.action;
 
+import net.minecraft.core.BlockPos;
 import org.junit.jupiter.api.Test;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -23,5 +25,18 @@ class MaidEatFoodActionManagerTest {
                 "roast_chicken", "farmersdelight:roast_chicken_block"));
         assertFalse(MaidEatFoodActionManager.matchesRequestedFood(
                 "minecraft:cake", "example:cake"));
+    }
+
+    @Test
+    void finishedResultReportsBatchProgressToTheModel() {
+        MaidEatFoodActionManager.Result result = MaidEatFoodActionManager.Result.success(
+                "minecraft:cake", new BlockPos(1, 2, 3), 7, true);
+
+        assertTrue(result.success());
+        assertTrue(result.finished());
+        assertEquals(7, result.servingsConsumed());
+        assertTrue(result.toJson().contains("\"status\":\"finished\""));
+        assertTrue(result.toJson().contains("\"servings_consumed\":7"));
+        assertTrue(result.toJson().contains("\"finished\":true"));
     }
 }

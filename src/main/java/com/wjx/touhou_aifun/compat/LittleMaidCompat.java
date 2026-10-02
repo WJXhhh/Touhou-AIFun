@@ -34,6 +34,7 @@ import com.wjx.touhou_aifun.compat.ai.stepfun.tts.StepFunTTSSite;
 import com.wjx.touhou_aifun.compat.ai.time.CurrentDateTimeTool;
 import com.wjx.touhou_aifun.compat.ai.vision.ScanSurroundingsTool;
 import com.wjx.touhou_aifun.compat.ai.vision.ObserveSurroundingsTool;
+import com.wjx.touhou_aifun.compat.ai.web.WebFetchTool;
 import com.wjx.touhou_aifun.compat.ai.web.WebSearchTool;
 
 import java.util.Map;
@@ -48,6 +49,7 @@ public final class LittleMaidCompat implements ILittleMaid {
         register.register(new ScanSurroundingsTool());
         register.register(new ObserveSurroundingsTool());
         register.register(new WebSearchTool());
+        register.register(new WebFetchTool());
         register.register(new CurrentDateTimeTool());
     }
 
