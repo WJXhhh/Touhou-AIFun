@@ -1,6 +1,7 @@
 package com.wjx.touhou_aifun.compat.ai.anthropic;
 
 import net.minecraft.resources.ResourceLocation;
+import com.wjx.touhou_aifun.compat.ai.deepseek.DeepSeekModels;
 
 /**
  * Shared constants for the Anthropic-protocol LLM option.
@@ -24,9 +25,9 @@ public final class AnthropicShared {
     public static final ResourceLocation ICON = new ResourceLocation("touhou_aifun", "textures/gui/ai_chat/anthropic.png");
     /** DeepSeek's Anthropic-compatible endpoint. */
     public static final String DEFAULT_URL = "https://api.deepseek.com/anthropic";
-    public static final String DEFAULT_MODEL = "deepseek-v4-flash";
+    public static final String DEFAULT_MODEL = DeepSeekModels.FLASH;
     /** Extra model offered by the default site (thinking mode). */
-    public static final String DEFAULT_MODEL_PRO = "deepseek-v4-pro";
+    public static final String DEFAULT_MODEL_PRO = DeepSeekModels.PRO;
 
     private AnthropicShared() {
     }

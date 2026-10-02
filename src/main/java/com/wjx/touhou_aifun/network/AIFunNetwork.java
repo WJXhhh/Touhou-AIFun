@@ -40,8 +40,8 @@ import java.util.Optional;
 import java.util.UUID;
 
 public final class AIFunNetwork {
-    // Version 8 adds viewer ownership to management rows for public-maid authorization.
-    private static final String VERSION = "8";
+    // Version 10 adds subscription reasoning summary and effort preferences to GUI actions.
+    private static final String VERSION = "11";
     private static final SimpleChannel CHANNEL = NetworkRegistry.newSimpleChannel(
             new ResourceLocation(TouhouAIFun.MOD_ID, "network"),
             () -> VERSION, VERSION::equals, VERSION::equals);
@@ -117,6 +117,14 @@ public final class AIFunNetwork {
         CHANNEL.registerMessage(18, AIFunMaidHighlightMessage.class,
                 AIFunMaidHighlightMessage::encode, AIFunMaidHighlightMessage::decode,
                 AIFunMaidHighlightMessage::handle, Optional.of(NetworkDirection.PLAY_TO_SERVER));
+        CHANNEL.registerMessage(19, com.wjx.touhou_aifun.network.message.AIFunChatGPTActionMessage.class,
+                com.wjx.touhou_aifun.network.message.AIFunChatGPTActionMessage::encode,
+                com.wjx.touhou_aifun.network.message.AIFunChatGPTActionMessage::decode,
+                com.wjx.touhou_aifun.network.message.AIFunChatGPTActionMessage::handle, Optional.of(NetworkDirection.PLAY_TO_SERVER));
+        CHANNEL.registerMessage(20, com.wjx.touhou_aifun.network.message.AIFunChatGPTStateMessage.class,
+                com.wjx.touhou_aifun.network.message.AIFunChatGPTStateMessage::encode,
+                com.wjx.touhou_aifun.network.message.AIFunChatGPTStateMessage::decode,
+                com.wjx.touhou_aifun.network.message.AIFunChatGPTStateMessage::handle, Optional.of(NetworkDirection.PLAY_TO_CLIENT));
     }
 
     /**
@@ -240,6 +248,14 @@ public final class AIFunNetwork {
 
     public static void requestVisionSitesFromServer() {
         CHANNEL.sendToServer(new AIFunVisionSitesRequestMessage());
+    }
+
+    public static void sendChatGPTAction(com.wjx.touhou_aifun.network.message.AIFunChatGPTActionMessage message) {
+        CHANNEL.sendToServer(message);
+    }
+
+    public static void sendChatGPTState(ServerPlayer player, com.wjx.touhou_aifun.network.message.AIFunChatGPTStateMessage message) {
+        CHANNEL.send(PacketDistributor.PLAYER.with(() -> player), message);
     }
 
     public static void sendVisionSettingsToServer(boolean visionEnabled, boolean shallowScanEnabled,

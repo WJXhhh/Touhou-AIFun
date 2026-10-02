@@ -32,6 +32,7 @@
     "client.ModelRowAccessor",
     "client.SoundManagerMixin",
     "client.STTChatKeyMixin",
+    "client.SyncAISitesMessageMixin",
     "client.TTSSiteEditorScreenMixin"
   ],
   "injectors": {

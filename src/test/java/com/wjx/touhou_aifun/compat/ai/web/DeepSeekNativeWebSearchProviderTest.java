@@ -10,8 +10,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class DeepSeekNativeWebSearchProviderTest {
     @Test
     void buildsIsolatedNativeSearchRequest() {
-        JsonObject body = DeepSeekNativeWebSearchProvider.requestBody("latest Minecraft release", "deepseek-v4-flash");
-        assertEquals("deepseek-v4-flash", body.get("model").getAsString());
+        JsonObject body = DeepSeekNativeWebSearchProvider.requestBody("latest Minecraft release", "deepseek-flash");
+        assertEquals("deepseek-flash", body.get("model").getAsString());
         assertEquals("web_search_20250305",
                 body.getAsJsonArray("tools").get(0).getAsJsonObject().get("type").getAsString());
         assertFalse(body.has("stream"));
@@ -62,6 +62,6 @@ class DeepSeekNativeWebSearchProviderTest {
         String text = WebSearchTool.format(result);
         assertTrue(text.contains("UNTRUSTED WEB SEARCH DATA"));
         assertTrue(text.contains("[Example](https://example.com/a)"));
-        assertTrue(text.contains("Cite the relevant URLs"));
+        assertTrue(text.contains("only when the player asks for sources"));
     }
 }

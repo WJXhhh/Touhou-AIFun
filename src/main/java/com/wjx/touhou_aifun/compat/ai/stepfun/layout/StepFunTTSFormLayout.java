@@ -75,6 +75,14 @@ public class StepFunTTSFormLayout extends CustomVoiceTTSFormLayout {
     public Map<String, String> getInitialModels() {
         StepFunTTSSite site = (StepFunTTSSite) this.sourceSite;
         Map<String, String> models = new LinkedHashMap<>(site.models());
+        if (!isStepPlanSite(site, site.url())) {
+            // Saved sites keep their old model map; offer the new model when editing them too.
+            new StepFunTTSSite.Serializer().defaultSite().models().forEach((model, name) -> {
+                if (model.startsWith("stepaudio-3-tts:")) {
+                    models.putIfAbsent(model, name);
+                }
+            });
+        }
         if (isStepPlanSite(site, site.url())) {
             models.entrySet().removeIf(entry -> {
                 VoicePresetSpec spec = VoicePresetSpec.decode(entry.getKey());
@@ -127,7 +135,8 @@ public class StepFunTTSFormLayout extends CustomVoiceTTSFormLayout {
                 if (StringUtils.isBlank(runtimeModel)) {
                     try {
                         String voiceId = createCloneVoice(url, secretKey, site.headers(), refAudioPath, spec.referenceText());
-                        runtimeModel = CLONE_MODEL_ID.formatted(voiceId);
+                        runtimeModel = (isStepPlanSite(site, url) ? CLONE_MODEL_ID : "stepaudio-3-tts:%s")
+                                .formatted(voiceId);
                     } catch (Exception e) {
                         showStatus.accept(Component.literal("阶跃音色复刻失败: " + e.getMessage()));
                         return null;
@@ -199,9 +208,8 @@ public class StepFunTTSFormLayout extends CustomVoiceTTSFormLayout {
 
         JsonObject requestBody = new JsonObject();
         requestBody.addProperty("file_id", uploadJson.get("id").getAsString());
-        // The clone endpoint only accepts step-tts-2 / step-tts-mini / step-tts-vivid here;
-        // "stepaudio-2.5-tts" (the step_plan synth model) is rejected with HTTP 400. The model
-        // chosen for cloning is independent of the model used later for synthesis.
+        // The clone API documents step-tts-2 / step-tts-mini / stepaudio-2.5-tts,
+        // not stepaudio-3-tts. Keep the registration model separate from synthesis.
         requestBody.addProperty("model", "step-tts-2");
         if (StringUtils.isNotBlank(refText)) {
             requestBody.addProperty("text", refText);

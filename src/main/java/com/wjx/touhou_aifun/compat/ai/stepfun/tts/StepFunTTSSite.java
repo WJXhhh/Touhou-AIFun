@@ -191,6 +191,7 @@ public class StepFunTTSSite implements TTSSite, SupportModelSelect {
         }
 
         private static void addVoice(Map<String, String> models, String displayName, String voiceId, String... supportedModels) {
+            models.put("stepaudio-3-tts:" + voiceId, "stepaudio-3-tts / " + displayName);
             for (String model : supportedModels) {
                 models.put(model + ":" + voiceId, model + " / " + displayName);
             }

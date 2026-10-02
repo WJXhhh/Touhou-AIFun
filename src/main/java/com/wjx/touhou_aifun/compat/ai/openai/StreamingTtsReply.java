@@ -101,6 +101,7 @@ final class StreamingTtsReply {
     private boolean started;
     /** Prevent a stream finalizer and a duplicate provider callback from committing twice. */
     private boolean finishScheduled;
+    private volatile boolean aborted;
     private volatile int generation;
 
     StreamingTtsReply(LLMCallback callback, boolean singleSegment, boolean showMarkerInChat,
@@ -140,12 +141,28 @@ final class StreamingTtsReply {
         return this.usable;
     }
 
+    /** Stops synthesis queued by a stream that failed before its terminal completion event. */
+    void abort() {
+        synchronized (this) {
+            this.aborted = true;
+            this.pending.clear();
+            this.readyAudio.clear();
+        }
+        this.runOnServer(() -> {
+            if (this.started && !ChatFlowManager.isSuperseded(this.maidId, this.callback)
+                    && ChatFlowManager.ttsGeneration(this.maidId) == this.generation) {
+                ChatFlowManager.beginTtsTakeover(this.maidId);
+                AIFunNetwork.sendInterruptTts(this.maid);
+            }
+        });
+    }
+
     /**
      * Called as content streams in. Queues any newly-completed TTS sentences once the {@code ---}
      * separator (and real text after it) is present.
      */
     void onPartial(String visibleContent) {
-        if (!this.usable || this.batchWholeReply) {
+        if (!this.usable || this.batchWholeReply || this.aborted) {
             return;
         }
         String ttsText;
@@ -205,7 +222,7 @@ final class StreamingTtsReply {
     void finish(ReasoningOpenAIResponseChat response) {
         // The reply is complete, so everything up to the end is a finished sentence.
         synchronized (this) {
-            if (this.finishScheduled) return;
+            if (this.finishScheduled || this.aborted) return;
             this.finishScheduled = true;
         }
         String ttsText = response.getTtsText();
@@ -250,6 +267,7 @@ final class StreamingTtsReply {
 
     private void queueUpTo(String ttsText, int completeLen, boolean dispatch) {
         synchronized (this) {
+            if (this.aborted) return;
             int from = Math.min(this.consumedLen, ttsText.length());
             int to = Math.min(completeLen, ttsText.length());
             if (to <= from) {
@@ -303,7 +321,7 @@ final class StreamingTtsReply {
      * one has finished playing.
      */
     private void pump() {
-        if (!this.usable) {
+        if (!this.usable || this.aborted) {
             return;
         }
         List<Dispatch> toDispatch = new ArrayList<>();
@@ -328,6 +346,7 @@ final class StreamingTtsReply {
 
     private void synthesize(long index, String sentence) {
         int capturedGeneration = this.generation;
+        if (this.aborted) return;
         this.client.play(sentence, this.config, new TTSCallback(this.maid, StringUtils.EMPTY, -1) {
             @Override
             public void onSuccess(byte[] data) {
@@ -352,6 +371,7 @@ final class StreamingTtsReply {
         List<byte[]> toSend = new ArrayList<>();
         synchronized (this) {
             this.inFlight--;
+            if (this.aborted) return;
             this.readyAudio.put(index, data != null && data.length > 0 ? data : EMPTY_AUDIO);
             while (this.readyAudio.containsKey(this.nextSendIndex)) {
                 byte[] audio = this.readyAudio.remove(this.nextSendIndex);
@@ -362,7 +382,7 @@ final class StreamingTtsReply {
             }
         }
         // Drop the audio if a newer reply has taken over speaking; otherwise send it in order.
-        if (!ChatFlowManager.isSuperseded(this.maidId, this.callback)
+        if (!this.aborted && !ChatFlowManager.isSuperseded(this.maidId, this.callback)
                 && ChatFlowManager.ttsGeneration(this.maidId) == capturedGeneration) {
             for (byte[] audio : toSend) {
                 this.sendAudio(audio);
@@ -372,6 +392,7 @@ final class StreamingTtsReply {
     }
 
     private void sendAudio(byte[] data) {
+        if (this.aborted) return;
         AIFunNetwork.sendMaidTtsAudio(this.maid, new TTSAudioToClientMessage(this.maid.getId(), data));
     }
 
@@ -387,7 +408,7 @@ final class StreamingTtsReply {
      */
     private void ensureStarted() {
         synchronized (this) {
-            if (this.started) {
+            if (this.started || this.aborted) {
                 return;
             }
             this.started = true;

@@ -17,6 +17,15 @@ import com.wjx.touhou_aifun.network.AIFunNetwork;
  */
 @Mixin(value = AIChatSettingsLLMSiteScreen.class, remap = false)
 public abstract class AIChatSettingsLLMSiteScreenMixin {
+    @Inject(method = "openLLMSiteEditor", at = @At("HEAD"), cancellable = true)
+    private void touhouAIFun$chatgptEditor(String siteId, CallbackInfo ci) {
+        if (com.wjx.touhou_aifun.compat.ai.chatgpt.ChatGPTLLMSite.API_TYPE.equals(siteId)) {
+            var screen = (AIChatSettingsLLMSiteScreen) (Object) this;
+            screen.getMinecraft().setScreen(new com.wjx.touhou_aifun.client.gui.ChatGPTSubscriptionScreen(screen));
+            ci.cancel();
+        }
+    }
+
     @Inject(method = "initContent", at = @At("TAIL"))
     private void touhouAIFun$addStreamingToggle(CallbackInfo ci) {
         AIChatSettingsLLMSiteScreen screen = (AIChatSettingsLLMSiteScreen) (Object) this;

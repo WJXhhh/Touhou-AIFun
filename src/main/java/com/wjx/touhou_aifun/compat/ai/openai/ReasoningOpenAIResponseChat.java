@@ -18,7 +18,7 @@ final class ReasoningOpenAIResponseChat extends ResponseChat {
      * {@code (极其疲惫，有气无力)} matches as a single marker. Requiring a CJK lead keeps genuine
      * parenthetical openings (emoticons, English asides) from being mistaken for a marker; the length
      * cap keeps a long Chinese aside in parentheses from being swallowed as one. Keep in sync with the
-     * marker list in {@code PapiReplacerMixin}.
+     * marker syntax in {@code ReplyPromptBuilder}.
      */
     private static final String MARKER_BODY = "[\\u4e00-\\u9fa5][\\u4e00-\\u9fa5，,、 \\t\\u3000]{0,15}";
 

@@ -17,7 +17,7 @@
 param(
     [Parameter(Mandatory = $true)][string]$ApiKey,
     [string]$BaseUrl = "https://api.deepseek.com/anthropic",
-    [string]$Model = "deepseek-v4-flash"
+    [string]$Model = "deepseek-flash"
 )
 
 $ErrorActionPreference = "Stop"

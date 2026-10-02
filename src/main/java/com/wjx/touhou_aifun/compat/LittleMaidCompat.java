@@ -12,6 +12,7 @@ import com.github.tartaricacid.touhoulittlemaid.ai.service.tts.fishaudio.TTSFish
 import com.github.tartaricacid.touhoulittlemaid.ai.service.tts.minimax.TTSMiniMaxSite;
 import com.github.tartaricacid.touhoulittlemaid.ai.service.tts.siliconflow.TTSSiliconflowSite;
 import com.wjx.touhou_aifun.compat.ai.anthropic.AnthropicLLMSite;
+import com.wjx.touhou_aifun.compat.ai.deepseek.DeepSeekModels;
 import com.wjx.touhou_aifun.compat.ai.action.EatFoodBlockTool;
 import com.wjx.touhou_aifun.compat.ai.fishaudio.tts.FishAudioCompatTTSSite;
 import com.wjx.touhou_aifun.compat.ai.mimo.MimoLLMSite;
@@ -55,6 +56,8 @@ public final class LittleMaidCompat implements ILittleMaid {
 
     @Override
     public void registerAIChatSerializer(SerializerRegister register) {
+        register.register(ServiceType.LLM, com.wjx.touhou_aifun.compat.ai.chatgpt.ChatGPTLLMSite.API_TYPE,
+                new com.wjx.touhou_aifun.compat.ai.chatgpt.ChatGPTLLMSite.Serializer());
         register.register(ServiceType.LLM, LLMOpenAISite.API_TYPE, new ReasoningCompatOpenAISite.Serializer());
         register.register(ServiceType.LLM, AnthropicLLMSite.API_TYPE, new AnthropicLLMSite.Serializer());
         register.register(ServiceType.LLM, OpenCodeGoLLMSite.API_TYPE, new OpenCodeGoLLMSite.Serializer());
@@ -100,18 +103,11 @@ public final class LittleMaidCompat implements ILittleMaid {
 
         Consumer<LLMSite> fixedDeepSeek = site -> {
             if (site instanceof LLMOpenAISite openAISite) {
-                Map<String, String> models = openAISite.models();
-                openAISite.removeModel("deepseek-chat");
-                openAISite.removeModel("deepseek-reasoner");
-                if (!models.containsKey("deepseek-v4-flash")) {
-                    openAISite.addModel("deepseek-v4-flash");
-                }
-                if (!models.containsKey("deepseek-v4-pro")) {
-                    openAISite.addModel("deepseek-v4-pro");
-                }
+                DeepSeekModels.updateSite(openAISite);
                 openAISite.setHasThinkingField(true);
             }
         };
         DefaultLLMSite.FIXED_DEEPSEEK = fixedDeepSeek;
+        fixedDeepSeek.accept(DefaultLLMSite.DEEPSEEK);
     }
 }

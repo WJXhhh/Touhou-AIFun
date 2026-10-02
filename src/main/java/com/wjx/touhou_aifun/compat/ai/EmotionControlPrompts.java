@@ -3,8 +3,8 @@ package com.wjx.touhou_aifun.compat.ai;
 import com.github.tartaricacid.touhoulittlemaid.ai.manager.entity.MaidAIChatManager;
 import com.github.tartaricacid.touhoulittlemaid.ai.service.tts.TTSSite;
 import com.github.tartaricacid.touhoulittlemaid.entity.passive.EntityMaid;
-import com.wjx.touhou_aifun.TouhouAIFun;
 import com.wjx.touhou_aifun.config.TouhouAIFunConfig;
+import com.wjx.touhou_aifun.compat.ai.tts.VoicePresetSpec;
 import org.jetbrains.annotations.Nullable;
 
 import java.util.Locale;
@@ -61,7 +61,7 @@ public final class EmotionControlPrompts {
             case OFF -> "Emotion `(emotion)` markers are now DISABLED. Do NOT begin replies with any "
                     + "`(emotion)` marker and do NOT add markers anywhere — write the reply as plain text.";
             case HIDDEN -> "Emotion `(emotion)` markers are now ENABLED (used for spoken TTS delivery). "
-                    + "Begin replies with one allowed `(emotion)` marker exactly as the output format requires.";
+                    + "Mark only the sections specified by the current output contract; hidden mode does not mark the visible cross-language section.";
             case VISIBLE -> "Emotion `(emotion)` markers are now ENABLED and are shown in the chat text. "
                     + "Begin replies with one allowed `(emotion)` marker exactly as the output format requires.";
         };
@@ -89,11 +89,11 @@ public final class EmotionControlPrompts {
         String[] parts = code.split("_");
         String tag = parts[0] + (parts.length >= 2 ? "-" + parts[1].toUpperCase(Locale.ENGLISH) : "");
         Locale locale = Locale.forLanguageTag(tag);
-        String lang = locale.getDisplayLanguage();
+        String lang = locale.getDisplayLanguage(Locale.ENGLISH);
         if (lang == null || lang.isEmpty() || lang.equals(tag)) {
             return null;
         }
-        String country = locale.getDisplayCountry();
+        String country = locale.getDisplayCountry(Locale.ENGLISH);
         if (country != null && !country.isEmpty()) {
             return "%s (%s)".formatted(lang, country);
         }
@@ -107,80 +107,45 @@ public final class EmotionControlPrompts {
             return false;
         }
 
-        String model = chatManager.getTTSModel();
-        if (model == null) {
+        return isSupported(ttsSite.getApiType(), chatManager.getTTSModel());
+    }
+
+    static boolean isSupported(String apiType, String storedModel) {
+        if (apiType == null || storedModel == null) {
             return false;
         }
+        String model = runtimeModel(storedModel);
         // The "plan" site variants report apiType like "stepfun_plan" / "mimo_plan"; normalize that
-        // suffix away so both the regular and plan sites are recognized. The model id may carry a
-        // ":voice" suffix (e.g. "stepaudio-2.5-tts:yuanqishaonv"), which startsWith already tolerates.
-        String apiType = ttsSite.getApiType();
+        // suffix away so both the regular and plan sites are recognized. runtimeModel decodes
+        // instruction/reference presets and removes the ":voice" suffix before matching.
         if (apiType.endsWith("_plan")) {
             apiType = apiType.substring(0, apiType.length() - "_plan".length());
         }
         return switch (apiType) {
-            case "stepfun" -> model.startsWith("stepaudio-2.5-tts");
-            case "mimo" -> model.startsWith("mimo-v2.5-tts");
+            case "stepfun" -> model.equals("stepaudio-2.5-tts") || model.equals("stepaudio-3-tts");
+            case "mimo" -> model.equals("mimo-v2.5-tts");
             default -> false;
         };
     }
 
-    /**
-     * A deliberately short reminder appended as the final developer/system message on every normal
-     * maid chat request. It is intentionally terse — the full contract (allowed markers, scope rules,
-     * examples, expressiveness mandate) lives in the character system prompt; this only keeps the exact
-     * output shape and a short "be expressive, re-mark" nudge close to the model's next response, since
-     * a long trailing block tends to get skimmed.
-     */
-    @Nullable
+    public static boolean isStepAudio3(EntityMaid maid) {
+        MaidAIChatManager manager = maid.getAiChatManager();
+        TTSSite site = manager.getTTSSite();
+        return site != null && "stepfun".equals(site.getApiType())
+                && runtimeModel(manager.getTTSModel()).equals("stepaudio-3-tts");
+    }
+
+    private static String runtimeModel(String storedModel) {
+        String value = VoicePresetSpec.decode(storedModel).runtimeValue();
+        int separator = value.indexOf(':');
+        return separator < 0 ? value : value.substring(0, separator);
+    }
+
+    /** Keep the current output shape close to every ordinary chat reply, including emotion OFF. */
     public static String turnReminder(EntityMaid maid) {
-        MaidAIChatManager chatManager = maid.getAiChatManager();
-        TTSSite site = chatManager.getTTSSite();
-        boolean toggle = TouhouAIFunConfig.TTS_EMOTION_CONTROL.get();
-        boolean supported = isSupported(maid);
-        // Diagnostic: prints why emotion control is (in)active for this maid-chat request. Lets us see
-        // the actual toggle / apiType / TTS model so a silent mismatch is obvious. Safe to remove later.
-        TouhouAIFun.LOGGER.info("[emotion] toggle={} supported={} apiType={} ttsModel={} chatLang={} ttsLang={}",
-                toggle, supported,
-                site == null ? "null" : site.getApiType(),
-                chatManager.getTTSModel(),
-                chatManager.getChatLanguage(), chatManager.getTTSLanguage());
-        if (!toggle || !supported) {
-            return null;
-        }
-
-        if (chatManager.getChatLanguage().equals(chatManager.getTTSLanguage())) {
-            // Same language: one reply only, no `---`, no duplicated copy. The display/TTS texts are
-            // derived from this single body downstream.
-            return """
-                    Format reminder (skip while making tool calls): reply ONCE as one message — no `---`,
-                    no duplicate. Open with a fitting `(emotion)` marker and RE-MARK whenever the mood
-                    shifts: aim for 2+ different markers across a multi-sentence reply, and don't fall back
-                    to `(平静)`. Singing must be `(唱歌)` as the ENTIRE reply.
-                    """;
-        }
-
-        // Cross-language: the two sections DIFFER — Part 1 is the reply in the chat language, Part 2 is
-        // its translation into the TTS language. Naming the TTS language keeps this reminder consistent
-        // with the system-prompt contract instead of contradicting it.
-        String ttsLanguageName = languageName(chatManager.getTTSLanguage());
-        String ttsLang = ttsLanguageName != null ? ttsLanguageName : "the TTS language";
-
-        if (TouhouAIFunConfig.TTS_EMOTION_IN_TEXT.get()) {
-            return """
-                    Format reminder (skip while making tool calls): output two sections split by a line of
-                    only `---`. Part 1 = `(emotion)` + reply in the chat language; Part 2 = the SAME
-                    `(emotion)` + its %s translation (translate, don't copy). RE-MARK on every mood shift
-                    (aim for 2+ markers, in BOTH sections), don't fall back to `(平静)`. Singing must be
-                    `(唱歌)` as the ENTIRE reply.
-                    """.formatted(ttsLang);
-        }
-
-        return """
-                Format reminder (skip while making tool calls): output two sections split by a line of
-                only `---`. Part 1 = reply in the chat language with NO marker; Part 2 = `(emotion)` + its
-                %s translation (translate, don't copy). RE-MARK on every mood shift in Part 2 (aim for 2+
-                markers), don't fall back to `(平静)`. Singing must be `(唱歌)` as the ENTIRE reply.
-                """.formatted(ttsLang);
+        MaidAIChatManager manager = maid.getAiChatManager();
+        boolean emotion = TouhouAIFunConfig.TTS_EMOTION_CONTROL.get() && isSupported(maid);
+        return ReplyPromptBuilder.reminder(manager.getChatLanguage(), manager.getTTSLanguage(),
+                emotion, TouhouAIFunConfig.TTS_EMOTION_IN_TEXT.get());
     }
 }

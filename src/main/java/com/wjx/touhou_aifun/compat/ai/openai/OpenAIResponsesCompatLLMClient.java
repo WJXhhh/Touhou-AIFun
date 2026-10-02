@@ -121,7 +121,7 @@ public final class OpenAIResponsesCompatLLMClient extends ReasoningCompatOpenAIC
         return body;
     }
 
-    private static void appendInput(JsonArray input, LLMMessage message) {
+    static void appendInput(JsonArray input, LLMMessage message) {
         if (message.role() == Role.TOOL) {
             if (StringUtils.isBlank(message.toolCallId())) return;
             JsonObject result = new JsonObject();

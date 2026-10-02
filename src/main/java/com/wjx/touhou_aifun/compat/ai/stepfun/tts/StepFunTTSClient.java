@@ -12,7 +12,7 @@ import net.minecraft.world.entity.LivingEntity;
 import com.wjx.touhou_aifun.network.AIFunNetwork;
 import com.wjx.touhou_aifun.network.message.AIFunTTSStreamMessage;
 import com.wjx.touhou_aifun.compat.ai.tts.VoicePresetSpec;
-import com.wjx.touhou_aifun.config.TouhouAIFunConfig;
+import com.wjx.touhou_aifun.TouhouAIFun;
 
 import java.io.ByteArrayOutputStream;
 import java.net.URI;
@@ -31,18 +31,19 @@ import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
-import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
 public class StepFunTTSClient implements TTSClient {
     private static final Duration MAX_TIMEOUT = Duration.ofSeconds(60);
     private static final int SAMPLE_RATE = 24_000;
-    private static final String DEFAULT_MODEL = "step-tts-mini";
+    private static final String DEFAULT_MODEL = "stepaudio-3-tts";
     private static final String DEFAULT_VOICE = "cixingnansheng";
     private static final String STEP_PLAN_MODEL = "stepaudio-2.5-tts";
     private static final int MAX_HTTP_INPUT_LENGTH = 1_000;
-    private static final int MAX_INSTRUCTION_LENGTH = 200;
+    private static final String SINGING_INSTRUCTION =
+            "请将整段文本作为歌词，以有明确旋律、节拍和持续音高的人声清唱完整演唱。"
+                    + "保持歌唱方式，不要朗读、念白或加入说话式开场结尾。无需伴奏。";
 
     private final HttpClient httpClient;
     private final StepFunTTSSite site;
@@ -59,24 +60,21 @@ public class StepFunTTSClient implements TTSClient {
         if (isStepPlanUrl(this.site.url())) {
             parts[0] = STEP_PLAN_MODEL;
         }
-        String instruction = STEP_PLAN_MODEL.equals(parts[0])
-                ? limitCodePoints(preset.instruction(), MAX_INSTRUCTION_LENGTH) : "";
-        // The outer streaming reply already decides its speaking chunks. Splitting again at every
-        // comma/period turns one short answer into a burst and selects the WAV callback path below;
-        // that WAV is not decodable by TLM's ordinary MP3/Ogg player. Only split at the provider's
-        // actual input-size ceiling, so normal replies stay one MP3 request and one callback.
+        String instruction = synthesisInstruction(parts[0], preset.instruction(), message);
+        if (isSinging(message)) {
+            // Log the effective model (a Step Plan URL can override it), never credentials or lyrics.
+            TouhouAIFun.LOGGER.info("StepFun singing request: model={}, characters={}, singingInstruction={}",
+                    parts[0], codePointLength(message), SINGING_INSTRUCTION.equals(instruction));
+        }
+        // Preserve the reply's delivery and musical context. Only split at the provider's size
+        // ceiling; every resulting request receives the same reply-wide instruction and MP3 format.
         List<String> chunks = splitText(message, MAX_HTTP_INPUT_LENGTH);
         if (chunks.size() == 1) {
             playHttp(message, parts[0], parts[1], instruction, callback);
             return;
         }
-        if (TouhouAIFunConfig.TTS_SENTENCE_STREAMING.get()) {
-            playChunkedHttp(chunks, 0, parts[0], parts[1], instruction,
-                    callback, System.currentTimeMillis());
-        } else {
-            playBufferedHttp(chunks, 0, parts[0], parts[1], instruction,
-                    callback, new ArrayList<>());
-        }
+        playBufferedHttp(chunks, 0, parts[0], parts[1], instruction,
+                callback, new ArrayList<>());
     }
 
     private void playHttp(String message, String model, String voice, String instruction, TTSCallback callback) {
@@ -85,49 +83,15 @@ public class StepFunTTSClient implements TTSClient {
                 .whenComplete((response, throwable) -> handleResponse(callback, response, throwable, request));
     }
 
-    private void playChunkedHttp(List<String> chunks, int index, String model, String voice,
-                                 String instruction, TTSCallback callback, long playbackAtMillis) {
-        if (index >= chunks.size()) {
-            return;
-        }
-        String chunk = chunks.get(index);
-        HttpRequest request = buildHttpRequest(chunk, model, voice, instruction, "wav");
-        this.httpClient.sendAsync(request, HttpResponse.BodyHandlers.ofByteArray())
-                .whenComplete((response, throwable) -> {
-            if (throwable != null) {
-                callback.onFailure(request, throwable, ErrorCode.REQUEST_SENDING_ERROR);
-                return;
-            }
-            if (!isSuccessful(response)) {
-                String body = new String(response.body(), StandardCharsets.UTF_8);
-                String error = "HTTP Error Code: %d, Response: %s".formatted(response.statusCode(), body);
-                callback.onFailure(request, new IllegalStateException(error), ErrorCode.REQUEST_RECEIVED_ERROR);
-                return;
-            }
-            byte[] audio = response.body();
-            if (audio == null || audio.length == 0) {
-                callback.onFailure(request, new IllegalStateException("StepFun returned no audio"),
-                        ErrorCode.REQUEST_RECEIVED_ERROR);
-                return;
-            }
-
-            long sendAt = Math.max(System.currentTimeMillis(), playbackAtMillis);
-            long duration = Math.max(250, wavDurationMillis(audio));
-            long delay = Math.max(0, sendAt - System.currentTimeMillis());
-            CompletableFuture.delayedExecutor(delay, TimeUnit.MILLISECONDS)
-                    .execute(() -> callback.onSuccess(audio));
-            playChunkedHttp(chunks, index + 1, model, voice, instruction,
-                    callback, sendAt + duration);
-        });
-    }
-
     private void playBufferedHttp(List<String> chunks, int index, String model, String voice,
                                   String instruction, TTSCallback callback, List<byte[]> audioChunks) {
         if (index >= chunks.size()) {
-            audioChunks.forEach(callback::onSuccess);
+            ByteArrayOutputStream audio = new ByteArrayOutputStream();
+            audioChunks.forEach(audio::writeBytes);
+            callback.onSuccess(audio.toByteArray());
             return;
         }
-        HttpRequest request = buildHttpRequest(chunks.get(index), model, voice, instruction, "wav");
+        HttpRequest request = buildHttpRequest(chunks.get(index), model, voice, instruction, "mp3");
         this.httpClient.sendAsync(request, HttpResponse.BodyHandlers.ofByteArray())
                 .whenComplete((response, throwable) -> {
             if (throwable != null) {
@@ -168,18 +132,38 @@ public class StepFunTTSClient implements TTSClient {
                                   String instruction, String responseFormat) {
         JsonObject requestBody = new JsonObject();
         requestBody.addProperty("model", model);
-        requestBody.addProperty("input", message);
+        // Keep the performance cue attached to its first lyric rather than on a standalone line.
+        // Later lyric line breaks remain intact; they may carry useful musical phrasing.
+        String input = ("stepaudio-3-tts".equals(model) || "stepaudio-2.5-tts".equals(model))
+                ? message.replaceFirst("(?U)^(\\s*[(（]唱歌[)）])\\s+(?=\\S)", "$1") : message;
+        requestBody.addProperty("input", input);
         requestBody.addProperty("voice", voice);
-        // StepAudio 2.5's current HTTP contract returns MP3 by default and documents neither of
-        // these legacy fields. Keep them only for the older step-tts models that still use them.
-        if (!STEP_PLAN_MODEL.equals(model)) {
-            requestBody.addProperty("response_format", responseFormat);
-            requestBody.addProperty("sample_rate", SAMPLE_RATE);
-        }
+        requestBody.addProperty("response_format", responseFormat);
+        requestBody.addProperty("sample_rate", SAMPLE_RATE);
         if (!instruction.isBlank()) {
             requestBody.addProperty("instruction", instruction);
         }
         return requestBody;
+    }
+
+    static String synthesisInstruction(String model, String instruction) {
+        int limit = switch (model) {
+            case "stepaudio-3-tts" -> 500;
+            case "stepaudio-2.5-tts" -> 200;
+            default -> 0;
+        };
+        return limitCodePoints(instruction, limit);
+    }
+
+    static String synthesisInstruction(String model, String instruction, String message) {
+        // A performance requested by the leading marker overrides this turn's general speaking
+        // style. This is a best-effort contextual instruction, not a guaranteed singing API mode.
+        return synthesisInstruction(model, isSinging(message) ? SINGING_INSTRUCTION : instruction);
+    }
+
+    private static boolean isSinging(String message) {
+        String text = message == null ? "" : message.stripLeading();
+        return text.startsWith("(唱歌)") || text.startsWith("（唱歌）");
     }
 
     private static int codePointLength(String value) {
@@ -219,31 +203,6 @@ public class StepFunTTSClient implements TTSClient {
             }
         }
         return hardEnd;
-    }
-
-    private static long wavDurationMillis(byte[] wav) {
-        if (wav.length < 44 || wav[0] != 'R' || wav[1] != 'I' || wav[2] != 'F' || wav[3] != 'F') {
-            return 0;
-        }
-        ByteBuffer buffer = ByteBuffer.wrap(wav).order(ByteOrder.LITTLE_ENDIAN);
-        int byteRate = 0;
-        int dataSize = 0;
-        int offset = 12;
-        while (offset + 8 <= wav.length) {
-            String chunkId = new String(wav, offset, 4, StandardCharsets.US_ASCII);
-            int chunkSize = buffer.getInt(offset + 4);
-            if (chunkSize < 0 || offset + 8L + chunkSize > wav.length) {
-                break;
-            }
-            if ("fmt ".equals(chunkId) && chunkSize >= 12) {
-                byteRate = buffer.getInt(offset + 16);
-            } else if ("data".equals(chunkId)) {
-                dataSize = chunkSize;
-                break;
-            }
-            offset += 8 + chunkSize + (chunkSize & 1);
-        }
-        return byteRate > 0 && dataSize > 0 ? (dataSize * 1_000L + byteRate - 1) / byteRate : 0;
     }
 
     private static byte[] wrapPcmAsWav(byte[] pcm, int sampleRate) {

@@ -4,6 +4,8 @@ import com.github.tartaricacid.touhoulittlemaid.ai.manager.site.AvailableSites;
 import com.github.tartaricacid.touhoulittlemaid.ai.service.llm.LLMSite;
 import com.github.tartaricacid.touhoulittlemaid.ai.service.llm.openai.LLMOpenAISite;
 import com.wjx.touhou_aifun.compat.ai.opencodego.OpenCodeGoLLMSite;
+import com.wjx.touhou_aifun.compat.ai.anthropic.AnthropicShared;
+import com.wjx.touhou_aifun.compat.ai.deepseek.DeepSeekModels;
 import com.wjx.touhou_aifun.compat.ai.opencodego.OpenCodeGoShared;
 import com.wjx.touhou_aifun.compat.ai.stepfun.StepFunLLMSite;
 import com.wjx.touhou_aifun.compat.ai.stepfun.StepFunPlanLLMSite;
@@ -31,7 +33,23 @@ public abstract class AvailableSitesMixin {
         repairStepFunSite("stepfun", false);
         repairStepFunSite("stepfun_plan", true);
         repairOpenCodeGoSite();
+        repairDeepSeekAnthropicSite();
         reorderStepFunPair(AvailableSites.LLM_SITES);
+    }
+
+    private static void repairDeepSeekAnthropicSite() {
+        LLMSite site = AvailableSites.LLM_SITES.get(AnthropicShared.DEFAULT_SITE_ID);
+        if (!(site instanceof LLMOpenAISite openAISite)) {
+            return;
+        }
+        // The Anthropic site can also point at another vendor or a gateway.
+        try {
+            if ("api.deepseek.com".equalsIgnoreCase(java.net.URI.create(openAISite.url()).getHost())) {
+                DeepSeekModels.updateSite(openAISite);
+            }
+        } catch (IllegalArgumentException ignored) {
+            // Leave malformed user URLs for the normal site validation path.
+        }
     }
 
     /**

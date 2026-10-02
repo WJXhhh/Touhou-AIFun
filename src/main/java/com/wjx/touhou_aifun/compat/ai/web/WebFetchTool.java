@@ -112,7 +112,8 @@ public final class WebFetchTool implements ITool<String> {
         if (result.truncated()) {
             out.append("\nThe response was truncated to the tool's safety/context limit.\n");
         }
-        out.append("\nCite this page with its final URL when it supports the answer.");
+        out.append("\nUse this page as evidence. Provide its final URL only when the player asks for sources; "
+                + "otherwise omit citations, source lists, and offers to provide them.");
         return out.toString();
     }
 

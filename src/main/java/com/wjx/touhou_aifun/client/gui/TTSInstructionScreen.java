@@ -37,7 +37,7 @@ public final class TTSInstructionScreen extends Screen {
         int top = (this.height - PANEL_HEIGHT) / 2;
         this.instructionBox = new EditBox(this.font, left + 12, top + 43, PANEL_WIDTH - 24, 18,
                 Component.translatable("gui.touhou_aifun.tts_instruction.input"));
-        this.instructionBox.setMaxLength(200);
+        this.instructionBox.setMaxLength(500);
         this.instructionBox.setValue(this.initialInstruction);
         this.addRenderableWidget(this.instructionBox);
 

@@ -43,18 +43,39 @@ final class StreamingDisplay {
     private String lastShown = StringUtils.EMPTY;
     private boolean done;
 
-    // Server-thread-only bubble state.
-    private long liveBubbleId;
-    private long answerBubbleId = -1;
-    private boolean answerMode;
+    private final StreamingBubbleDisplay bubbles;
 
     StreamingDisplay(LLMCallback callback, boolean singleSegment, boolean showMarkerInChat) {
         this.callback = callback;
         this.maid = callback.getMaid();
         this.maidId = this.maid.getUUID();
-        this.liveBubbleId = callback.getWaitingChatBubbleId();
         this.singleSegment = singleSegment;
         this.showMarkerInChat = showMarkerInChat;
+        this.bubbles = new StreamingBubbleDisplay(new StreamingBubbleDisplay.Bubbles() {
+            private ChatBubbleManager manager() { return maid.getChatBubbleManager(); }
+            @Override public long waitingId() { return callback.getWaitingChatBubbleId(); }
+            @Override public void refreshWaiting(Component text) { callback.refreshWaitingChatBubble(text); }
+            @Override public void remove(long id) { if (id >= 0) manager().removeChatBubble(id); }
+            @Override public long addAnswer(String text) {
+                return manager().addChatBubble(TextChatBubbleData.create(STREAM_BUBBLE_TICKS, Component.literal(text),
+                        IChatBubbleData.TYPE_2, IChatBubbleData.DEFAULT_PRIORITY));
+            }
+            @Override public boolean updateAnswer(long id, String text) {
+                if (!(manager().getChatBubble(id) instanceof TextChatBubbleData answer)) return false;
+                answer.setText(Component.literal(text)); manager().forceUpdateChatBubble(); return true;
+            }
+            @Override public void selectWaiting(long id) {
+                ((LLMCallbackAccessor) callback).touhouAIFun$setWaitingChatBubbleId(id);
+            }
+        });
+    }
+
+    /** Search/tool progress shares the same bubble ownership as reasoning and answer updates. */
+    void onActivity(Component text) {
+        if (this.done) return;
+        callback.runOnServerThread(() -> {
+            if (!ChatFlowManager.isSuperseded(maidId, callback)) bubbles.activity(text);
+        });
     }
 
     void onUpdate(StreamAccumulator accumulator) {
@@ -118,29 +139,11 @@ final class StreamingDisplay {
         if (ChatFlowManager.isSuperseded(this.maidId, this.callback)) {
             return;
         }
-        ChatBubbleManager manager = this.maid.getChatBubbleManager();
         if (isAnswer) {
-            if (this.answerMode && manager.getChatBubble(this.answerBubbleId) instanceof TextChatBubbleData textBubble) {
-                // Update the answer text in place (no new bubble, no chat-line spam).
-                textBubble.setText(Component.literal(text));
-                manager.forceUpdateChatBubble();
-                return;
-            }
-            // Switch out of the thinking bubble into a normal text bubble.
-            manager.removeChatBubble(this.liveBubbleId);
-            this.answerBubbleId = manager.addChatBubble(
-                    TextChatBubbleData.create(STREAM_BUBBLE_TICKS, Component.literal(text),
-                            IChatBubbleData.TYPE_2, IChatBubbleData.DEFAULT_PRIORITY));
-            this.liveBubbleId = this.answerBubbleId;
-            this.answerMode = true;
+            this.bubbles.answer(text);
         } else {
-            // Reasoning: keep the thinking bubble, refreshing its (gray) secondary text.
-            this.callback.refreshWaitingChatBubble(Component.literal(text));
-            this.liveBubbleId = this.callback.getWaitingChatBubbleId();
+            this.bubbles.activity(Component.literal(text));
         }
-        // Keep the callback's waiting-bubble id pointing at the live bubble so the finalizer's
-        // addLLMChatText replaces it instead of leaving a dangling bubble.
-        ((LLMCallbackAccessor) this.callback).touhouAIFun$setWaitingChatBubbleId(this.liveBubbleId);
     }
 
     /** Content of an unclosed {@code <think>} block (inline-reasoning models), if any. */

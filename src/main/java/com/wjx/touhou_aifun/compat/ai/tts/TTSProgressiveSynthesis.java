@@ -5,6 +5,7 @@ import com.github.tartaricacid.touhoulittlemaid.ai.service.tts.TTSClient;
 import com.github.tartaricacid.touhoulittlemaid.ai.service.tts.TTSConfig;
 import com.wjx.touhou_aifun.chat.ChatFlowManager;
 import com.wjx.touhou_aifun.config.TouhouAIFunConfig;
+import com.wjx.touhou_aifun.compat.ai.stepfun.tts.StepFunTTSClient;
 
 import java.net.http.HttpRequest;
 import java.util.List;
@@ -22,17 +23,22 @@ public final class TTSProgressiveSynthesis {
         // ChatFlowManager bumps the generation and this run stops.
         int generation = ChatFlowManager.ttsGeneration(maidId);
 
-        if (!TouhouAIFunConfig.TTS_SENTENCE_STREAMING.get()) {
-            client.play(message, config, gated(callback, maidId, generation));
-            return;
-        }
-
-        List<String> chunks = SentenceTextSplitter.split(message, MAX_CHUNK_CODE_POINTS);
+        List<String> chunks = synthesisChunks(client, message, TouhouAIFunConfig.TTS_SENTENCE_STREAMING.get());
         if (chunks.size() <= 1) {
             client.play(message, config, gated(callback, maidId, generation));
             return;
         }
         playNext(client, chunks, 0, config, callback, maidId, generation);
+    }
+
+    static List<String> synthesisChunks(TTSClient client, String message, boolean progressive) {
+        // Match StreamingTtsReply's Step policy for non-streaming LLM replies too. Otherwise only
+        // the first comma-sized fragment receives (唱歌), and the rest becomes ordinary speech.
+        // StepFunTTSClient owns provider-size splitting and carries the reply-wide instruction.
+        if (!progressive || client instanceof StepFunTTSClient) {
+            return List.of(message);
+        }
+        return SentenceTextSplitter.split(message, MAX_CHUNK_CODE_POINTS);
     }
 
     private static void playNext(TTSClient client, List<String> chunks, int index,

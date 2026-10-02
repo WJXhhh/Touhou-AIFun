@@ -33,7 +33,7 @@ import static com.github.tartaricacid.touhoulittlemaid.ai.service.llm.LLMSite.LL
  */
 public final class DeepSeekNativeWebSearchProvider implements WebSearchProvider {
     public static final String PROVIDER_ID = "deepseek_official";
-    static final String DEFAULT_MODEL = "deepseek-v4-flash";
+    static final String DEFAULT_MODEL = AnthropicShared.DEFAULT_MODEL;
     private static final String ANTHROPIC_VERSION = "2023-06-01";
     private static final String WEB_SEARCH_TYPE = "web_search_20250305";
     private static final int MAX_TOKENS = 4096;

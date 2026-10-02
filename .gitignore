@@ -23,3 +23,6 @@
 
 /.reasonix/
 
+# Server-owned ChatGPT OAuth credentials (never part of site JSON)
+/config/touhou_aifun/chatgpt/
+
