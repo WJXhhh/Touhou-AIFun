@@ -16,6 +16,12 @@ public abstract class SyncAISitesMessageMixin {
         if (Minecraft.getInstance().screen instanceof ChatGPTSubscriptionScreen screen) {
             screen.onSitesSynced(message);
             ci.cancel();
+        } else if (Minecraft.getInstance().screen instanceof com.wjx.touhou_aifun.client.gui.VisionSettingsScreen screen) {
+            screen.onSitesSynced(message);
+            ci.cancel();
+        } else if (Minecraft.getInstance().screen instanceof com.wjx.touhou_aifun.client.gui.ModelImageCapabilitiesScreen screen) {
+            screen.onSitesSynced(message);
+            ci.cancel();
         }
     }
 }

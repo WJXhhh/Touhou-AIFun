@@ -35,7 +35,7 @@ public abstract class AIChatSettingsLLMSiteScreenMixin {
         int contentX = accessor.touhouAIFun$invokeGetContentX();
         int contentWidth = accessor.touhouAIFun$invokeGetContentWidth();
         // Leave room on the right for the existing 80px "Back" footer button (+4px gap).
-        int width = contentWidth - 84;
+        int width = (contentWidth - 88) / 2;
 
         FlatColorButton button = new FlatColorButton(
                 contentX, accessor.touhouAIFun$invokeGetFooterY(), width, 20,
@@ -51,5 +51,8 @@ public abstract class AIChatSettingsLLMSiteScreenMixin {
         button.setSelect(enabled);
         button.active = !accessor.touhouAIFun$hasInsufficientPermissions();
         screen.addRenderableWidget(button);
+        screen.addRenderableWidget(new FlatColorButton(contentX + width + 4, accessor.touhouAIFun$invokeGetFooterY(), width, 20,
+                Component.translatable("gui.touhou_aifun.model_images.button"),
+                clicked -> screen.getMinecraft().setScreen(new com.wjx.touhou_aifun.client.gui.ModelImageCapabilitiesScreen(screen))));
     }
 }

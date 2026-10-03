@@ -25,37 +25,37 @@ public final class OpenCodeGoLLMClient implements LLMClient {
     public void chat(LLMCallback callback) {
         String model = callback.getMaid().getAiChatManager().getLLMModel();
         if (OpenCodeGoShared.usesResponses(model)) {
-            new OpenAIResponsesCompatLLMClient(this.httpClient, this.copyForResponses()).chat(callback);
+            new OpenAIResponsesCompatLLMClient(this.httpClient, this.copyForResponses(callback)).chat(callback);
             return;
         }
         if (OpenCodeGoShared.usesAnthropicMessages(model)) {
-            new AnthropicCompatLLMClient(this.httpClient, this.copyForMessages()).chat(callback);
+            new AnthropicCompatLLMClient(this.httpClient, this.copyForMessages(callback)).chat(callback);
             return;
         }
-        new ReasoningCompatOpenAIClient(this.httpClient, this.copyForChatCompletions()).chat(callback);
+        new ReasoningCompatOpenAIClient(this.httpClient, this.copyForChatCompletions(callback)).chat(callback);
     }
 
-    private LLMOpenAISite copyForChatCompletions() {
+    private LLMOpenAISite copyForChatCompletions(LLMCallback callback) {
         return new ReasoningCompatOpenAISite(
                 this.site.id(), this.site.icon(),
                 OpenCodeGoShared.chatCompletionsEndpoint(this.site.url()),
                 this.site.enabled(), this.site.secretKey(), false,
-                this.site.headers(), new ArrayList<>(this.site.modelEntries().values()));
+                OpenCodeGoShared.requestHeaders(this.site.headers(), callback.getMaid().getUUID()), new ArrayList<>(this.site.modelEntries().values()));
     }
 
-    private LLMOpenAISite copyForMessages() {
+    private LLMOpenAISite copyForMessages(LLMCallback callback) {
         return new LLMOpenAISite(
                 this.site.id(), this.site.icon(),
                 OpenCodeGoShared.messagesEndpoint(this.site.url()),
                 this.site.enabled(), this.site.secretKey(), false,
-                this.site.headers(), new ArrayList<>(this.site.modelEntries().values()));
+                OpenCodeGoShared.requestHeaders(this.site.headers(), callback.getMaid().getUUID()), new ArrayList<>(this.site.modelEntries().values()));
     }
 
-    private LLMOpenAISite copyForResponses() {
+    private LLMOpenAISite copyForResponses(LLMCallback callback) {
         return new LLMOpenAISite(
                 this.site.id(), this.site.icon(),
                 OpenCodeGoShared.responsesEndpoint(this.site.url()),
                 this.site.enabled(), this.site.secretKey(), false,
-                this.site.headers(), new ArrayList<>(this.site.modelEntries().values()));
+                OpenCodeGoShared.requestHeaders(this.site.headers(), callback.getMaid().getUUID()), new ArrayList<>(this.site.modelEntries().values()));
     }
 }

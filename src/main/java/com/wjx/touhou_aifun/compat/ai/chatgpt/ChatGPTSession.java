@@ -89,6 +89,27 @@ public final class ChatGPTSession {
         return "已连接 " + string(saved, "email") + (permitted(saved) ? "，使用 ChatGPT 订阅" : "，未授权订阅使用");
     }
 
+    public static synchronized boolean authenticationAvailable() {
+        try { var saved = session(); return permitted(saved) && !string(saved, "access_token").isBlank(); }
+        catch (Exception ignored) { return false; }
+    }
+
+    /** Only a digest leaves the credential store, for connection-scoped capability observations. */
+    public static synchronized String capabilityContext() {
+        try {
+            var saved = session();
+            return java.util.HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256")
+                    .digest((string(saved, "client_id") + "|" + string(saved, "subject"))
+                            .getBytes(StandardCharsets.UTF_8)));
+        } catch (Exception ignored) { return ""; }
+    }
+
+    public static void applyModelImageCapabilities() {
+        Map<String, Boolean> images;
+        synchronized (ChatGPTSession.class) { images = modelDiscovery == null ? Map.of() : modelDiscovery.imageCapabilities(); }
+        com.wjx.touhou_aifun.vision.UnifiedModelCatalog.recordProviderCapabilities(ChatGPTLLMSite.API_TYPE, images);
+    }
+
     public static boolean permitted(JsonObject saved) {
         if (!saved.has("scopes") || !saved.get("scopes").isJsonArray()) return false;
         for (var scope : saved.getAsJsonArray("scopes")) {
@@ -179,7 +200,10 @@ public final class ChatGPTSession {
                 + (failed == 0 ? "" : "；" + failed + " 个未通过，悬停模型列表查看原因");
     }
 
-    private static void clearModelDiscovery() { ++modelEpoch; modelDiscovery = null; }
+    private static void clearModelDiscovery() {
+        ++modelEpoch; modelDiscovery = null;
+        com.wjx.touhou_aifun.vision.UnifiedModelCatalog.clearSessionRejections();
+    }
 
     /** Only loopback is bound. Remote operators forward this port through SSH. */
     public static synchronized String login(int port, boolean newAccount, Consumer<String> finished) throws Exception {

@@ -56,6 +56,7 @@ public final class MaidEatFoodActionManager {
     /** Must be called on the owning server thread. */
     public static CompletableFuture<Result> start(EntityMaid maid, String requestedFood, int maxDistance,
                                                    boolean untilFinished, Object callback) {
+        com.wjx.touhou_aifun.maid.gui.MaidGuiSessionManager.cancel(maid.getUUID(), "eat_food_action_started");
         CompletableFuture<Result> future = new CompletableFuture<>();
         if (!(maid.level() instanceof ServerLevel level) || maid.isRemoved() || !maid.isAlive()) {
             future.complete(Result.failure("maid_unavailable", "The maid is not available in a server level."));
@@ -111,6 +112,11 @@ public final class MaidEatFoodActionManager {
         ActiveAction action = new ActiveAction(maid, callback, search.target, untilFinished, future,
                 level.getGameTime() + timeout);
         ACTIVE.put(maidId, action);
+        if (!MaidActionLease.acquire(maidId, action)) {
+            ACTIVE.remove(maidId, action);
+            future.complete(Result.failure("action_busy", "Another physical action is active."));
+            return future;
+        }
         action.takeControl();
         return future;
     }
@@ -451,6 +457,7 @@ public final class MaidEatFoodActionManager {
         }
 
         private void complete(Result result) {
+            MaidActionLease.release(maid.getUUID(), this);
             future.complete(result);
         }
     }

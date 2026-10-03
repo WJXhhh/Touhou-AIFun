@@ -62,5 +62,8 @@ class VisionSiteSnapshotTest {
         assertTrue(!clientJson.toString().contains("secret-header-token"));
         assertTrue(!clientJson.toString().contains("another-secret"));
         assertEquals(0, clientJson.getAsJsonObject("headers").size());
+        assertTrue(!clientJson.has("endpoint"));
+        assertTrue(clientJson.get("connection_available").getAsBoolean());
+        assertTrue(VisionSite.fromJson(clientJson).hasValidHttpEndpoint());
     }
 }

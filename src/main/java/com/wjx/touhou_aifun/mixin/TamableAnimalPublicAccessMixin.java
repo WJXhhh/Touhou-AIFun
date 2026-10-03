@@ -9,9 +9,18 @@ import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
+import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
 @Mixin(TamableAnimal.class)
 public abstract class TamableAnimalPublicAccessMixin {
+    @Inject(method = "setOwnerUUID", at = @At("HEAD"))
+    private void touhouAIFun$clearPreviousOwnerImages(java.util.UUID owner, CallbackInfo ci) {
+        if ((Object) this instanceof EntityMaid maid && !maid.level().isClientSide()
+                && !java.util.Objects.equals(maid.getOwnerUUID(), owner)) {
+            com.wjx.touhou_aifun.chat.ChatFlowManager.clearMaid(maid);
+        }
+    }
+
     /**
      * Keep the real owner UUID untouched while allowing every real player through existing
      * owner-gated interaction paths (GUI, T chat, X voice, packets, leashing, and held items).

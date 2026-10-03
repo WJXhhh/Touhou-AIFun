@@ -6,7 +6,7 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 import java.net.URI;
 
-/** A user-configurable visual model endpoint, independent from the base mod's ServiceType enum. */
+/** Legacy migration DTO and transient model view; live connections belong to the LLM catalog. */
 public final class VisionSite {
     private final String id;
     private String displayName;
@@ -16,6 +16,11 @@ public final class VisionSite {
     private String apiKey;
     private boolean apiKeyPresent;
     private boolean thinking;
+    private transient com.github.tartaricacid.touhoulittlemaid.ai.service.llm.LLMSite source;
+    private VisionCapabilityMode capability = VisionCapabilityMode.AUTO;
+    private boolean imageSupported;
+    private boolean enabled = true;
+    private Boolean connectionAvailable;
     private final Map<String, String> headers = new LinkedHashMap<>();
 
     public VisionSite(String id, String displayName, String provider, String endpoint, String model,
@@ -38,9 +43,20 @@ public final class VisionSite {
     public String apiKey() { return apiKey; }
     public boolean apiKeyPresent() { return apiKeyPresent || !apiKey.isBlank(); }
     public boolean thinking() { return thinking; }
+    public com.github.tartaricacid.touhoulittlemaid.ai.service.llm.LLMSite source() { return source; }
+    public VisionCapabilityMode capability() { return capability; }
+    public boolean imageSupported() { return imageSupported; }
+    public boolean enabled() { return enabled; }
+    public void setSource(com.github.tartaricacid.touhoulittlemaid.ai.service.llm.LLMSite value) {
+        source = value;
+        enabled = value.enabled();
+        apiKeyPresent = UnifiedModelCatalog.authAvailable(value);
+    }
+    public void setCapability(VisionCapabilityMode value, boolean supported) { capability = value; imageSupported = supported; }
     public Map<String, String> headers() { return Map.copyOf(headers); }
 
     public boolean hasValidHttpEndpoint() {
+        if (connectionAvailable != null) return connectionAvailable;
         try {
             URI uri = URI.create(endpoint);
             return uri.getHost() != null && ("https".equalsIgnoreCase(uri.getScheme())
@@ -72,7 +88,8 @@ public final class VisionSite {
         object.addProperty("id", id);
         object.addProperty("display_name", displayName);
         object.addProperty("provider", provider);
-        object.addProperty("endpoint", endpoint);
+        if (includeApiKey) object.addProperty("endpoint", endpoint);
+        else object.addProperty("connection_available", hasValidHttpEndpoint());
         object.addProperty("model", model);
         if (includeApiKey) {
             object.addProperty("api_key", apiKey);
@@ -80,6 +97,9 @@ public final class VisionSite {
             object.addProperty("api_key_present", apiKeyPresent());
         }
         object.addProperty("thinking", thinking);
+        object.addProperty("enabled", enabled);
+        object.addProperty("image_capability", capability.name());
+        object.addProperty("image_supported", imageSupported);
         JsonObject headerObject = new JsonObject();
         // Custom headers may contain Authorization, cookies or provider-specific tokens. They are
         // server secrets just like api_key and are never included in the client snapshot.
@@ -97,6 +117,11 @@ public final class VisionSite {
         if (object.has("api_key_present") && object.get("api_key_present").getAsBoolean()) {
             site.apiKeyPresent = true;
         }
+        if (object.has("enabled")) site.enabled = object.get("enabled").getAsBoolean();
+        if (object.has("connection_available")) site.connectionAvailable = object.get("connection_available").getAsBoolean();
+        if (object.has("image_supported")) site.imageSupported = object.get("image_supported").getAsBoolean();
+        try { if (object.has("image_capability")) site.capability = VisionCapabilityMode.valueOf(object.get("image_capability").getAsString()); }
+        catch (IllegalArgumentException ignored) { }
         if (object.has("headers") && object.get("headers").isJsonObject()) {
             object.getAsJsonObject("headers").entrySet().forEach(entry -> site.setHeader(entry.getKey(),
                     entry.getValue().getAsString()));

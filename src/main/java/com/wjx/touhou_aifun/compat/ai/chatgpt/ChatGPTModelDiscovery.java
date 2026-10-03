@@ -29,10 +29,11 @@ final class ChatGPTModelDiscovery {
     }
 
     record Check(boolean usable, String detail) { }
-    record Result(Map<String, String> models, Map<String, Check> checks) {
+    record Result(Map<String, String> models, Map<String, Check> checks, Map<String, Boolean> imageCapabilities) {
         Result {
             models = Collections.unmodifiableMap(new LinkedHashMap<>(models));
             checks = Collections.unmodifiableMap(new LinkedHashMap<>(checks));
+            imageCapabilities = Collections.unmodifiableMap(new LinkedHashMap<>(imageCapabilities));
         }
     }
     @FunctionalInterface interface Probe { Check run(String model) throws Exception; }
@@ -40,12 +41,15 @@ final class ChatGPTModelDiscovery {
     static Result discover(JsonObject catalog, Probe probe) throws Exception {
         Map<String, String> models = new LinkedHashMap<>();
         Map<String, Check> checks = new LinkedHashMap<>();
+        Map<String, Boolean> images = new LinkedHashMap<>();
         for (var item : catalog.getAsJsonArray("models")) {
             JsonObject model = item.getAsJsonObject();
             String slug = string(model, "slug");
             if ("list".equals(string(model, "visibility")) && !slug.isBlank()) {
                 String label = string(model, "display_name");
                 models.put(slug, label.isBlank() ? slug : label);
+                Boolean supported = com.wjx.touhou_aifun.vision.ModelImageCapabilities.providerImages(model);
+                if (supported != null) images.put(slug, supported);
             }
         }
         for (var candidate : CANDIDATES.entrySet()) {
@@ -57,7 +61,7 @@ final class ChatGPTModelDiscovery {
             checks.put(candidate.getKey(), check);
             if (check.usable()) models.put(candidate.getKey(), candidate.getValue());
         }
-        return new Result(models, checks);
+        return new Result(models, checks, images);
     }
 
     static Check probe(HttpClient http, String token, String model) throws Exception {

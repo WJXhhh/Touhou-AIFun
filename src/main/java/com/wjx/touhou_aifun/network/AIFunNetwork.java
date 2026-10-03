@@ -28,7 +28,6 @@ import com.wjx.touhou_aifun.network.message.AIFunVisionCaptureCancelMessage;
 import com.wjx.touhou_aifun.network.message.AIFunVisionSitesRequestMessage;
 import com.wjx.touhou_aifun.network.message.AIFunVisionSitesSyncMessage;
 import com.wjx.touhou_aifun.network.message.AIFunVisionSettingsMessage;
-import com.wjx.touhou_aifun.network.message.AIFunVisionSiteSaveMessage;
 import com.wjx.touhou_aifun.vision.AvailableVisionSites;
 import com.wjx.touhou_aifun.config.TouhouAIFunConfig;
 import com.wjx.touhou_aifun.vision.VisionCaptureTransport;
@@ -40,8 +39,8 @@ import java.util.Optional;
 import java.util.UUID;
 
 public final class AIFunNetwork {
-    // Version 10 adds subscription reasoning summary and effort preferences to GUI actions.
-    private static final String VERSION = "11";
+    // Version 13 adds detached GUI requests, bounded client replies and owner preview control.
+    private static final String VERSION = "13";
     private static final SimpleChannel CHANNEL = NetworkRegistry.newSimpleChannel(
             new ResourceLocation(TouhouAIFun.MOD_ID, "network"),
             () -> VERSION, VERSION::equals, VERSION::equals);
@@ -50,6 +49,15 @@ public final class AIFunNetwork {
     }
 
     public static void init() {
+        CHANNEL.registerMessage(22, com.wjx.touhou_aifun.network.message.AIFunGuiRequestMessage.class,
+                com.wjx.touhou_aifun.network.message.AIFunGuiRequestMessage::encode, com.wjx.touhou_aifun.network.message.AIFunGuiRequestMessage::decode,
+                com.wjx.touhou_aifun.network.message.AIFunGuiRequestMessage::handle, Optional.of(NetworkDirection.PLAY_TO_CLIENT));
+        CHANNEL.registerMessage(23, com.wjx.touhou_aifun.network.message.AIFunGuiResultMessage.class,
+                com.wjx.touhou_aifun.network.message.AIFunGuiResultMessage::encode, com.wjx.touhou_aifun.network.message.AIFunGuiResultMessage::decode,
+                com.wjx.touhou_aifun.network.message.AIFunGuiResultMessage::handle, Optional.of(NetworkDirection.PLAY_TO_SERVER));
+        CHANNEL.registerMessage(24, com.wjx.touhou_aifun.network.message.AIFunGuiPreviewMessage.class,
+                com.wjx.touhou_aifun.network.message.AIFunGuiPreviewMessage::encode, com.wjx.touhou_aifun.network.message.AIFunGuiPreviewMessage::decode,
+                com.wjx.touhou_aifun.network.message.AIFunGuiPreviewMessage::handle, Optional.of(NetworkDirection.PLAY_TO_SERVER));
         CHANNEL.registerMessage(0, AIFunTTSStreamMessage.class,
                 AIFunTTSStreamMessage::encode,
                 AIFunTTSStreamMessage::decode,
@@ -84,9 +92,6 @@ public final class AIFunNetwork {
         CHANNEL.registerMessage(7, AIFunVisionSettingsMessage.class,
                 AIFunVisionSettingsMessage::encode, AIFunVisionSettingsMessage::decode,
                 AIFunVisionSettingsMessage::handle, Optional.of(NetworkDirection.PLAY_TO_SERVER));
-        CHANNEL.registerMessage(8, AIFunVisionSiteSaveMessage.class,
-                AIFunVisionSiteSaveMessage::encode, AIFunVisionSiteSaveMessage::decode,
-                AIFunVisionSiteSaveMessage::handle, Optional.of(NetworkDirection.PLAY_TO_SERVER));
         CHANNEL.registerMessage(9, AIFunVisionCaptureFailureMessage.class,
                 AIFunVisionCaptureFailureMessage::encode, AIFunVisionCaptureFailureMessage::decode,
                 AIFunVisionCaptureFailureMessage::handle, Optional.of(NetworkDirection.PLAY_TO_SERVER));
@@ -125,7 +130,21 @@ public final class AIFunNetwork {
                 com.wjx.touhou_aifun.network.message.AIFunChatGPTStateMessage::encode,
                 com.wjx.touhou_aifun.network.message.AIFunChatGPTStateMessage::decode,
                 com.wjx.touhou_aifun.network.message.AIFunChatGPTStateMessage::handle, Optional.of(NetworkDirection.PLAY_TO_CLIENT));
+        CHANNEL.registerMessage(21, com.wjx.touhou_aifun.network.message.AIFunModelCapabilityMessage.class,
+                com.wjx.touhou_aifun.network.message.AIFunModelCapabilityMessage::encode,
+                com.wjx.touhou_aifun.network.message.AIFunModelCapabilityMessage::decode,
+                com.wjx.touhou_aifun.network.message.AIFunModelCapabilityMessage::handle, Optional.of(NetworkDirection.PLAY_TO_SERVER));
     }
+
+    public static void sendModelCapability(String ref, com.wjx.touhou_aifun.vision.VisionCapabilityMode mode) {
+        CHANNEL.sendToServer(new com.wjx.touhou_aifun.network.message.AIFunModelCapabilityMessage(ref, mode));
+    }
+
+    public static void sendGui(ServerPlayer player, com.wjx.touhou_aifun.network.message.AIFunGuiRequestMessage message) {
+        CHANNEL.send(PacketDistributor.PLAYER.with(() -> player), message);
+    }
+    public static void sendGuiResult(com.wjx.touhou_aifun.network.message.AIFunGuiResultMessage message) { CHANNEL.sendToServer(message); }
+    public static void requestGuiPreview(UUID maid, boolean stop) { CHANNEL.sendToServer(new com.wjx.touhou_aifun.network.message.AIFunGuiPreviewMessage(maid, stop)); }
 
     /**
      * Sends a TLM audio message to the people allowed to hear this maid. Private maids preserve
@@ -263,19 +282,16 @@ public final class AIFunNetwork {
         CHANNEL.sendToServer(new AIFunVisionSettingsMessage(visionEnabled, shallowScanEnabled, selectedSite));
     }
 
-    public static void sendVisionSiteToServer(AIFunVisionSiteSaveMessage message) {
-        CHANNEL.sendToServer(message);
-    }
-
     public static void sendVisionSitesToPlayer(ServerPlayer player) {
         sendVisionSitesToPlayer(player, "");
     }
 
     public static void sendVisionSitesToPlayer(ServerPlayer player, String operationStatus) {
-        AvailableVisionSites.ensureLoaded();
+        String status = operationStatus == null || operationStatus.isBlank()
+                ? com.wjx.touhou_aifun.vision.UnifiedModelCatalog.loadStatus() : operationStatus;
         CHANNEL.send(PacketDistributor.PLAYER.with(() -> player), new AIFunVisionSitesSyncMessage(
                 AvailableVisionSites.serializeForClient(), TouhouAIFunConfig.VISION_ENABLED.get(),
                 TouhouAIFunConfig.SHALLOW_SCAN_ENABLED.get(), AvailableVisionSites.effectiveSelectedId(),
-                !player.hasPermissions(2), operationStatus == null ? "" : operationStatus));
+                !com.github.tartaricacid.touhoulittlemaid.util.GameModeUtil.canEditSite(player), status));
     }
 }

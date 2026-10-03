@@ -10,6 +10,14 @@ import java.util.List;
 import static org.junit.jupiter.api.Assertions.*;
 
 class ChatGPTModelDiscoveryTest {
+    @Test void preservesExplicitImageCapabilitiesWithoutInventingThemForProbedModels() throws Exception {
+        var result = ChatGPTModelDiscovery.discover(json("""
+                {"models":[{"slug":"image-model","visibility":"list","input_modalities":["text","image"]},
+                {"slug":"text-model","visibility":"list","input_modalities":["text"]}]}
+                """), model -> new ChatGPTModelDiscovery.Check(true, "verified"));
+        assertEquals(java.util.Map.of("image-model", true, "text-model", false), result.imageCapabilities());
+        assertFalse(result.imageCapabilities().containsKey("gpt-6.1-sol"));
+    }
     @Test void preservesServerCatalogAndOnlyAddsVerifiedMissingModels() throws Exception {
         List<String> probed = new ArrayList<>();
         var result = ChatGPTModelDiscovery.discover(json("""

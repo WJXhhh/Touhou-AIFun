@@ -4,6 +4,7 @@ import com.github.tartaricacid.touhoulittlemaid.ai.manager.site.AvailableSites;
 import com.github.tartaricacid.touhoulittlemaid.ai.service.llm.LLMSite;
 import com.github.tartaricacid.touhoulittlemaid.ai.service.llm.openai.LLMOpenAISite;
 import com.wjx.touhou_aifun.compat.ai.opencodego.OpenCodeGoLLMSite;
+import com.wjx.touhou_aifun.compat.ai.mimo.MimoLLMSite;
 import com.wjx.touhou_aifun.compat.ai.anthropic.AnthropicShared;
 import com.wjx.touhou_aifun.compat.ai.deepseek.DeepSeekModels;
 import com.wjx.touhou_aifun.compat.ai.opencodego.OpenCodeGoShared;
@@ -33,8 +34,10 @@ public abstract class AvailableSitesMixin {
         repairStepFunSite("stepfun", false);
         repairStepFunSite("stepfun_plan", true);
         repairOpenCodeGoSite();
+        updateMimoModels();
         repairDeepSeekAnthropicSite();
         reorderStepFunPair(AvailableSites.LLM_SITES);
+        com.wjx.touhou_aifun.vision.UnifiedModelCatalog.initialize();
     }
 
     private static void repairDeepSeekAnthropicSite() {
@@ -49,6 +52,20 @@ public abstract class AvailableSitesMixin {
             }
         } catch (IllegalArgumentException ignored) {
             // Leave malformed user URLs for the normal site validation path.
+        }
+    }
+
+    private static void updateMimoModels() {
+        for (LLMSite site : AvailableSites.LLM_SITES.values()) {
+            if (site instanceof MimoLLMSite mimoSite) {
+                // Saved lists override serializer defaults; append new models without losing custom entries.
+                for (LLMOpenAISite.ModelEntry entry : MimoLLMSite.DEFAULT_MODELS) {
+                    if (!mimoSite.modelEntries().containsKey(entry.name())) {
+                        mimoSite.addModel(entry.name());
+                        mimoSite.modelEntries().put(entry.name(), entry);
+                    }
+                }
+            }
         }
     }
 

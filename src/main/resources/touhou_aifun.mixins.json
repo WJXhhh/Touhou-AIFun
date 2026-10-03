@@ -5,6 +5,12 @@
   "compatibilityLevel": "JAVA_17",
   "refmap": "touhou_aifun.refmap.json",
   "mixins": [
+    "GuiActorInventoryMixin",
+    "GuiActorSlotMixin",
+    "GuiMenuDataAccessor",
+    "GuiNetworkHooksMixin",
+    "GuiTemporaryItemsMixin",
+    "GuiMaidBrainMixin",
     "AvailableSitesMixin",
     "ChatBubbleManagerMixin",
     "HistorySummaryManagerMixin",
@@ -20,6 +26,8 @@
     "TTSCallbackMixin"
   ],
   "client": [
+    "client.GuiConnectionIsolationMixin",
+    "client.GuiScreenIsolationMixin",
     "client.AIChatSettingsHubAccessor",
     "client.AIChatSettingsHubVisionMixin",
     "client.GameRendererVisionMixin",

@@ -47,6 +47,7 @@ public final class ChatFlowManager {
 
     /** Invalidates every ordinary-chat side effect when the player explicitly clears memory. */
     public static void clearMaid(EntityMaid maidEntity) {
+        com.wjx.touhou_aifun.maid.gui.MaidGuiSessionManager.cancel(maidEntity.getUUID(), "memory_cleared");
         UUID maid = maidEntity.getUUID();
         Object previous = LATEST_REQUEST.put(maid, new Object());
         CURRENT_TURN.compute(maid, (ignored, value) -> value == null ? 1L : value + 1L);
@@ -60,9 +61,10 @@ public final class ChatFlowManager {
             REQUEST_SCHEMA_BUDGET.remove(previous);
             CALLBACK_TURNS.remove(previous);
             com.wjx.touhou_aifun.compat.ai.openai.ToolContextSelector.clearSnapshot(previous);
+            if (previous instanceof LLMCallback llm) com.wjx.touhou_aifun.vision.MultimodalTurnContext.clear(llm);
         }
         try {
-            com.wjx.touhou_aifun.vision.VisionObservationManager.cancelForMaid(maid);
+            com.wjx.touhou_aifun.vision.VisionObservationManager.clearMaid(maid);
         } catch (Throwable ignored) {
             // Optional integration remains harmless during bootstrap.
         }
@@ -88,6 +90,7 @@ public final class ChatFlowManager {
             REQUESTED_TOOLS.remove(previous);
             REQUEST_SCHEMA_BUDGET.remove(previous);
             com.wjx.touhou_aifun.compat.ai.openai.ToolContextSelector.clearSnapshot(previous);
+            if (previous instanceof LLMCallback llm) com.wjx.touhou_aifun.vision.MultimodalTurnContext.clear(llm);
         }
         CALLBACK_TURNS.put(callback, CURRENT_TURN.getOrDefault(maid, 0L));
         REQUESTED_TOOLS.putIfAbsent(callback, ConcurrentHashMap.newKeySet());
@@ -95,6 +98,7 @@ public final class ChatFlowManager {
 
     /** Starts a new ordinary user turn before the base manager appends the user history entry. */
     public static long beginTurn(EntityMaid maidEntity, long turnId) {
+        com.wjx.touhou_aifun.maid.gui.MaidGuiSessionManager.cancel(maidEntity.getUUID(), "new_instruction");
         UUID maid = maidEntity.getUUID();
         RETIRED_MAIDS.remove(maid);
         Object previous = LATEST_REQUEST.get(maid);
@@ -144,6 +148,8 @@ public final class ChatFlowManager {
 
     /** Releases loaded-tool state; the turn binding remains until the next request for late replies. */
     public static void finishRequest(UUID maid, Object callback) {
+        if (callback instanceof LLMCallback llm) llm.runOnServerThread(() -> com.wjx.touhou_aifun.maid.gui.MaidGuiSessionManager.finish(callback));
+        if (callback instanceof LLMCallback llm) com.wjx.touhou_aifun.vision.MultimodalTurnContext.clear(llm);
         REQUESTED_TOOLS.remove(callback);
         REQUEST_SCHEMA_BUDGET.remove(callback);
         ACTIVE_REQUESTS.remove(callback);
@@ -259,7 +265,7 @@ public final class ChatFlowManager {
         }
         com.wjx.touhou_aifun.chat.context.AIFunMemoryManager.cancelQueuedExtraction(maid);
         try {
-            com.wjx.touhou_aifun.vision.VisionObservationManager.cancelForMaid(maid);
+            com.wjx.touhou_aifun.vision.VisionObservationManager.clearMaid(maid);
         } catch (Throwable ignored) {
         }
         com.wjx.touhou_aifun.chat.context.AIFunMemoryManager.pumpExtractionQueue();

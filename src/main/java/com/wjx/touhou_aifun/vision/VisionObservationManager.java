@@ -30,201 +30,199 @@ import java.util.function.Consumer;
 /** Coordinates the optional client capture and the always-local scan. */
 public final class VisionObservationManager {
     private static final Logger LOGGER = LogUtils.getLogger();
-    private static final ConcurrentMap<UUID, ActiveObservation> ACTIVE = new ConcurrentHashMap<>();
-    private static final ConcurrentMap<ObservationKey, CachedObservation> RECENT = new ConcurrentHashMap<>();
-    private static final long RESULT_CACHE_NANOS = 500_000_000L;
+    private static final ConcurrentMap<UUID, CompletableFuture<String>> ACTIVE = new ConcurrentHashMap<>();
 
-    private VisionObservationManager() {
-    }
+    private VisionObservationManager() { }
 
     public static void cancelForMaid(UUID maidId) {
         if (maidId == null) return;
-        ActiveObservation active = ACTIVE.remove(maidId);
-        if (active != null && !active.future().isDone()) active.future().cancel(false);
-        RECENT.keySet().removeIf(key -> maidId.equals(key.maid()));
+        CompletableFuture<String> active = ACTIVE.remove(maidId);
+        if (active != null) active.cancel(false);
+        MultimodalTurnContext.clearMaid(maidId);
         VisionCaptureTransport.cancelForMaid(maidId);
         VisionHttpCancellation.cancelForMaid(maidId);
         com.wjx.touhou_aifun.vision.scan.VisionScanScheduler.cancelForMaid(maidId);
     }
 
+    public static void clearMaid(UUID maidId) {
+        cancelForMaid(maidId);
+        ObservationSnapshotCache.INSTANCE.clearMaid(maidId);
+    }
+
     public static void clearAll() {
-        ACTIVE.values().forEach(active -> {
-            if (!active.future().isDone()) active.future().cancel(false);
-        });
+        ACTIVE.values().forEach(future -> future.cancel(false));
         ACTIVE.clear();
-        RECENT.clear();
+        MultimodalTurnContext.clearAll();
+        ObservationSnapshotCache.INSTANCE.clear();
+        UnifiedModelCatalog.clearSessionRejections();
         VisionCaptureTransport.cancelAll();
         VisionHttpCancellation.cancelAll();
         com.wjx.touhou_aifun.vision.scan.VisionScanScheduler.cancelAll();
         VisionScanCache.clearAll();
     }
 
-    /**
-     * Called by the tool on the server thread. A capture transport can complete the returned future;
-     * until a client is attached, this safe fallback still gives the LLM the local scan.
-     */
-    public static CompletableFuture<String> observe(EntityMaid maid, ObservationRequest request) {
-        return observe(maid, request, ignored -> {
-        });
-    }
-
-    public static CompletableFuture<String> observe(EntityMaid maid, ObservationRequest request,
-                                                     Consumer<ObservationStage> progress) {
+    public static CompletableFuture<String> observe(
+            com.github.tartaricacid.touhoulittlemaid.ai.manager.entity.LLMCallback callback,
+            ObservationRequest request, com.github.tartaricacid.touhoulittlemaid.ai.service.llm.LLMClient client,
+            Consumer<ObservationStage> progress) {
+        EntityMaid maid = callback.getMaid();
+        if (!TouhouAIFunConfig.VISION_ENABLED.get()) return CompletableFuture.completedFuture(error("vision_disabled"));
+        if (com.wjx.touhou_aifun.chat.ChatFlowManager.isSuperseded(maid.getUUID(), callback)) {
+            return CompletableFuture.failedFuture(new CancellationException());
+        }
         ObservationRequest normalized = request == null ? new ObservationRequest("", ScanMode.BOTH) : request;
-        ObservationKey key = observationKey(maid, normalized);
-        UUID maidId = maid.getUUID();
-        CachedObservation cached = RECENT.get(key);
-        long now = System.nanoTime();
-        if (cached != null && now >= cached.completedNanos()
-                && now - cached.completedNanos() <= RESULT_CACHE_NANOS) {
-            return CompletableFuture.completedFuture(cached.result());
+        long ticket = VisionHttpCancellation.ticket(maid.getUUID());
+        CompletableFuture<ScanOutcome> scanFuture = scan(maid, normalized, progress);
+        if (!VisionRequestLimiter.tryAcquire()) {
+            return scanFuture.thenApply(outcome -> scanFailure(outcome, "rate_limited"));
         }
-        synchronized (ACTIVE) {
-            ActiveObservation current = ACTIVE.get(maidId);
-            if (current != null && !current.future().isDone()) {
-                if (current.key().equals(key)) return current.future();
-                cancelForMaid(maidId);
-            }
-            CompletableFuture<String> future = observeInternal(maid, normalized, progress);
-            ActiveObservation active = new ActiveObservation(key, future);
-            ACTIVE.put(maidId, active);
-            future.whenComplete((value, throwable) -> {
-                ACTIVE.remove(maidId, active);
-                if (throwable == null && reusableVisualResult(value)) {
-                    long completedNanos = System.nanoTime();
-                    RECENT.put(key, new CachedObservation(completedNanos, value));
-                    if (RECENT.size() > 128) {
-                        RECENT.entrySet().removeIf(entry -> completedNanos - entry.getValue().completedNanos()
-                                > RESULT_CACHE_NANOS);
-                    }
+        notifyProgress(progress, ObservationStage.CAPTURING);
+        CompletableFuture<ScanAndCapture> captured = scanFuture.thenCombine(
+                VisionCaptureTransport.requestCapture(maid), ScanAndCapture::new);
+        VisionRequestLimiter.releaseWhenDone(captured);
+        CompletableFuture<String> result = captured.thenCompose(combined -> {
+            CompletableFuture<String> routed = new CompletableFuture<>();
+            callback.runOnServerThread(() -> {
+                if (!VisionHttpCancellation.isCurrent(maid.getUUID(), ticket)
+                        || com.wjx.touhou_aifun.chat.ChatFlowManager.isSuperseded(maid.getUUID(), callback) || maid.isRemoved()) {
+                    routed.completeExceptionally(new CancellationException());
+                    return;
                 }
+                var capture = combined.capture();
+                if (capture == null || !capture.success()) {
+                    routed.complete(scanFailure(combined.scan(), capture == null ? "capture_failed" : capture.error()));
+                    return;
+                }
+                ObservationSnapshot snapshot = new ObservationSnapshot(UUID.randomUUID().toString(), maid.getUUID(),
+                        maid.getOwnerUUID(), maid.level().dimension().location().toString(), System.currentTimeMillis(),
+                        capture.captureStartTick(), capture.captureEndTick(), capture.captureYaw(), capture.images(),
+                        combined.scan().result(), scanStatus(combined.scan()));
+                ObservationSnapshotCache.INSTANCE.put(snapshot);
+                LOGGER.debug("Captured observation {}", snapshot.id());
+                route(callback, client, snapshot, normalized.focus(), progress).whenComplete((value, failure) -> {
+                    if (failure == null) routed.complete(value); else routed.completeExceptionally(failure);
+                });
             });
-            return future;
+            return routed;
+        });
+        ACTIVE.put(maid.getUUID(), result);
+        result.whenComplete((value, error) -> ACTIVE.remove(maid.getUUID(), result));
+        return result;
+    }
+
+    private static CompletableFuture<ScanOutcome> scan(EntityMaid maid, ObservationRequest request, Consumer<ObservationStage> progress) {
+        if (!TouhouAIFunConfig.SHALLOW_SCAN_ENABLED.get() || request.scanMode() == ScanMode.NONE) {
+            return CompletableFuture.completedFuture(new ScanOutcome(null, false, false));
+        }
+        notifyProgress(progress, ObservationStage.SCANNING);
+        try {
+            return VisionScanCache.scanAsync(maid, new EnvironmentScanRequest(request.scanMode(), ScanDirection.ALL, 20, request.focus()))
+                    .handle((value, error) -> {
+                        if (error instanceof CancellationException || (error != null && error.getCause() instanceof CancellationException)) {
+                            throw new CompletionException(error);
+                        }
+                        return new ScanOutcome(value, true, error != null);
+                    });
+        } catch (RuntimeException error) {
+            LOGGER.warn("Unable to schedule observation grounding", error);
+            return CompletableFuture.completedFuture(new ScanOutcome(null, true, true));
         }
     }
 
-    private static ObservationKey observationKey(EntityMaid maid, ObservationRequest request) {
-        VisionSite site = TouhouAIFunConfig.VISION_ENABLED.get() ? AvailableVisionSites.selected() : null;
-        String siteFingerprint = site == null ? "" : site.id() + "|" + site.endpoint() + "|" + site.model();
-        return new ObservationKey(maid.level().dimension().location().toString(), maid.getUUID(),
-                maid.blockPosition().asLong(), Math.round(maid.getYRot() * 2.0F) / 2.0F,
-                Math.round(maid.getXRot() * 2.0F) / 2.0F, request.scanMode(),
-                request.focus().trim().toLowerCase(java.util.Locale.ROOT), siteFingerprint,
-                TouhouAIFunConfig.SHALLOW_SCAN_ENABLED.get());
+    public static CompletableFuture<String> review(
+            com.github.tartaricacid.touhoulittlemaid.ai.manager.entity.LLMCallback callback,
+            com.github.tartaricacid.touhoulittlemaid.ai.service.llm.LLMClient client, String action, String id, String focus,
+            Consumer<ObservationStage> progress) {
+        var maid = callback.getMaid();
+        if (!TouhouAIFunConfig.VISION_ENABLED.get()) return CompletableFuture.completedFuture(error("vision_disabled"));
+        if ("list".equals(action)) {
+            JsonObject result = new JsonObject();
+            result.addProperty("status", "ok");
+            JsonArray entries = new JsonArray();
+            ObservationSnapshotCache.INSTANCE.list(maid.getUUID(), maid.getOwnerUUID()).forEach(snapshot -> entries.add(snapshot.metadata()));
+            result.add("observations", entries);
+            return CompletableFuture.completedFuture(result.toString());
+        }
+        if (!"view".equals(action)) return CompletableFuture.completedFuture(error("invalid_action"));
+        ObservationSnapshot snapshot = ObservationSnapshotCache.INSTANCE.get(maid.getUUID(), maid.getOwnerUUID(), id);
+        if (snapshot == null) return CompletableFuture.completedFuture(error("observation_expired_or_not_found"));
+        return route(callback, client, snapshot, focus, progress);
+    }
+
+    private static CompletableFuture<String> route(
+            com.github.tartaricacid.touhoulittlemaid.ai.manager.entity.LLMCallback callback,
+            com.github.tartaricacid.touhoulittlemaid.ai.service.llm.LLMClient client,
+            ObservationSnapshot snapshot, String focus, Consumer<ObservationStage> progress) {
+        if (com.wjx.touhou_aifun.chat.ChatFlowManager.isSuperseded(callback.getMaid().getUUID(), callback)) {
+            return CompletableFuture.failedFuture(new CancellationException());
+        }
+        MultimodalTurnContext.clear(callback);
+        if (MultimodalTurnContext.canAttach(callback, client)) {
+            LOGGER.debug("Observation {} attaches images to the main model", snapshot.id());
+            MultimodalTurnContext.attach(callback, snapshot, focus);
+            JsonObject result = snapshot.metadata();
+            result.addProperty("status", "failed".equals(snapshot.scanStatus()) ? "partial" : "ok");
+            result.addProperty("image_status", "attached_to_main_model");
+            result.addProperty("note", "Images follow the complete tool-result batch. Use review_observation to view this capture in a later turn; observe_surroundings captures the current world again.");
+            return CompletableFuture.completedFuture(boundCombined(result, snapshot.scan()));
+        }
+        return identify(callback, snapshot, focus, progress);
+    }
+
+    public static CompletableFuture<String> identify(
+            com.github.tartaricacid.touhoulittlemaid.ai.manager.entity.LLMCallback callback,
+            ObservationSnapshot snapshot, String focus, Consumer<ObservationStage> progress) {
+        if (com.wjx.touhou_aifun.chat.ChatFlowManager.isSuperseded(callback.getMaid().getUUID(), callback)) {
+            return CompletableFuture.failedFuture(new CancellationException());
+        }
+        VisionSite site = AvailableVisionSites.selected();
+        if (site == null) return CompletableFuture.completedFuture(snapshotFailure(snapshot, "no_usable_independent_visual_model"));
+        if (!VisionRequestLimiter.tryAcquire()) return CompletableFuture.completedFuture(snapshotFailure(snapshot, "rate_limited"));
+        notifyProgress(progress, ObservationStage.ANALYZING);
+        LOGGER.debug("Independent vision inference for observation {} using {}", snapshot.id(), site.id());
+        CompletableFuture<String> result;
+        try {
+            result = VisionClient.forSite(site).observe(snapshot.request(site, callback.getMaid(), focus))
+                    .thenApply(observation -> {
+                        JsonObject value = JsonParser.parseString(mergeScan(observation.toJson(), snapshot.scan(), snapshot.scanStatus())).getAsJsonObject();
+                        snapshot.metadata().entrySet().forEach(entry -> value.add(entry.getKey(), entry.getValue()));
+                        return boundCombined(value, snapshot.scan());
+                    });
+        } catch (RuntimeException error) {
+            result = CompletableFuture.completedFuture(snapshotFailure(snapshot, "visual_request_failed"));
+        }
+        return VisionRequestLimiter.releaseWhenDone(result);
+    }
+
+    public static String snapshotFailure(ObservationSnapshot snapshot, String reason) {
+        JsonObject value = snapshot.metadata();
+        value.addProperty("status", "ok".equals(snapshot.scanStatus()) ? "partial" : "failed");
+        value.addProperty("image_status", "failed");
+        value.addProperty("error", reason);
+        value.addProperty("uncertainty", "Images have not been interpreted. Use successful scan data only; never claim visual recognition.");
+        return boundCombined(value, snapshot.scan());
+    }
+
+    private static String scanFailure(ScanOutcome outcome, String reason) {
+        JsonObject value = new JsonObject();
+        value.addProperty("status", "ok".equals(scanStatus(outcome)) ? "partial" : "failed");
+        value.addProperty("scan_status", scanStatus(outcome));
+        value.addProperty("image_status", "failed");
+        value.addProperty("error", reason);
+        return boundCombined(value, outcome.result());
+    }
+
+    private static String error(String reason) {
+        JsonObject value = new JsonObject(); value.addProperty("status", "failed"); value.addProperty("error", reason);
+        return value.toString();
     }
 
     static boolean reusableVisualResult(String value) {
-        if (value == null || value.isBlank()) return false;
         try {
             JsonObject object = JsonParser.parseString(value).getAsJsonObject();
-            return "ok".equals(string(object, "status")) && object.has("site_id")
-                    && !string(object, "site_id").isBlank() && object.has("image_tick")
-                    && object.get("image_tick").getAsLong() >= 0;
-        } catch (RuntimeException ignored) {
-            return false;
-        }
-    }
-
-    private static CompletableFuture<String> observeInternal(EntityMaid maid, ObservationRequest normalized,
-                                                              Consumer<ObservationStage> progress) {
-        VisionSite site = TouhouAIFunConfig.VISION_ENABLED.get() ? AvailableVisionSites.selected() : null;
-        if (site != null) {
-            LOGGER.info("Starting visual observation with site={} provider={} model={} endpoint={}",
-                    site.id(), site.provider(), site.model(), site.endpoint());
-        }
-        CompletableFuture<ScanOutcome> scanFuture;
-        if (TouhouAIFunConfig.SHALLOW_SCAN_ENABLED.get() && normalized.scanMode() != ScanMode.NONE) {
-            notifyProgress(progress, ObservationStage.SCANNING);
-            try {
-                scanFuture = VisionScanCache.scanAsync(maid,
-                        new EnvironmentScanRequest(normalized.scanMode(), ScanDirection.ALL, 20, normalized.focus()))
-                        .handle((result, throwable) -> {
-                            if (throwable != null) {
-                                if (throwable instanceof CancellationException
-                                        || throwable.getCause() instanceof CancellationException) {
-                                    throw new CompletionException(throwable);
-                                }
-                                LOGGER.warn("Local visual scan failed", throwable);
-                                return new ScanOutcome(null, true, true);
-                            }
-                            return new ScanOutcome(result, true, false);
-                        });
-            } catch (Throwable throwable) {
-                LOGGER.warn("Local visual scan could not be scheduled", throwable);
-                scanFuture = CompletableFuture.completedFuture(new ScanOutcome(null, true, true));
-            }
-        } else {
-            scanFuture = CompletableFuture.completedFuture(new ScanOutcome(null, false, false));
-        }
-
-        if (site == null) {
-            return scanFuture.thenApply(outcome -> {
-                EnvironmentScanResult scan = outcome.result();
-                String scanStatus = scanStatus(outcome);
-                String uncertainty = outcome.failed()
-                        ? "The local scan failed; do not infer exact registry identities from an image."
-                        : "No image was sent to a visual model; use scan registry identities only.";
-                JsonObject fallback = new JsonObject();
-                fallback.addProperty("status", "ok".equals(scanStatus) ? "ok" : "failed");
-                fallback.addProperty("scan_status", scanStatus);
-                fallback.addProperty("image_status", "disabled_or_no_enabled_site");
-                JsonArray uncertainties = new JsonArray();
-                uncertainties.add(uncertainty);
-                fallback.add("uncertainties", uncertainties);
-                return boundCombined(fallback, scan);
-            });
-        }
-
-        if (!VisionRequestLimiter.tryAcquire()) {
-            return scanFuture.thenApply(outcome -> {
-                EnvironmentScanResult scan = outcome.result();
-                String scanStatus = scanStatus(outcome);
-                JsonObject fallback = new JsonObject();
-                fallback.addProperty("status", "ok".equals(scanStatus) ? "partial" : "failed");
-                fallback.addProperty("scan_status", scanStatus);
-                fallback.addProperty("image_status", "rate_limited");
-                fallback.addProperty("error", "too_many_concurrent_visual_requests");
-                JsonArray uncertainties = new JsonArray();
-                uncertainties.add("The image request was skipped by the global concurrency guard; use the server scan only.");
-                fallback.add("uncertainties", uncertainties);
-                return boundCombined(fallback, scan);
-            });
-        }
-
-        // Start the client capture while the server scan is advancing across ticks. Waiting for the
-        // scan first used to make the six images 5-10 ticks newer than their grounding data.
-        notifyProgress(progress, ObservationStage.CAPTURING);
-        CompletableFuture<VisionCaptureTransport.CaptureResult> captureFuture =
-                VisionCaptureTransport.requestCapture(maid);
-        CompletableFuture<String> observation = scanFuture.thenCombine(captureFuture, ScanAndCapture::new)
-                .thenCompose(combined -> {
-                    ScanOutcome outcome = combined.scan();
-                    EnvironmentScanResult scan = outcome.result();
-                    String scanJson = scan == null ? "" : scan.toJson();
-                    String scanStatus = scanStatus(outcome);
-                    VisionCaptureTransport.CaptureResult capture = combined.capture();
-                    if (capture == null || !capture.success()) {
-                        String reason = capture == null ? "capture_failed" : capture.error();
-                        JsonObject fallback = new JsonObject();
-                        fallback.addProperty("status", "ok".equals(scanStatus) ? "partial" : "failed");
-                        fallback.addProperty("scan_status", scanStatus);
-                        fallback.addProperty("image_status", "failed");
-                        fallback.addProperty("error", reason);
-                        JsonArray uncertainties = new JsonArray();
-                        uncertainties.add("Image capture failed; conclusions are based only on the server scan.");
-                        fallback.add("uncertainties", uncertainties);
-                        return CompletableFuture.completedFuture(boundCombined(fallback, scan));
-                    }
-                    VisionRequest visionRequest = new VisionRequest(site, maid, normalized.focus(), scanJson,
-                            capture.images(), scan == null ? -1 : scan.gameTick(),
-                            capture.captureStartTick(), capture.captureEndTick(), capture.captureYaw());
-                    notifyProgress(progress, ObservationStage.ANALYZING);
-                    return VisionClient.forSite(site).observe(visionRequest)
-                            .thenApply(result -> mergeScan(result.toJson(), scan, scanStatus));
-                });
-        // Register on the exact future returned to ACTIVE. Cancelling that future now releases the
-        // global paid-request slot immediately instead of waiting for an upstream timeout.
-        return VisionRequestLimiter.releaseWhenDone(observation);
+            return "ok".equals(string(object, "status")) && !string(object, "site_id").isBlank()
+                    && object.has("image_tick") && object.get("image_tick").getAsLong() >= 0;
+        } catch (RuntimeException ignored) { return false; }
     }
 
     private static String scanStatus(ScanOutcome outcome) {
@@ -306,6 +304,8 @@ public final class VisionObservationManager {
         copyPrimitive(object, minimal, "image_status");
         copyPrimitive(object, minimal, "site_id");
         copyPrimitive(object, minimal, "error");
+        copyPrimitive(object, minimal, "observation_id");
+        copyPrimitive(object, minimal, "captured_at");
         minimal.addProperty("truncated", true);
         minimal.addProperty("reason", "combined visual result exceeded 16 KiB; details were omitted");
         if (scan != null) minimal.add("scan", JsonParser.parseString(scan.toCompactJson()));
@@ -319,6 +319,8 @@ public final class VisionObservationManager {
         emergency.addProperty("scan_status", boundedStatus(string(object, "scan_status"), "unknown"));
         emergency.addProperty("image_status", boundedStatus(string(object, "image_status"), "unknown"));
         emergency.addProperty("truncated", true);
+        String observationId = string(object, "observation_id");
+        if (observationId.matches("[a-fA-F0-9-]{36}")) emergency.addProperty("observation_id", observationId);
         emergency.addProperty("reason", "combined visual result exceeded 16 KiB; variable text was omitted");
         if (scan != null) {
             emergency.add("scan", JsonParser.parseString(scan.toCompactJson()));
@@ -435,17 +437,6 @@ public final class VisionObservationManager {
     }
 
     private record ScanAndCapture(ScanOutcome scan, VisionCaptureTransport.CaptureResult capture) {
-    }
-
-    private record ActiveObservation(ObservationKey key, CompletableFuture<String> future) {
-    }
-
-    private record CachedObservation(long completedNanos, String result) {
-    }
-
-    private record ObservationKey(String dimension, UUID maid, long blockPosition, float yaw, float pitch,
-                                  ScanMode mode, String focus, String siteFingerprint,
-                                  boolean shallowScanEnabled) {
     }
 
     private static String truncate(String value, int max) {

@@ -13,17 +13,17 @@ public record AIFunVisionSitesSyncMessage(String sitesJson, boolean visionEnable
                                           boolean shallowScanEnabled, String selectedSite,
                                           boolean insufficientPermissions, String operationStatus) {
     public static void encode(AIFunVisionSitesSyncMessage message, FriendlyByteBuf buffer) {
-        buffer.writeUtf(message.sitesJson == null ? "[]" : message.sitesJson, 64 * 1024);
+        buffer.writeUtf(message.sitesJson == null ? "[]" : message.sitesJson, 512 * 1024);
         buffer.writeBoolean(message.visionEnabled);
         buffer.writeBoolean(message.shallowScanEnabled);
-        buffer.writeUtf(message.selectedSite == null ? "" : message.selectedSite, 128);
+        buffer.writeUtf(message.selectedSite == null ? "" : message.selectedSite, 1024);
         buffer.writeBoolean(message.insufficientPermissions);
         buffer.writeUtf(message.operationStatus == null ? "" : message.operationStatus, 128);
     }
 
     public static AIFunVisionSitesSyncMessage decode(FriendlyByteBuf buffer) {
-        return new AIFunVisionSitesSyncMessage(buffer.readUtf(64 * 1024), buffer.readBoolean(),
-                buffer.readBoolean(), buffer.readUtf(128), buffer.readBoolean(), buffer.readUtf(128));
+        return new AIFunVisionSitesSyncMessage(buffer.readUtf(512 * 1024), buffer.readBoolean(),
+                buffer.readBoolean(), buffer.readUtf(1024), buffer.readBoolean(), buffer.readUtf(128));
     }
 
     public static void handle(AIFunVisionSitesSyncMessage message, Supplier<NetworkEvent.Context> contextSupplier) {
@@ -38,6 +38,8 @@ public record AIFunVisionSitesSyncMessage(String sitesJson, boolean visionEnable
     private static void handleClient(AIFunVisionSitesSyncMessage message) {
         ClientVisionSitesSnapshot.replaceFromJson(message.sitesJson);
         if (Minecraft.getInstance().screen instanceof com.wjx.touhou_aifun.client.gui.VisionSettingsScreen screen) {
+            screen.refreshFromServer(message);
+        } else if (Minecraft.getInstance().screen instanceof com.wjx.touhou_aifun.client.gui.ModelImageCapabilitiesScreen screen) {
             screen.refreshFromServer(message);
         }
     }

@@ -104,6 +104,7 @@ public final class ChatGPTSettingsService {
             var old = AvailableSites.LLM_SITES.get(ChatGPTLLMSite.API_TYPE);
             AvailableSites.LLM_SITES.put(ChatGPTLLMSite.API_TYPE, old instanceof ChatGPTLLMSite subscription ? subscription.withModels(catalog)
                     : new ChatGPTLLMSite(ChatGPTLLMSite.API_TYPE, old != null && old.enabled(), catalog));
+            ChatGPTSession.applyModelImageCapabilities();
             AvailableSites.saveSites();
         }).join();
     }

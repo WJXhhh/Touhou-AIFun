@@ -45,7 +45,8 @@ public final class ChatGPTResponsesClient extends ReasoningCompatOpenAIClient {
         ToolCatalogSnapshot snapshot = ToolContextSelector.snapshot(maid, callback);
         if (callback.getClass() == LLMCallback.class) {
             var planned = ContextBudgetPlanner.trim(callback.getMessages(), TouhouAIFunConfig.CONTEXT_INPUT_BUDGET_TOKENS.get(),
-                    snapshot.schemaBudget(ChatFlowManager.requestedToolIds(maid.getUUID(), callback)),
+                    snapshot.schemaBudget(ChatFlowManager.requestedToolIds(maid.getUUID(), callback))
+                            + com.wjx.touhou_aifun.vision.MultimodalTurnContext.inputReserve(callback),
                     AIFunMemoryManager.calibratedEstimate(maid.getAiChatManager(), callback.getMessages())
                             / (double) Math.max(1, ContextTokenEstimator.estimate(callback.getMessages())));
             callback.getMessages().clear(); callback.getMessages().addAll(planned);
@@ -69,6 +70,8 @@ public final class ChatGPTResponsesClient extends ReasoningCompatOpenAIClient {
         }
         JsonObject body = ChatGPTResponsesCodec.request(maid.getAiChatManager().getLLMModel(), callback.getMessages(), reminders, functions,
                 subscriptionSite.reasoningSettings(), subscriptionSite.webSearch() && callback.needAddTools);
+        com.wjx.touhou_aifun.vision.MultimodalTurnContext.append(callback,
+                com.wjx.touhou_aifun.vision.UnifiedModelCatalog.VisualProtocol.SUBSCRIPTION, body.getAsJsonArray("input"));
         HttpRequest unauthed = HttpRequest.newBuilder(URI.create(ChatGPTLLMSite.ENDPOINT)).GET().build();
         // Token refresh can perform network I/O; never block the Minecraft server thread.
         CompletableFuture.supplyAsync(() -> {
@@ -109,6 +112,7 @@ public final class ChatGPTResponsesClient extends ReasoningCompatOpenAIClient {
         try (Stream<String> lines = response.body()) {
             if (response.statusCode() != 200) {
                 String raw = lines.limit(32).collect(java.util.stream.Collectors.joining("\n"));
+                if (com.wjx.touhou_aifun.vision.MultimodalTurnContext.tryFallback(callback, this, response.statusCode(), raw)) return;
                 String message = "ChatGPT HTTP " + response.statusCode();
                 try {
                     JsonObject fault = JsonParser.parseString(raw).getAsJsonObject().getAsJsonObject("error");
@@ -136,6 +140,8 @@ public final class ChatGPTResponsesClient extends ReasoningCompatOpenAIClient {
                 if (stopped(callback)) return;
                 if (line.isEmpty()) {
                     if (data.length() == 0) continue;
+                    if (events.partial().currentContent().isBlank() && events.partial().currentReasoning().isBlank()
+                            && com.wjx.touhou_aifun.vision.MultimodalTurnContext.tryFallback(callback, this, 200, data.toString())) return;
                     events.accept(JsonParser.parseString(data.toString()).getAsJsonObject());
                     data.setLength(0);
                     if (events.isCompleted()) break;

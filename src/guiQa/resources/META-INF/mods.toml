@@ -1,0 +1,8 @@
+modLoader="javafml"
+loaderVersion="[47,)"
+license="MIT"
+[[mods]]
+modId="aifun_gui_test"
+version="1.0"
+displayName="AIFun GUI Compatibility Fixture"
+description="Development-only GUI and inventory compatibility tests."

@@ -14,7 +14,9 @@ public final class TouhouAIFunConfig {
     public static final ForgeConfigSpec.ConfigValue<String> STT_SELECTED_SITE;
     public static final ForgeConfigSpec.BooleanValue VISION_ENABLED;
     public static final ForgeConfigSpec.ConfigValue<String> VISION_SELECTED_SITE;
+    public static final ForgeConfigSpec.IntValue VISION_SNAPSHOT_MEMORY_MIB;
     public static final ForgeConfigSpec.BooleanValue SHALLOW_SCAN_ENABLED;
+    public static final ForgeConfigSpec.IntValue GUI_MAX_WAIT_SECONDS;
 
     static {
         ForgeConfigSpec.Builder builder = new ForgeConfigSpec.Builder();
@@ -60,11 +62,18 @@ public final class TouhouAIFunConfig {
                 .comment("Allow the observe_surroundings image tool to send maid screenshots to an enabled provider.")
                 .define("enabled", false);
         VISION_SELECTED_SITE = builder
-                .comment("Selected enabled visual site id. Empty means the first enabled site.")
+                .comment("Independent vision model reference as [siteId,modelId]. Empty disables independent inference; invalid references never switch providers.")
                 .define("selectedSite", "");
+        VISION_SNAPSHOT_MEMORY_MIB = builder
+                .comment("Global compressed screenshot cache budget in MiB. Images stay in memory only; each maid retains at most 10 captures for one hour.")
+                .defineInRange("snapshotMemoryMiB", 128, 1, 1024);
         SHALLOW_SCAN_ENABLED = builder
                 .comment("Enable the server-only scan_surroundings grounding tool.")
                 .define("shallowScanEnabled", true);
+        builder.pop();
+        builder.push("guiAutomation");
+        GUI_MAX_WAIT_SECONDS = builder.comment("Maximum cumulative UNTIL_GOAL processing wait per user task, in simulation seconds.")
+                .defineInRange("maxWaitSeconds", 900, 1, 86400);
         builder.pop();
         SPEC = builder.build();
     }

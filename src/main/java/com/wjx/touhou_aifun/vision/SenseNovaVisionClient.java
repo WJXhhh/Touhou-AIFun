@@ -35,15 +35,16 @@ final class SenseNovaVisionClient implements VisionClient {
             return CompletableFuture.completedFuture(VisionObservation.failed(
                     site.id(), "visual site endpoint/model is empty", request.scanTick()));
         }
+        long ticket = VisionHttpCancellation.ticket(request.maid() == null ? null : request.maid().getUUID());
         HttpRequest.Builder builder = HttpRequest.newBuilder(URI.create(site.endpoint()))
                 .timeout(Duration.ofSeconds(45))
                 .header("Content-Type", "application/json")
                 .header("Authorization", "Bearer " + site.apiKey())
                 .POST(HttpRequest.BodyPublishers.ofString(requestBody(request).toString(), StandardCharsets.UTF_8));
-        site.headers().forEach(builder::header);
+        site.headers().forEach(builder::setHeader);
         CompletableFuture<HttpResponse<String>> transport = httpClient.sendAsync(builder.build(),
                 HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
-        if (request.maid() != null) VisionHttpCancellation.register(request.maid().getUUID(), transport);
+        if (request.maid() != null) VisionHttpCancellation.register(request.maid().getUUID(), transport, ticket);
         return transport
                 .thenApply(response -> parse(response.statusCode(), response.body(),
                         request.imageTick(), request.scanTick()))
@@ -73,12 +74,12 @@ final class SenseNovaVisionClient implements VisionClient {
         instruction.addProperty("text", OpenAICompatibleVisionClient.prompt(request));
         content.add(instruction);
 
-        for (String face : OpenAICompatibleVisionClient.CUBEMAP_FACES) {
+        for (String face : MultimodalContent.IMAGE_LABELS) {
             String image = request.images().get(face);
             if (image == null || image.isBlank()) continue;
             JsonObject label = new JsonObject();
             label.addProperty("type", "text");
-            label.addProperty("text", "Cubemap face: " + face);
+            label.addProperty("text", face.equals("gui") ? "GUI screenshot" : "Cubemap face: " + face);
             content.add(label);
 
             JsonObject imagePart = new JsonObject();

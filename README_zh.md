@@ -34,6 +34,11 @@
 - TTS 合成指令界面
 - 流式开关与改进后的 AI 设置界面
 
+### 看图与截图回看
+- 图片模型直接接收女仆六面截图；其他模型使用所选独立识别模型
+- 所有站点和模型在 LLM 设置中统一管理，支持逐模型图片能力三态设置
+- 内存截图缓存与 `review_observation` 回看工具：[使用与迁移说明](docs/multimodal-observations.md)
+
 ## 构建
 
 ```powershell
@@ -43,6 +48,8 @@
 ```
 
 ## 项目结构
+
+女仆自主 GUI 操作、等待策略、只读预览和模组适配接口见 [GUI 操作说明](docs/gui-automation.md)。
 
 - `com.wjx.touhou_aifun.TouhouStepFun` —— 模组入口
 - `com.wjx.touhou_aifun.compat` —— `@LittleMaidExtension` 挂载与各服务商集成

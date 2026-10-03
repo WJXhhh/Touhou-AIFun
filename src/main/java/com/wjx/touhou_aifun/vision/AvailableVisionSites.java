@@ -1,205 +1,37 @@
 package com.wjx.touhou_aifun.vision;
 
-import com.google.gson.GsonBuilder;
 import com.google.gson.JsonArray;
-import com.google.gson.JsonElement;
-import com.google.gson.JsonObject;
-import com.google.gson.JsonParser;
-import com.mojang.logging.LogUtils;
-import net.minecraftforge.fml.loading.FMLPaths;
-import org.slf4j.Logger;
-
-import java.io.IOException;
-import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
-import java.nio.file.Path;
+import com.wjx.touhou_aifun.config.TouhouAIFunConfig;
 import java.util.ArrayList;
-import java.util.LinkedHashMap;
 import java.util.List;
-import java.util.Map;
 
-/** Server-authoritative visual-site registry persisted separately from LLM/STT/TTS sites. */
+/** Compatibility view into the unified LLM catalog; never persists connection settings. */
 public final class AvailableVisionSites {
-    private static final Logger LOGGER = LogUtils.getLogger();
-    private static final Map<String, VisionSite> SITES = new LinkedHashMap<>();
-    private static boolean loaded;
-
-    private AvailableVisionSites() {
+    private AvailableVisionSites() { }
+    public static void ensureLoaded() { }
+    public static List<VisionSite> all() { return UnifiedModelCatalog.views(); }
+    public static VisionSite get(String id) {
+        return all().stream().filter(site -> site.id().equals(id)).findFirst().orElse(null);
     }
-
-    public static synchronized void ensureLoaded() {
-        if (loaded) return;
-        loaded = true;
-        Path file = configFile();
-        try {
-            if (Files.exists(file)) {
-                JsonElement parsed = JsonParser.parseString(Files.readString(file, StandardCharsets.UTF_8));
-                JsonArray array = parsed.isJsonArray() ? parsed.getAsJsonArray()
-                        : parsed.getAsJsonObject().getAsJsonArray("sites");
-                if (array != null) {
-                    for (JsonElement element : array) {
-                        if (element.isJsonObject()) {
-                            VisionSite site = VisionSite.fromJson(element.getAsJsonObject());
-                            if (!site.id().isBlank()) SITES.put(site.id(), site);
-                        }
-                    }
-                }
-            }
-        } catch (Exception exception) {
-            LOGGER.warn("Unable to read visual site config {}, using defaults", file, exception);
-        }
-        boolean changed = migrateKnownLegacyDefaults();
-        for (VisionSite site : defaultSites()) {
-            if (!SITES.containsKey(site.id())) {
-                SITES.put(site.id(), site);
-                changed = true;
-            }
-        }
-        if (changed || SITES.isEmpty()) save();
+    public static VisionSite selected() {
+        return chooseSelected(all(), TouhouAIFunConfig.VISION_SELECTED_SITE.get());
     }
-
-    /** Migrate only our shipped legacy endpoint; never rewrite a user's custom SenseNova URL. */
-    private static boolean migrateKnownLegacyDefaults() {
-        VisionSite senseNova = SITES.get("sensenova");
-        if (senseNova == null || !"sensenova".equalsIgnoreCase(senseNova.provider())) return false;
-        if (!"https://api.sensenova.cn/v1/llm/chat-completions".equalsIgnoreCase(senseNova.endpoint())) {
-            return false;
-        }
-        senseNova.setEndpoint("https://token.sensenova.cn/v1/chat/completions");
-        return true;
+    public static String effectiveSelectedId() {
+        return TouhouAIFunConfig.VISION_SELECTED_SITE.get();
     }
-
-    public static synchronized List<VisionSite> all() {
-        ensureLoaded();
-        return List.copyOf(SITES.values());
-    }
-
-    public static synchronized VisionSite get(String id) {
-        ensureLoaded();
-        return SITES.get(id);
-    }
-
-    public static synchronized VisionSite selected() {
-        ensureLoaded();
-        String selected = com.wjx.touhou_aifun.config.TouhouAIFunConfig.VISION_SELECTED_SITE.get();
-        return chooseSelected(SITES.values(), selected);
-    }
-
-    /** The provider the runtime would actually use after applying fallback and usability checks. */
-    public static synchronized String effectiveSelectedId() {
-        VisionSite site = selected();
-        return site == null ? "" : site.id();
-    }
-
-    private static boolean usable(VisionSite site) {
-        return site != null && !site.apiKey().isBlank()
-                && site.hasValidHttpEndpoint() && !site.model().isBlank();
-    }
-
     static VisionSite chooseSelected(Iterable<VisionSite> sites, String selectedId) {
-        VisionSite fallback = null;
-        if (sites == null) return null;
+        if (sites == null || selectedId == null || selectedId.isBlank()) return null;
         for (VisionSite site : sites) {
-            if (!usable(site)) continue;
-            if (fallback == null) fallback = site;
-            if (site.id().equals(selectedId)) return site;
+            if (site.id().equals(selectedId) && site.enabled() && site.hasValidHttpEndpoint()
+                    && !site.model().isBlank() && (site.source() == null
+                        ? site.apiKeyPresent() : UnifiedModelCatalog.usable(ModelRef.decode(site.id())) && site.imageSupported())) return site;
         }
-        return fallback;
+        return null;
     }
-
-    public static synchronized void upsert(VisionSite site) {
-        ensureLoaded();
-        if (site != null && !site.id().isBlank()) {
-            SITES.put(site.id(), site);
-            save();
-        }
-    }
-
-    /** Preserve an existing secret when a client sends a masked site edit. */
-    public static synchronized void upsertPreservingSecret(VisionSite incoming) {
-        ensureLoaded();
-        if (incoming == null || incoming.id().isBlank()) return;
-        VisionSite existing = SITES.get(incoming.id());
-        if (existing != null && incoming.apiKey().isBlank() && !existing.apiKey().isBlank()) {
-            incoming.setApiKey(existing.apiKey());
-        }
-        if (existing != null) {
-            existing.headers().forEach((key, value) -> {
-                if (!incoming.headers().containsKey(key)) incoming.setHeader(key, value);
-            });
-        }
-        upsert(incoming);
-    }
-
-    public static synchronized void remove(String id) {
-        ensureLoaded();
-        if (id != null) SITES.remove(id);
-        save();
-    }
-
-    public static synchronized void save() {
-        Path file = configFile();
-        try {
-            Files.createDirectories(file.getParent());
-            JsonArray array = new JsonArray();
-            SITES.values().forEach(site -> array.add(site.toJson()));
-            Files.writeString(file, new GsonBuilder().setPrettyPrinting().create().toJson(array), StandardCharsets.UTF_8);
-        } catch (IOException exception) {
-            LOGGER.warn("Unable to save visual site config {}", file, exception);
-        }
-    }
-
-    private static Path configFile() {
-        return FMLPaths.CONFIGDIR.get().resolve("touhou_little_maid/sites/vision.json");
-    }
-
-    public static synchronized void replaceFrom(List<VisionSite> sites) {
-        ensureLoaded();
-        Map<String, String> secrets = new LinkedHashMap<>();
-        SITES.values().forEach(site -> {
-            if (!site.apiKey().isBlank()) secrets.put(site.id(), site.apiKey());
-        });
-        SITES.clear();
-        if (sites != null) {
-            sites.stream().filter(site -> site != null && !site.id().isBlank())
-                    .forEach(site -> {
-                        if (site.apiKey().isBlank()) {
-                            String secret = secrets.get(site.id());
-                            if (secret != null) site.setApiKey(secret);
-                        }
-                        SITES.put(site.id(), site);
-                    });
-        }
-        save();
-    }
-
-    public static synchronized String serialize() {
-        ensureLoaded();
+    public static String serializeForClient() {
         JsonArray array = new JsonArray();
-        SITES.values().forEach(site -> array.add(site.toJson()));
+        all().forEach(site -> array.add(site.toJson(false)));
         return array.toString();
-    }
-
-    /** Client settings never receive provider API keys over the network. */
-    public static synchronized String serializeForClient() {
-        ensureLoaded();
-        JsonArray array = new JsonArray();
-        SITES.values().forEach(site -> array.add(site.toJson(false)));
-        return array.toString();
-    }
-
-    public static synchronized void replaceFromJson(String payload) {
-        try {
-            JsonElement parsed = JsonParser.parseString(payload == null ? "[]" : payload);
-            JsonArray array = parsed.isJsonArray() ? parsed.getAsJsonArray() : new JsonArray();
-            List<VisionSite> sites = new ArrayList<>();
-            for (JsonElement element : array) {
-                if (element.isJsonObject()) sites.add(VisionSite.fromJson(element.getAsJsonObject()));
-            }
-            replaceFrom(sites);
-        } catch (Exception exception) {
-            LOGGER.warn("Unable to apply visual site sync", exception);
-        }
     }
 
     static List<VisionSite> defaultSites() {

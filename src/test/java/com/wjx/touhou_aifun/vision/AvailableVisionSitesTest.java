@@ -16,12 +16,11 @@ class AvailableVisionSitesTest {
     }
 
     @Test
-    void invalidPreferredSiteFallsBackToFirstUsableSite() {
+    void invalidPreferredSiteDoesNotSilentlyChangeProvider() {
         VisionSite fallback = usable("fallback");
         VisionSite invalidPreferred = new VisionSite("preferred", "Preferred", "custom",
                 "https://example.invalid/v1", "model", "", false);
-        assertEquals(fallback,
-                AvailableVisionSites.chooseSelected(List.of(invalidPreferred, fallback), "preferred"));
+        assertNull(AvailableVisionSites.chooseSelected(List.of(invalidPreferred, fallback), "preferred"));
     }
 
     @Test

@@ -23,6 +23,18 @@ public final class OpenCodeGoShared {
     private OpenCodeGoShared() {
     }
 
+    /** Required by Go on main and auxiliary calls. Identify this client honestly. */
+    public static java.util.Map<String, String> requestHeaders(java.util.Map<String, String> configured, java.util.UUID conversation) {
+        var result = new java.util.LinkedHashMap<>(configured);
+        if (result.keySet().stream().noneMatch(key -> key.equalsIgnoreCase("x-opencode-session"))) {
+            result.put("x-opencode-session", conversation == null ? java.util.UUID.randomUUID().toString() : conversation.toString());
+        }
+        if (result.keySet().stream().noneMatch(key -> key.equalsIgnoreCase("User-Agent"))) {
+            result.put("User-Agent", "Touhou-AIFun/Minecraft-1.20.1");
+        }
+        return result;
+    }
+
     /** OpenCode Go currently exposes MiniMax and Qwen models through Anthropic Messages. */
     public static boolean usesAnthropicMessages(String model) {
         String normalized = model == null ? "" : model.trim().toLowerCase(Locale.ROOT);

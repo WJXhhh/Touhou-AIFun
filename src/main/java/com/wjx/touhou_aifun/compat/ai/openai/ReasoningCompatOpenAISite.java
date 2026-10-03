@@ -34,6 +34,9 @@ public class ReasoningCompatOpenAISite extends LLMOpenAISite implements SupportM
 
     @Override
     public LLMClient client() {
+        if (url().replaceAll("/+$", "").endsWith("/responses")) {
+            return new OpenAIResponsesCompatLLMClient(LLM_HTTP_CLIENT, this);
+        }
         // Keep old user-created StepFun entries working after the dedicated API type was introduced.
         if (StepFunShared.isStepFunApi(this.url())) {
             return new StepFunLLMClient(LLM_HTTP_CLIENT, this);

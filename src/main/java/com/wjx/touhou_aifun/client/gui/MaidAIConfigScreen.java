@@ -78,6 +78,10 @@ public final class MaidAIConfigScreen extends Screen {
         int leftX = startX + 8;
         int rightX = leftX + columnWidth + gap;
         int top = startY + 30;
+        if (entry.ownedByViewer()) addRenderableWidget(net.minecraft.client.gui.components.Button.builder(
+                Component.translatable("gui.touhou_aifun.gui_preview.title"), button -> minecraft.setScreen(
+                        new com.wjx.touhou_aifun.client.gui.automation.GuiOperationPreviewScreen(this, entry.maidId())))
+                .bounds(startX + panelWidth - 126, startY + 5, 118, 20).build());
 
         addRenderableWidget(new FlatColorButton(leftX, top, columnWidth, 20,
                 Component.translatable("gui.touhou_aifun.maid_management.llm_site", siteName(llmSite, true)),

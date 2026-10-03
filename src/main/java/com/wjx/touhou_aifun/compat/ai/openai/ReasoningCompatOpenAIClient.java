@@ -65,7 +65,8 @@ public class ReasoningCompatOpenAIClient extends LLMOpenAIClient {
         if (callback.getClass() == LLMCallback.class) {
             var planned = ContextBudgetPlanner.trim(callback.getMessages(),
                     TouhouAIFunConfig.CONTEXT_INPUT_BUDGET_TOKENS.get(),
-                    toolSnapshot.schemaBudget(ChatFlowManager.requestedToolIds(maid.getUUID(), callback)),
+                    toolSnapshot.schemaBudget(ChatFlowManager.requestedToolIds(maid.getUUID(), callback))
+                            + com.wjx.touhou_aifun.vision.MultimodalTurnContext.inputReserve(callback),
                     AIFunMemoryManager.calibratedEstimate(maid.getAiChatManager(), callback.getMessages())
                             / (double) Math.max(1, com.wjx.touhou_aifun.chat.context.ContextTokenEstimator.estimate(callback.getMessages())));
             callback.getMessages().clear();
@@ -142,15 +143,18 @@ public class ReasoningCompatOpenAIClient extends LLMOpenAIClient {
             chatCompletion.enableStream();
         }
 
+        com.google.gson.JsonObject requestBody = GSON.toJsonTree(chatCompletion).getAsJsonObject();
+        com.wjx.touhou_aifun.vision.MultimodalTurnContext.append(callback,
+                com.wjx.touhou_aifun.vision.UnifiedModelCatalog.VisualProtocol.CHAT_COMPLETIONS, requestBody.getAsJsonArray("messages"));
         HttpRequest.Builder builder = HttpRequest.newBuilder()
                 .header(HttpHeaders.CONTENT_TYPE, MediaType.JSON_UTF_8.toString())
                 .header(HttpHeaders.AUTHORIZATION, "Bearer " + apiKey)
-                .POST(HttpRequest.BodyPublishers.ofString(GSON.toJson(chatCompletion)))
+                .POST(HttpRequest.BodyPublishers.ofString(GSON.toJson(requestBody)))
                 .timeout(MAX_TIMEOUT)
                 .uri(url);
 
         if (TouhouLittleMaid.DEBUG) {
-            TouhouLittleMaid.LOGGER.info(GSON.toJson(chatCompletion));
+            TouhouLittleMaid.LOGGER.info(GSON.toJson(com.wjx.touhou_aifun.vision.MultimodalContent.redacted(requestBody)));
         }
 
         this.site.headers().forEach(builder::header);
@@ -231,6 +235,7 @@ public class ReasoningCompatOpenAIClient extends LLMOpenAIClient {
                 try (Stream<String> lines = response.body()) {
                     body = lines.collect(Collectors.joining("\n"));
                 }
+                if (com.wjx.touhou_aifun.vision.MultimodalTurnContext.tryFallback(callback, this, response.statusCode(), body)) return;
                 String message = "HTTP Error Code: %d, Response: %s".formatted(response.statusCode(), body);
                 callback.onFailure(request, new Throwable(message), ErrorCode.REQUEST_RECEIVED_ERROR);
                 return;
@@ -242,6 +247,9 @@ public class ReasoningCompatOpenAIClient extends LLMOpenAIClient {
                     if (this.shouldStopChat(maid) || ChatFlowManager.isSuperseded(maidId, callback)) {
                         break;
                     }
+                    if (accumulator.currentContent().isBlank() && accumulator.currentReasoning().isBlank()
+                            && line.startsWith("data:") && com.wjx.touhou_aifun.vision.MultimodalTurnContext.tryFallback(
+                                    callback, this, 200, line.substring(5).trim())) return;
                     this.acceptStreamLine(line, accumulator, ttsReply, display);
                 }
             }
@@ -335,6 +343,9 @@ public class ReasoningCompatOpenAIClient extends LLMOpenAIClient {
             return;
         }
 
+        if (throwable == null && response != null
+                && com.wjx.touhou_aifun.vision.MultimodalTurnContext.tryFallback(callback, this, response.statusCode(), response.body())) return;
+
         this.<ReasoningOpenAIChatCompletionResponse>handleResponse(callback, response, throwable, request,
                 chat -> this.processChatResponse(callback, chat, request, null),
                 ReasoningOpenAIChatCompletionResponse.class);
@@ -354,7 +365,8 @@ public class ReasoningCompatOpenAIClient extends LLMOpenAIClient {
 
         Usage usage = chat.getUsage();
         if (usage != null) {
-            if (usage.getPromptTokens() > 0 && callback.getClass() == LLMCallback.class) {
+            if (usage.getPromptTokens() > 0 && callback.getClass() == LLMCallback.class
+                    && !com.wjx.touhou_aifun.vision.MultimodalTurnContext.hasImages(callback)) {
                 AIFunMemoryManager.recordPromptCalibration(callback.getChatManager(), usage.getPromptTokens(),
                         callback.getMessages(), ToolContextSelector.schemaBudget(callback.getMaid(), callback));
             }

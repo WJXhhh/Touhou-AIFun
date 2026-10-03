@@ -18,6 +18,12 @@ import java.util.Map;
 
 public class MimoLLMSite extends ReasoningCompatOpenAISite {
     public static final String API_TYPE = MimoShared.API_TYPE;
+    // https://mimo.mi.com/docs/zh-CN/quick-start/summary/model
+    public static final List<ModelEntry> DEFAULT_MODELS = List.of(
+            new ModelEntry("mimo-v2.6-pro", true),
+            new ModelEntry("mimo-v2.6-flash", true),
+            new ModelEntry("mimo-v2.6-pro-ultraspeed", true)
+    );
 
     public MimoLLMSite(String id, ResourceLocation icon, String url, boolean enabled, String secretKey,
                        boolean hasThinkingField, Map<String, String> headers, Map<String, ModelEntry> modelEntries) {
@@ -115,10 +121,7 @@ public class MimoLLMSite extends ReasoningCompatOpenAISite {
                     StringUtils.EMPTY,
                     true,
                     Map.of(),
-                    List.of(
-                            new ModelEntry("mimo-v2.5-pro", true),
-                            new ModelEntry("mimo-v2.5", true)
-                    )
+                    DEFAULT_MODELS
             );
         }
 

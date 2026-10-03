@@ -93,14 +93,15 @@ public class AnthropicCompatLLMClient implements LLMClient {
                     / (double) Math.max(1, com.wjx.touhou_aifun.chat.context.ContextTokenEstimator.estimate(callback.getMessages()));
             List<LLMMessage> planned = ContextBudgetPlanner.trim(callback.getMessages(),
                     TouhouAIFunConfig.CONTEXT_INPUT_BUDGET_TOKENS.get(),
-                    snapshot.schemaBudget(ChatFlowManager.requestedToolIds(maid.getUUID(), callback)), factor);
+                    snapshot.schemaBudget(ChatFlowManager.requestedToolIds(maid.getUUID(), callback))
+                            + com.wjx.touhou_aifun.vision.MultimodalTurnContext.inputReserve(callback), factor);
             callback.getMessages().clear();
             callback.getMessages().addAll(planned);
         }
         JsonObject body = this.buildRequestBody(callback);
 
         if (TouhouLittleMaid.DEBUG) {
-            TouhouLittleMaid.LOGGER.info(GSON.toJson(body));
+            TouhouLittleMaid.LOGGER.info(GSON.toJson(com.wjx.touhou_aifun.vision.MultimodalContent.redacted(body)));
         }
 
         HttpRequest.Builder builder = HttpRequest.newBuilder()
@@ -265,6 +266,8 @@ public class AnthropicCompatLLMClient implements LLMClient {
             user.add("content", content);
             messages.add(user);
         }
+        com.wjx.touhou_aifun.vision.MultimodalTurnContext.append(callback,
+                com.wjx.touhou_aifun.vision.UnifiedModelCatalog.VisualProtocol.ANTHROPIC, messages);
         body.add("messages", messages);
 
         // --- tools ---
@@ -362,6 +365,7 @@ public class AnthropicCompatLLMClient implements LLMClient {
             return;
         }
         if (!this.isSuccessful(response)) {
+            if (com.wjx.touhou_aifun.vision.MultimodalTurnContext.tryFallback(callback, this, response.statusCode(), response.body())) return;
             String message = "HTTP Error Code: %d, Response: %s".formatted(response.statusCode(), response.body());
             callback.onFailure(request, new Throwable(message), ErrorCode.REQUEST_RECEIVED_ERROR);
             return;
@@ -397,7 +401,8 @@ public class AnthropicCompatLLMClient implements LLMClient {
                 inputTokens = optInt(usage, "prompt_tokens");
                 outputTokens = optInt(usage, "completion_tokens");
             }
-            if (inputTokens > 0 && callback.getClass() == LLMCallback.class) {
+            if (inputTokens > 0 && callback.getClass() == LLMCallback.class
+                    && !com.wjx.touhou_aifun.vision.MultimodalTurnContext.hasImages(callback)) {
                 AIFunMemoryManager.recordPromptCalibration(callback.getChatManager(), inputTokens,
                         callback.getMessages(), ToolContextSelector.schemaBudget(callback.getMaid(), callback));
             }
@@ -613,6 +618,7 @@ public class AnthropicCompatLLMClient implements LLMClient {
                 try (Stream<String> lines = response.body()) {
                     body = lines.collect(Collectors.joining("\n"));
                 }
+                if (com.wjx.touhou_aifun.vision.MultimodalTurnContext.tryFallback(callback, this, response.statusCode(), body)) return;
                 String message = "HTTP Error Code: %d, Response: %s".formatted(response.statusCode(), body);
                 callback.onFailure(request, new Throwable(message), ErrorCode.REQUEST_RECEIVED_ERROR);
                 return;
@@ -625,6 +631,9 @@ public class AnthropicCompatLLMClient implements LLMClient {
                     if (this.shouldStopChat(maid) || ChatFlowManager.isSuperseded(maidId, callback)) {
                         break;
                     }
+                    if (accumulator.currentContent().isBlank() && accumulator.currentReasoning().isBlank()
+                            && line.startsWith("data:") && com.wjx.touhou_aifun.vision.MultimodalTurnContext.tryFallback(
+                                    callback, this, 200, line.substring(5).trim())) return;
                     this.acceptStreamLine(line, blockTypes, accumulator, ttsReply, display);
                 }
             }

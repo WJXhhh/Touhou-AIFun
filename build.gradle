@@ -162,3 +162,35 @@ publishing {
 tasks.withType(JavaCompile).configureEach {
     options.encoding = 'UTF-8'
 }
+
+// The compatibility fixture is opt-in and never included in the release jar.
+if (project.hasProperty('guiQa')) {
+    def guiQa = sourceSets.create('guiQa')
+    guiQa.compileClasspath += sourceSets.main.output + sourceSets.main.compileClasspath
+    guiQa.runtimeClasspath += sourceSets.main.output + sourceSets.main.runtimeClasspath
+    minecraft.runs.configureEach {
+        mods { aifun_gui_test { source guiQa } }
+    }
+    minecraft.runs.gameTestServer {
+        workingDirectory project.file('build/gui-qa-server')
+        property 'forge.enabledGameTestNamespaces', 'aifun_gui_test'
+    }
+    minecraft.runs.client {
+        workingDirectory project.file('build/gui-qa-client')
+        if (project.hasProperty('guiQaAuto')) property 'aifun.guiQa.autorun', 'true'
+    }
+    if (project.hasProperty('guiQaAuto')) {
+        tasks.register('verifyGuiQaClient') {
+            doLast {
+                def result = file('build/gui-qa-client/gui-qa-client-result.txt')
+                if (!result.exists() || !result.getText('UTF-8').startsWith('PASS:')) {
+                    throw new GradleException(result.exists() ? result.getText('UTF-8') : 'GUI client did not finish its checks')
+                }
+            }
+        }
+        tasks.matching { it.name == 'runClient' }.configureEach {
+            doFirst { file('build/gui-qa-client/gui-qa-client-result.txt').delete() }
+            finalizedBy 'verifyGuiQaClient'
+        }
+    }
+}

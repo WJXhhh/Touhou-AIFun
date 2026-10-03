@@ -59,7 +59,8 @@ public final class OpenAIResponsesCompatLLMClient extends ReasoningCompatOpenAIC
         if (callback.getClass() == LLMCallback.class) {
             var planned = ContextBudgetPlanner.trim(callback.getMessages(),
                     TouhouAIFunConfig.CONTEXT_INPUT_BUDGET_TOKENS.get(),
-                    snapshot.schemaBudget(ChatFlowManager.requestedToolIds(maid.getUUID(), callback)),
+                    snapshot.schemaBudget(ChatFlowManager.requestedToolIds(maid.getUUID(), callback))
+                            + com.wjx.touhou_aifun.vision.MultimodalTurnContext.inputReserve(callback),
                     AIFunMemoryManager.calibratedEstimate(maid.getAiChatManager(), callback.getMessages())
                             / (double) Math.max(1, ContextTokenEstimator.estimate(callback.getMessages())));
             callback.getMessages().clear();
@@ -77,7 +78,7 @@ public final class OpenAIResponsesCompatLLMClient extends ReasoningCompatOpenAIC
         this.responsesSite.headers().forEach(builder::header);
         HttpRequest request = builder.build();
 
-        if (TouhouLittleMaid.DEBUG) TouhouLittleMaid.LOGGER.info(GSON.toJson(body));
+        if (TouhouLittleMaid.DEBUG) TouhouLittleMaid.LOGGER.info(GSON.toJson(com.wjx.touhou_aifun.vision.MultimodalContent.redacted(body)));
         CompletableFuture<HttpResponse<String>> future = this.responsesHttpClient.sendAsync(
                 request, HttpResponse.BodyHandlers.ofString());
         ChatFlowManager.setInFlight(maid.getUUID(), callback, future);
@@ -102,6 +103,8 @@ public final class OpenAIResponsesCompatLLMClient extends ReasoningCompatOpenAIC
             String reminder = EmotionControlPrompts.turnReminder(maid);
             if (reminder != null) appendMessage(input, "system", reminder);
         }
+        com.wjx.touhou_aifun.vision.MultimodalTurnContext.append(callback,
+                com.wjx.touhou_aifun.vision.UnifiedModelCatalog.VisualProtocol.RESPONSES, input);
         body.add("input", input);
 
         if (callback.needAddTools) {
@@ -167,6 +170,7 @@ public final class OpenAIResponsesCompatLLMClient extends ReasoningCompatOpenAIC
                 return;
             }
             if (this.shouldStopChat(callback.getMaid())) return;
+            if (com.wjx.touhou_aifun.vision.MultimodalTurnContext.tryFallback(callback, this, response.statusCode(), response.body())) return;
             if (!this.isSuccessful(response)) {
                 callback.onFailure(request, new Throwable("HTTP Error Code: %d, Response: %s"
                         .formatted(response.statusCode(), response.body())), ErrorCode.REQUEST_RECEIVED_ERROR);

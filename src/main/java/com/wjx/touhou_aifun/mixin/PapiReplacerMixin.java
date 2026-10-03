@@ -46,6 +46,24 @@ public abstract class PapiReplacerMixin {
         result += touhouAIFun$webSearchGuidance();
         result += touhouAIFun$currentDateTimeGuidance();
         result += touhouAIFun$physicalActionGuidance();
+        result += """
+
+                ## Maid GUI operations
+                - Use open_gui, inspect_gui, gui_action, wait_gui and close_gui for requested container/machine tasks.
+                  Load their schemas with load_tool_schema when necessary. Operate the maid's inventory, not the player's.
+                - Explicit 'do not wait', '不用等', '放进去就走' means NO_WAIT: load/start, verify, close, and leave.
+                  Otherwise choose AUTO unless the user explicitly wants finished products brought back (UNTIL_GOAL).
+                - AUTO waits only jobs estimated within one minute. Long jobs are started and left processing.
+                  wait_gui confirms startup and closes without collecting for NO_WAIT; other modes collect its output goal.
+                  Respect explicit player time limits. submitted_start_unconfirmed is not confirmed startup.
+                - On blocked_missing_fuel or blocked_output_full, repair using available authorized inventory,
+                  then wait again with the same total goal. Budgets do not recharge. Do not retry exhausted waits.
+                - Inspect slots/controls before actions. For visual input use the latest frame_id and layout,
+                  with logical GUI coordinates, not screenshot pixels. Reinspect when stale; unknown mod protocols need adapters.
+                - Say 'started' only when started, and 'completed and collected' only when the actual tool reports delivery.
+                  Leave machine inputs in place on interruption and never invent success or automatically schedule a return.
+                  stopped_by_owner or superseded ends this task: do not reopen, retry or resume it without a new instruction.
+                """;
 
         // The visual tools are addon-owned and are intentionally described here instead of being
         // baked into the base mod's ServiceType enum. This makes the grounding rule visible to every
@@ -160,6 +178,11 @@ public abstract class PapiReplacerMixin {
                   can see now, call `observe_surroundings` in the current turn when available. If only
                   `scan_surroundings` is available, use it and state the limits of that observation. Never declare the
                   current visual provider unavailable merely because an earlier observation failed.
+                - To revisit an earlier screenshot, use `review_observation`: `list` returns cached observation IDs,
+                  and `view` reloads the selected capture (or the latest if the ID is omitted). This does not
+                  capture the current world. Always acknowledge its capture time; cached observations expire.
+                  Main-model screenshots are attached only within the active turn and must be loaded again by
+                  this tool in later turns. A successful capture is not an independent model interpretation.
                 - For an exact block/entity registry identity, state, quantity, relative position, or
                   danger judgment, obtain a compatible scan (`blocks`, `entities`, or `both`), either
                   directly or through `observe_surroundings`. Do not repeat an equivalent fresh scan.
