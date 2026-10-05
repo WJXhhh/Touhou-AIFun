@@ -25,7 +25,7 @@ import java.util.concurrent.ConcurrentHashMap;
 public final class ChatFlowManager {
     private static final Map<UUID, Object> LATEST_REQUEST = new ConcurrentHashMap<>();
     private static final Map<UUID, Integer> TTS_GENERATION = new ConcurrentHashMap<>();
-    private static final Map<UUID, CompletableFuture<?>> IN_FLIGHT = new ConcurrentHashMap<>();
+    private static final Map<Object, com.wjx.touhou_aifun.chat.agent.AgentOperations> IN_FLIGHT = new ConcurrentHashMap<>();
     private static final Map<UUID, Long> CURRENT_TURN = new ConcurrentHashMap<>();
     private static final Map<Object, Long> CALLBACK_TURNS = new ConcurrentHashMap<>();
     private static final Map<Object, Set<String>> REQUESTED_TOOLS = new ConcurrentHashMap<>();
@@ -77,9 +77,10 @@ public final class ChatFlowManager {
     public static void registerRequest(UUID maid, Object callback) {
         // TLM uses LLMCallback subclasses for settings generation and grounded knowledge. Those
         // side requests must not cancel or replace the ordinary maid conversation.
-        if (!(callback instanceof LLMCallback) || callback.getClass() != LLMCallback.class) {
+        if (!(callback instanceof LLMCallback) || !com.wjx.touhou_aifun.chat.agent.AgentExecution.foreground(callback)) {
             return;
         }
+        com.wjx.touhou_aifun.chat.agent.AgentRuntime.bind((LLMCallback) callback);
         RETIRED_MAIDS.remove(maid);
         Object previous = LATEST_REQUEST.get(maid);
         cancelInFlight(maid);
@@ -93,12 +94,13 @@ public final class ChatFlowManager {
             if (previous instanceof LLMCallback llm) com.wjx.touhou_aifun.vision.MultimodalTurnContext.clear(llm);
         }
         CALLBACK_TURNS.put(callback, CURRENT_TURN.getOrDefault(maid, 0L));
+        com.wjx.touhou_aifun.chat.agent.AgentExecution.bind((LLMCallback)callback,CURRENT_TURN.getOrDefault(maid,0L),null,0,com.wjx.touhou_aifun.chat.agent.AgentExecution.Purpose.CHAT);
         REQUESTED_TOOLS.putIfAbsent(callback, ConcurrentHashMap.newKeySet());
     }
 
     /** Starts a new ordinary user turn before the base manager appends the user history entry. */
     public static long beginTurn(EntityMaid maidEntity, long turnId) {
-        com.wjx.touhou_aifun.maid.gui.MaidGuiSessionManager.cancel(maidEntity.getUUID(), "new_instruction");
+        if (!com.wjx.touhou_aifun.chat.agent.AgentRuntime.enabled(maidEntity)) com.wjx.touhou_aifun.maid.gui.MaidGuiSessionManager.cancel(maidEntity.getUUID(), "new_instruction");
         UUID maid = maidEntity.getUUID();
         RETIRED_MAIDS.remove(maid);
         Object previous = LATEST_REQUEST.get(maid);
@@ -113,7 +115,7 @@ public final class ChatFlowManager {
         // Visual captures are tied to the old turn too; discard their in-memory request table so a
         // late six-face upload cannot be grounded into the new conversation.
         try {
-            com.wjx.touhou_aifun.vision.VisionObservationManager.cancelForMaid(maid);
+            if (!com.wjx.touhou_aifun.chat.agent.AgentRuntime.enabled(maidEntity)) com.wjx.touhou_aifun.vision.VisionObservationManager.cancelForMaid(maid);
         } catch (Throwable ignored) {
             // Optional integration remains harmless during bootstrap.
         }
@@ -129,11 +131,13 @@ public final class ChatFlowManager {
     }
 
     public static void requestToolSchema(UUID maid, Object callback, String toolId) {
+        if (callback instanceof com.wjx.touhou_aifun.chat.agent.TaskCallback task) { if (java.util.Arrays.asList(com.wjx.touhou_aifun.compat.ai.action.GuiTool.IDS).contains(toolId)) task.task.loadedTools.addAll(java.util.Arrays.asList(com.wjx.touhou_aifun.compat.ai.action.GuiTool.IDS)); else task.task.loadedTools.add(toolId); return; }
         if (toolId == null || toolId.isBlank()) return;
         REQUESTED_TOOLS.computeIfAbsent(callback, ignored -> ConcurrentHashMap.newKeySet()).add(toolId);
     }
 
     public static Set<String> requestedToolIds(UUID maid, Object callback) {
+        if (callback instanceof com.wjx.touhou_aifun.chat.agent.TaskCallback task) return Set.copyOf(task.task.loadedTools);
         Set<String> ids = REQUESTED_TOOLS.get(callback);
         return ids == null ? Set.of() : Set.copyOf(ids);
     }
@@ -148,14 +152,21 @@ public final class ChatFlowManager {
 
     /** Releases loaded-tool state; the turn binding remains until the next request for late replies. */
     public static void finishRequest(UUID maid, Object callback) {
+        if (callback instanceof com.wjx.touhou_aifun.chat.agent.TaskCallback task) {
+            if (!task.stopped()) com.wjx.touhou_aifun.chat.agent.AgentRuntime.finished(task, "request_ended_before_task_completion", false);
+            return;
+        }
         if (callback instanceof LLMCallback llm) llm.runOnServerThread(() -> com.wjx.touhou_aifun.maid.gui.MaidGuiSessionManager.finish(callback));
         if (callback instanceof LLMCallback llm) com.wjx.touhou_aifun.vision.MultimodalTurnContext.clear(llm);
         REQUESTED_TOOLS.remove(callback);
         REQUEST_SCHEMA_BUDGET.remove(callback);
         ACTIVE_REQUESTS.remove(callback);
+        var operations = IN_FLIGHT.remove(callback); if (operations != null) operations.cancel();
         com.wjx.touhou_aifun.compat.ai.openai.ToolContextSelector.clearSnapshot(callback);
         com.wjx.touhou_aifun.chat.context.AIFunMemoryManager.pumpExtractionQueue();
     }
+
+    public static boolean hasActiveRequest(UUID maid) { Object callback = LATEST_REQUEST.get(maid); return callback != null && ACTIVE_REQUESTS.contains(callback); }
 
     public static boolean hasActiveOrdinaryRequests() {
         return !ACTIVE_REQUESTS.isEmpty();
@@ -213,23 +224,47 @@ public final class ChatFlowManager {
         }
     }
 
-    /** Remembers only an ordinary chat future; side callbacks must never be cancelled by chat B. */
+    public static void setModelInFlight(UUID maid, Object callback, CompletableFuture<?> future) {
+        long started = System.nanoTime();
+        future.whenComplete((value,error) -> com.wjx.touhou_aifun.chat.agent.AgentTelemetry.stage("model_http_ready",started,0));
+        setInFlight(maid,callback,future);
+    }
+    /** Track all purposes, while ordinary chat takeover cancels only ordinary chat operations. */
     public static void setInFlight(UUID maid, Object callback, CompletableFuture<?> future) {
-        if (callback instanceof LLMCallback && callback.getClass() == LLMCallback.class) {
-            IN_FLIGHT.put(maid, future);
+        var parent = com.wjx.touhou_aifun.chat.agent.KnowledgeSummaryCache.parent(callback);
+        if (parent != null) { com.wjx.touhou_aifun.chat.agent.KnowledgeSummaryCache.track(callback,future); setInFlight(maid, parent, future); return; }
+        long started = System.nanoTime();
+        future.whenComplete((value, error) -> com.wjx.touhou_aifun.chat.agent.AgentTelemetry.stage("async_operation", started, 0));
+        if (callback instanceof com.wjx.touhou_aifun.chat.agent.TaskCallback task) { task.operations.add(future); return; }
+        if (callback instanceof LLMCallback) {
+            var operations = IN_FLIGHT.compute(callback, (key, current) -> {
+                var owned = current == null ? new com.wjx.touhou_aifun.chat.agent.AgentOperations() : current;
+                owned.add(future); return owned;
+            });
+            future.whenComplete((value,error) -> IN_FLIGHT.computeIfPresent(callback,
+                    (key,current) -> current == operations && current.empty() ? null : current));
+            if (isSuperseded(maid, callback)) { operations.cancel(); IN_FLIGHT.remove(callback, operations); }
         }
     }
 
     private static void cancelInFlight(UUID maid) {
-        CompletableFuture<?> previous = IN_FLIGHT.remove(maid);
-        if (previous != null && !previous.isDone()) {
-            previous.cancel(true);
-        }
+        cancelInFlight(maid, false);
+    }
+    private static void cancelInFlight(UUID maid, boolean allPurposes) {
+        IN_FLIGHT.forEach((callback, operations) -> {
+            if (callback instanceof LLMCallback llm && llm.getMaid().getUUID().equals(maid)
+                    && (allPurposes || com.wjx.touhou_aifun.chat.agent.AgentExecution.foreground(callback))
+                    && IN_FLIGHT.remove(callback, operations)) operations.cancel();
+        });
     }
 
     /** True if a newer request has been issued for the maid since {@code callback} was created. */
     public static boolean isSuperseded(UUID maid, Object callback) {
+        if (callback instanceof com.wjx.touhou_aifun.chat.agent.TaskCallback task) return task.stopped();
         if (RETIRED_MAIDS.contains(maid)) return true;
+        var parent = com.wjx.touhou_aifun.chat.agent.KnowledgeSummaryCache.parent(callback);
+        if (parent != null) return isSuperseded(maid, parent);
+        if (!com.wjx.touhou_aifun.chat.agent.AgentExecution.foreground(callback)) return false;
         Object latest = LATEST_REQUEST.get(maid);
         Long callbackTurn = CALLBACK_TURNS.get(callback);
         long currentTurn = CURRENT_TURN.getOrDefault(maid, 0L);
@@ -255,7 +290,7 @@ public final class ChatFlowManager {
         Object callback = LATEST_REQUEST.remove(maid);
         CURRENT_TURN.remove(maid);
         TTS_GENERATION.remove(maid);
-        cancelInFlight(maid);
+        cancelInFlight(maid, true);
         if (callback != null) {
             CALLBACK_TURNS.remove(callback);
             REQUESTED_TOOLS.remove(callback);
@@ -273,7 +308,7 @@ public final class ChatFlowManager {
 
     public static void clearAllRuntimeState() {
         IN_FLIGHT.values().forEach(future -> {
-            if (future != null && !future.isDone()) future.cancel(true);
+            if (future != null) future.cancel();
         });
         LATEST_REQUEST.clear();
         TTS_GENERATION.clear();

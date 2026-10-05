@@ -38,6 +38,7 @@ public final class ChatGPTSubscriptionScreen extends Screen {
     private boolean initialized, editable, busy, draftEnabled, dirtyEnabled, serverHelp;
     private boolean draftSummary = true, dirtyReasoning;
     private boolean draftWebSearch = true, dirtyWebSearch;
+    private boolean draftFastMode, dirtyFastMode;
     private String draftEffort = "default";
     private int ticks, modelOffset, accountIndex;
     private String status = "", authorizationUrl = "", callbackPort = "1455", sshTarget = "";
@@ -78,10 +79,14 @@ public final class ChatGPTSubscriptionScreen extends Screen {
                         % ChatGPTReasoningSettings.EFFORTS.size());
                 dirtyReasoning = true; init();
             }).setTooltip(Tooltip.create(text("effort_help")));
-            button(x + 144, y + 140, 128, draftWebSearch ? "search_on" : "search_off", editable && !busy,
+            button(x + 106, y + 140, 106, draftWebSearch ? "search_on" : "search_off", editable && !busy,
                     () -> { draftWebSearch = !draftWebSearch; dirtyWebSearch = true; init(); })
                     .setTooltip(Tooltip.create(text("search_help")));
-            button(x + 280, y + 140, 96, "manage_usage", true, () -> Util.getPlatform().openUri("https://chatgpt.com/settings/usage"));
+            button(x + 220, y + 140, 80, draftFastMode ? "fast_on" : "fast_off", editable && !busy,
+                    () -> { draftFastMode = !draftFastMode; dirtyFastMode = true; init(); })
+                    .setTooltip(Tooltip.create(text("fast_help").copy().append("\n").append(
+                            text("fast_actual", text("tier." + serviceTier())))));
+            button(x + 306, y + 140, 70, "manage_usage", true, () -> Util.getPlatform().openUri("https://chatgpt.com/settings/usage"));
         } else {
             button(x, y + 68, 184, "copy_ssh", true, () -> {
                 if (sshTarget.isBlank() || sshTarget.strip().startsWith("-") || sshTarget.chars().anyMatch(c -> Character.isWhitespace(c) || "\"'`;|&$<>".indexOf(c) >= 0)) {
@@ -121,7 +126,7 @@ public final class ChatGPTSubscriptionScreen extends Screen {
 
     private void requestStatus() {
         if (minecraft != null && minecraft.player != null)
-            AIFunNetwork.sendChatGPTAction(new AIFunChatGPTActionMessage(screenId, Action.STATUS, 1455, draftEnabled, "", draftSummary, draftEffort, draftWebSearch));
+            AIFunNetwork.sendChatGPTAction(new AIFunChatGPTActionMessage(screenId, Action.STATUS, 1455, draftEnabled, "", draftSummary, draftEffort, draftWebSearch, draftFastMode));
     }
 
     private void action(Action action) {
@@ -129,7 +134,7 @@ public final class ChatGPTSubscriptionScreen extends Screen {
         int port = port(); if (port < 0) return;
         String clientId = action == Action.SELECT && !accounts.isEmpty() ? string(accounts.get(accountIndex), "client_id") : "";
         busy = true; status = text(action == Action.MODELS ? "checking_models" : "working").getString();
-        AIFunNetwork.sendChatGPTAction(new AIFunChatGPTActionMessage(screenId, action, port, draftEnabled, clientId, draftSummary, draftEffort, draftWebSearch)); init();
+        AIFunNetwork.sendChatGPTAction(new AIFunChatGPTActionMessage(screenId, action, port, draftEnabled, clientId, draftSummary, draftEffort, draftWebSearch, draftFastMode)); init();
     }
 
     private void confirmLogout() {
@@ -149,6 +154,7 @@ public final class ChatGPTSubscriptionScreen extends Screen {
             draftEffort = ChatGPTReasoningSettings.normalize(string(metadata, "reasoning_effort"));
         }
         if (!dirtyWebSearch) draftWebSearch = !metadata.has("web_search") || flag("web_search");
+        if (!dirtyFastMode) draftFastMode = flag("fast_mode");
         String selected = accounts.isEmpty() ? "" : string(accounts.get(accountIndex), "client_id");
         accounts.clear(); accountIndex = 0;
         if (metadata.has("accounts")) metadata.getAsJsonArray("accounts").forEach(value -> accounts.add(value.getAsJsonObject()));
@@ -166,7 +172,7 @@ public final class ChatGPTSubscriptionScreen extends Screen {
             if (serverHelp && focusPort) setFocused(portInput);
             if (serverHelp && focusHost) setFocused(hostInput);
         }
-        if (message.saved()) { dirtyEnabled = false; dirtyReasoning = false; dirtyWebSearch = false; onClose(); }
+        if (message.saved()) { dirtyEnabled = false; dirtyReasoning = false; dirtyWebSearch = false; dirtyFastMode = false; onClose(); }
         else if (open) openAuthorization();
     }
 
@@ -180,6 +186,11 @@ public final class ChatGPTSubscriptionScreen extends Screen {
     }
 
     private void openAuthorization() { if (isAuthorizationUrl(authorizationUrl)) Util.getPlatform().openUri(authorizationUrl); }
+
+    private String serviceTier() {
+        String value = string(metadata, "last_service_tier");
+        return java.util.Set.of("fast", "priority", "default", "flex", "ultrafast").contains(value) ? value : "unknown";
+    }
 
     @Override public void tick() {
         super.tick();
@@ -207,7 +218,7 @@ public final class ChatGPTSubscriptionScreen extends Screen {
         if (!serverHelp) {
             String selected = accounts.isEmpty() ? text("no_accounts").getString() : string(accounts.get(accountIndex), "email");
             graphics.drawString(font, font.plainSubstrByWidth(selected, 166), x + 32, y + 100, 0xdddddd);
-            graphics.drawString(font, font.plainSubstrByWidth(text("model_count", models.size()).getString(), 136), x, y + 147, 0xffffff);
+            graphics.drawString(font, font.plainSubstrByWidth(text("model_count", models.size()).getString(), 100), x, y + 147, 0xffffff);
             graphics.fill(x, y + 162, x + 376, y + 203, 0xff101a23);
             if (models.isEmpty()) graphics.drawCenteredString(font, text("empty_models"), width / 2, y + 178, 0x9babb9);
             for (int i = 0; i < VISIBLE_MODELS && modelOffset + i < models.size(); i++) {
@@ -229,7 +240,7 @@ public final class ChatGPTSubscriptionScreen extends Screen {
         super.render(graphics, mouseX, mouseY, partialTick);
         if (mouseX >= x && mouseX < x + 376 && mouseY >= y + 205 && mouseY < y + 219)
             graphics.renderTooltip(font, font.split(Component.literal(note), 360), mouseX, mouseY);
-        else if (!serverHelp && mouseX >= x && mouseX < x + 136 && mouseY >= y + 143 && mouseY < y + 160) {
+        else if (!serverHelp && mouseX >= x && mouseX < x + 100 && mouseY >= y + 143 && mouseY < y + 160) {
             StringBuilder details = new StringBuilder(text("discovery_help").getString());
             if (metadata.has("model_checks")) metadata.getAsJsonObject("model_checks").entrySet().forEach(entry ->
                     details.append('\n').append(entry.getKey()).append(": ").append(string(entry.getValue().getAsJsonObject(), "detail")));

@@ -23,7 +23,14 @@ public final class GuiClientBridge {
         byte[][] chunks;
         String json;
         int bytes;
-        Pending(MaidGuiSession session, boolean input) { this.session = session; this.input = input; deadline = session.maid.level().getGameTime() + 240; }
+        Pending(MaidGuiSession session, boolean input) {
+            this.session = session; this.input = input; deadline = session.maid.level().getGameTime() + 240;
+            long started=System.nanoTime();
+            var timing=com.wjx.touhou_aifun.chat.agent.AgentTelemetry.start(session.callback,input?"gui_client_input":"gui_client_capture");
+            future.whenComplete((result,error)->timing.finish(error!=null?com.wjx.touhou_aifun.chat.agent.AgentTelemetry.failureStatus(error)
+                    :result!=null && result.has("error")?"error":"ok",0));
+            future.whenComplete((result,error)->com.wjx.touhou_aifun.chat.agent.AgentTelemetry.stage(input?"gui_client_input":"gui_client_capture",started,0));
+        }
     }
     private GuiClientBridge() { }
     public static boolean busy(MaidGuiSession session) { return PENDING.values().stream().anyMatch(p -> p.session == session); }
@@ -134,8 +141,17 @@ public final class GuiClientBridge {
     public static void tick() {
         for (var entry : List.copyOf(PENDING.entrySet())) if (entry.getValue().session.maid.level().getGameTime() >= entry.getValue().deadline) fail(entry.getKey(), "gui_client_timeout");
     }
-    public static void preview(ServerPlayer sender, UUID maidId, boolean stop) {
+    public static void preview(ServerPlayer sender, UUID maidId, boolean stop) { preview(sender,maidId,stop ? "stop" : "status"); }
+    public static void preview(ServerPlayer sender, UUID maidId, String action) {
         if (sender == null) return;
+        if (!java.util.Set.of("status","pause","resume","stop").contains(action)) return;
+        boolean stop = action.equals("stop");
+        var entity = sender.serverLevel().getEntity(maidId);
+        if (entity instanceof com.github.tartaricacid.touhoulittlemaid.entity.passive.EntityMaid maid
+                && sender.getUUID().equals(maid.getOwnerUUID())) {
+            var state = com.wjx.touhou_aifun.chat.agent.AgentRuntime.previewControl(maid,action);
+            AIFunNetwork.sendTaskState(sender,maidId,state.toString());
+        } else return;
         MaidGuiSession session = MaidGuiSessionManager.session(maidId);
         if (session == null || !Objects.equals(session.owner, sender.getUUID()) || sender.level() != session.maid.level()) return;
         if (stop) { MaidGuiSessionManager.cancel(maidId, "stopped_by_owner"); return; }

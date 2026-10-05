@@ -24,11 +24,13 @@ import com.google.gson.JsonSyntaxException;
 import net.minecraft.server.level.ServerPlayer;
 import org.apache.commons.lang3.StringUtils;
 import com.wjx.touhou_aifun.chat.ChatFlowManager;
+import com.wjx.touhou_aifun.chat.agent.AgentTelemetry;
 import com.wjx.touhou_aifun.chat.context.AIFunMemoryManager;
 import com.wjx.touhou_aifun.chat.context.ContextBudgetPlanner;
 import com.wjx.touhou_aifun.compat.ai.EmotionControlPrompts;
 import com.wjx.touhou_aifun.compat.ai.openai.response.StreamAccumulator;
 import com.wjx.touhou_aifun.compat.ai.openai.response.StreamChunk;
+import com.wjx.touhou_aifun.compat.ai.openai.response.TokenUsage;
 import com.wjx.touhou_aifun.config.TouhouAIFunConfig;
 
 import javax.annotation.Nullable;
@@ -36,7 +38,6 @@ import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
-import java.time.Duration;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -66,9 +67,6 @@ import java.util.stream.Stream;
  * {@link LLMCallback#onFunctionCall}.
  */
 public class AnthropicCompatLLMClient implements LLMClient {
-    protected static final Duration MAX_TIMEOUT = Duration.ofSeconds(60);
-    /** Anthropic requires an explicit {@code max_tokens}; maid replies are short, 2048 is generous. */
-    private static final int MAX_TOKENS = 2048;
     private static final String ANTHROPIC_VERSION = "2023-06-01";
 
     protected final HttpClient httpClient;
@@ -82,12 +80,13 @@ public class AnthropicCompatLLMClient implements LLMClient {
 
     @Override
     public void chat(LLMCallback callback) {
+        if (!com.wjx.touhou_aifun.chat.agent.AgentContext.prepare(callback)) return;
         EntityMaid maid = callback.getMaid();
-        if (callback.getClass() == LLMCallback.class
+        if (com.wjx.touhou_aifun.chat.agent.AgentExecution.managed(callback)
                 && ChatFlowManager.isSuperseded(maid.getUUID(), callback)) {
             return;
         }
-        if (callback.getClass() == LLMCallback.class) {
+        if (com.wjx.touhou_aifun.chat.agent.AgentExecution.managed(callback)) {
             ToolCatalogSnapshot snapshot = ToolContextSelector.snapshot(maid, callback);
             double factor = AIFunMemoryManager.calibratedEstimate(maid.getAiChatManager(), callback.getMessages())
                     / (double) Math.max(1, com.wjx.touhou_aifun.chat.context.ContextTokenEstimator.estimate(callback.getMessages()));
@@ -98,9 +97,10 @@ public class AnthropicCompatLLMClient implements LLMClient {
             callback.getMessages().clear();
             callback.getMessages().addAll(planned);
         }
+        var preparation=AgentTelemetry.root(callback,"model_prepare");
         JsonObject body = this.buildRequestBody(callback);
 
-        if (TouhouLittleMaid.DEBUG) {
+        if (TouhouLittleMaid.DEBUG && com.wjx.touhou_aifun.chat.agent.AgentExecution.context(callback).task()==null) {
             TouhouLittleMaid.LOGGER.info(GSON.toJson(com.wjx.touhou_aifun.vision.MultimodalContent.redacted(body)));
         }
 
@@ -109,10 +109,11 @@ public class AnthropicCompatLLMClient implements LLMClient {
                 .header("x-api-key", this.site.secretKey())
                 .header("anthropic-version", ANTHROPIC_VERSION)
                 .POST(HttpRequest.BodyPublishers.ofString(GSON.toJson(body)))
-                .timeout(MAX_TIMEOUT)
+                .timeout(com.wjx.touhou_aifun.config.LLMRuntimeBudget.timeout())
                 .uri(URI.create(this.endpoint()));
         this.site.headers().forEach(builder::header);
         HttpRequest httpRequest = builder.build();
+        preparation.finish("ok",0);
 
         if (TouhouAIFunConfig.LLM_STREAMING.get()) {
             this.chatStreaming(callback, httpRequest);
@@ -121,11 +122,17 @@ public class AnthropicCompatLLMClient implements LLMClient {
 
         // Keep the raw sendAsync future so a newer request can cancel it (cancelling this future
         // aborts the underlying HTTP exchange, stopping the model from generating further).
+        var timing=AgentTelemetry.model(callback);
         CompletableFuture<HttpResponse<String>> future =
                 this.httpClient.sendAsync(httpRequest, HttpResponse.BodyHandlers.ofString());
-        ChatFlowManager.setInFlight(maid.getUUID(), callback, future);
-        future.orTimeout(MAX_TIMEOUT.toSeconds() + 5, TimeUnit.SECONDS)
-                .whenComplete((response, throwable) -> this.complete(callback, response, throwable, httpRequest));
+        ChatFlowManager.setModelInFlight(maid.getUUID(), callback, future);
+        future.orTimeout(httpRequest.timeout().orElseThrow().toSeconds() + 5, TimeUnit.SECONDS)
+                .whenComplete((response, throwable) -> {
+                    timing.headers(throwable,false);
+                    try { this.complete(callback, response, throwable, httpRequest); }
+                    finally { timing.finish(ChatFlowManager.isSuperseded(maid.getUUID(),callback)?"cancelled"
+                            : throwable!=null || response==null || !isSuccessful(response)?"error":"body_received"); }
+                });
     }
 
     /** The site URL may be {@code https://api.deepseek.com/anthropic} or already include {@code /v1/messages}. */
@@ -149,25 +156,30 @@ public class AnthropicCompatLLMClient implements LLMClient {
 
         JsonObject body = new JsonObject();
         body.addProperty("model", model);
-        body.addProperty("max_tokens", MAX_TOKENS);
+        body.addProperty("max_tokens", com.wjx.touhou_aifun.config.LLMRuntimeBudget.outputTokens());
 
         // --- system ---
-        List<String> systemParts = new ArrayList<>();
-        for (LLMMessage message : callback.getMessages()) {
-            if (message.role() == Role.SYSTEM && StringUtils.isNotBlank(message.message())) {
-                systemParts.add(message.message().trim());
-            }
+        boolean managed = com.wjx.touhou_aifun.chat.agent.AgentExecution.managed(callback);
+        var layout = AnthropicPromptLayout.split(callback.getMessages());
+        List<String> systemParts = new ArrayList<>(layout.system());
+        List<String> updates = new ArrayList<>(layout.updates());
+        if (!managed) {
+            systemParts.clear(); updates.clear();
+            for (LLMMessage message : callback.getMessages())
+                if (message.role() == Role.SYSTEM && StringUtils.isNotBlank(message.message()))
+                    systemParts.add(message.message().trim());
         }
         // Keep the emotion reminders adjacent to the model's next response, exactly like the OpenAI path.
-        if (callback.getClass() == LLMCallback.class) {
-            systemParts.add(ToolContextSelector.compactDirectory(maid, callback));
+        if (managed) {
+            systemParts.add(ToolContextSelector.snapshot(maid, callback).directory());
+            updates.add(ToolContextSelector.loadedNotice(maid, callback));
             String emotionChange = EmotionControlPrompts.changeNotice(maid);
             if (emotionChange != null) {
-                systemParts.add(emotionChange);
+                updates.add(emotionChange);
             }
             String reminder = EmotionControlPrompts.turnReminder(maid);
             if (reminder != null) {
-                systemParts.add(reminder);
+                updates.add(reminder);
             }
         }
         if (!systemParts.isEmpty()) {
@@ -251,6 +263,7 @@ public class AnthropicCompatLLMClient implements LLMClient {
             }
         }
         this.flushToolResults(messages, pendingToolResults);
+        AnthropicPromptLayout.appendUpdates(messages, updates);
         // Anthropic-compatible endpoints are not always happy with a request that ENDS in a
         // tool_result block (the agent-loop turn after a tool call); some hang or reject it.
         // Appending an empty user message keeps the conversation open — standard practice for
@@ -361,7 +374,7 @@ public class AnthropicCompatLLMClient implements LLMClient {
         }
         EntityMaid maid = callback.getMaid();
         if (this.shouldStopChat(maid)) {
-            if (callback.getClass() == LLMCallback.class) ChatFlowManager.finishRequest(maid.getUUID(), callback);
+            if (com.wjx.touhou_aifun.chat.agent.AgentExecution.managed(callback)) ChatFlowManager.finishRequest(maid.getUUID(), callback);
             return;
         }
         if (!this.isSuccessful(response)) {
@@ -388,20 +401,16 @@ public class AnthropicCompatLLMClient implements LLMClient {
      */
     protected void processResponse(LLMCallback callback, JsonObject root, HttpRequest request,
                                    @Nullable StreamingTtsReply ttsReply) {
-        if (TouhouLittleMaid.DEBUG) {
+        if (TouhouLittleMaid.DEBUG && com.wjx.touhou_aifun.chat.agent.AgentExecution.context(callback).task()==null) {
             TouhouLittleMaid.LOGGER.info(GSON.toJson(root));
         }
 
         if (root.has("usage") && root.get("usage").isJsonObject()) {
-            JsonObject usage = root.getAsJsonObject("usage");
-            int inputTokens = optInt(usage, "input_tokens");
-            int outputTokens = optInt(usage, "output_tokens");
-            if (inputTokens + outputTokens == 0) {
-                // Streamed responses are normalized to the OpenAI usage shape (prompt/completion).
-                inputTokens = optInt(usage, "prompt_tokens");
-                outputTokens = optInt(usage, "completion_tokens");
-            }
-            if (inputTokens > 0 && callback.getClass() == LLMCallback.class
+            var usage = TokenUsage.read(TokenUsage.anthropic(root.getAsJsonObject("usage")));
+            AgentTelemetry.usage(callback, "anthropic", usage);
+            int inputTokens = usage.input_tokens();
+            int outputTokens = usage.output_tokens();
+            if (inputTokens > 0 && com.wjx.touhou_aifun.chat.agent.AgentExecution.managed(callback)
                     && !com.wjx.touhou_aifun.vision.MultimodalTurnContext.hasImages(callback)) {
                 AIFunMemoryManager.recordPromptCalibration(callback.getChatManager(), inputTokens,
                         callback.getMessages(), ToolContextSelector.schemaBudget(callback.getMaid(), callback));
@@ -456,6 +465,13 @@ public class AnthropicCompatLLMClient implements LLMClient {
             }
         }
 
+        String failure = ResponseCompletionGuard.failure(ResponseCompletionGuard.reason(root),
+                !toolUses.isEmpty() || StringUtils.isNotBlank(text));
+        if (failure != null) {
+            if (ttsReply != null) ttsReply.abort();
+            callback.onFailure(request, new IllegalStateException(failure), ErrorCode.REQUEST_RECEIVED_ERROR);
+            return;
+        }
         if (!toolUses.isEmpty()) {
             callback.onFunctionCall(this.buildFunctionCallMessage(text, reasoning, toolUses), this);
             return;
@@ -513,10 +529,12 @@ public class AnthropicCompatLLMClient implements LLMClient {
     protected void onTextCall(LLMCallback callback, String content, String reasoning,
                               @Nullable StreamingTtsReply ttsReply) {
         if (StringUtils.isBlank(content)) {
-            callback.onSuccess(new ReasoningOpenAIResponseChat(StringUtils.EMPTY, reasoning));
+            if (ttsReply != null) ttsReply.abort();
+            callback.onFailure(null, new IllegalStateException(ResponseCompletionGuard.failure("", false)),
+                    ErrorCode.REQUEST_RECEIVED_ERROR);
             return;
         }
-        if (callback.getClass() != LLMCallback.class) {
+        if (!com.wjx.touhou_aifun.chat.agent.AgentExecution.foreground(callback)) {
             callback.onSuccess(new ResponseChat(content, content));
             return;
         }
@@ -578,7 +596,7 @@ public class AnthropicCompatLLMClient implements LLMClient {
         // generation etc. (LLMCallback subclasses) stream silently, exactly like the OpenAI path.
         StreamingTtsReply ttsReply = null;
         StreamingDisplay display = null;
-        if (callback.getClass() == LLMCallback.class) {
+        if (com.wjx.touhou_aifun.chat.agent.AgentExecution.managed(callback)) {
             boolean singleSegment = this.singleSegmentMode(maid);
             boolean showMarkerInChat = !this.stripChatMarker(maid);
             boolean propagateEmotion = TouhouAIFunConfig.TTS_EMOTION_CONTROL.get()
@@ -588,31 +606,38 @@ public class AnthropicCompatLLMClient implements LLMClient {
         }
         StreamingTtsReply ttsReplyRef = ttsReply;
         StreamingDisplay displayRef = display;
+        long deadline = System.nanoTime() + httpRequest.timeout().orElseThrow().toNanos();
 
         // The raw sendAsync future lets a newer request abort this one before the body is consumed;
         // once streaming starts, the consume loop additionally bails out as soon as it is superseded.
+        var timing=AgentTelemetry.model(callback);
         CompletableFuture<HttpResponse<Stream<String>>> future =
                 this.httpClient.sendAsync(httpRequest, HttpResponse.BodyHandlers.ofLines());
-        ChatFlowManager.setInFlight(maid.getUUID(), callback, future);
-        future.orTimeout(MAX_TIMEOUT.toSeconds() + 5, TimeUnit.SECONDS)
+        ChatFlowManager.setModelInFlight(maid.getUUID(), callback, future);
+        future.orTimeout(httpRequest.timeout().orElseThrow().toSeconds() + 5, TimeUnit.SECONDS)
                 .whenCompleteAsync((response, throwable) ->
-                        this.consumeStream(callback, response, throwable, httpRequest, accumulator, ttsReplyRef, displayRef));
+                        this.consumeStream(callback, response, throwable, httpRequest, accumulator, ttsReplyRef, displayRef, deadline, timing));
     }
 
     private void consumeStream(LLMCallback callback, HttpResponse<Stream<String>> response, Throwable throwable,
                                HttpRequest request, StreamAccumulator accumulator, @Nullable StreamingTtsReply ttsReply,
-                               @Nullable StreamingDisplay display) {
+                               @Nullable StreamingDisplay display, long deadline, AgentTelemetry.ModelSpan timing) {
+        timing.headers(throwable,true);
         EntityMaid maid = callback.getMaid();
         if (throwable != null) {
             callback.onFailure(request, throwable, ErrorCode.REQUEST_SENDING_ERROR);
             return;
         }
         if (this.shouldStopChat(maid)) {
+            timing.finish("cancelled");
             response.body().close();
-            if (callback.getClass() == LLMCallback.class) ChatFlowManager.finishRequest(maid.getUUID(), callback);
+            if (com.wjx.touhou_aifun.chat.agent.AgentExecution.managed(callback)) ChatFlowManager.finishRequest(maid.getUUID(), callback);
             return;
         }
-        try {
+        StreamReadGuard guard = new StreamReadGuard(response.body(), deadline,
+                () -> this.shouldStopChat(maid) || ChatFlowManager.isSuperseded(maid.getUUID(), callback));
+        boolean accepted = false;
+        try (guard) {
             if (!this.isSuccessful(response)) {
                 String body;
                 try (Stream<String> lines = response.body()) {
@@ -635,20 +660,32 @@ public class AnthropicCompatLLMClient implements LLMClient {
                             && line.startsWith("data:") && com.wjx.touhou_aifun.vision.MultimodalTurnContext.tryFallback(
                                     callback, this, 200, line.substring(5).trim())) return;
                     this.acceptStreamLine(line, blockTypes, accumulator, ttsReply, display);
+                    timing.output(accumulator.hasEffectiveOutput());
                 }
             }
 
             // The stream was aborted because a newer request took over (or the maid is gone):
             // abandon this reply, so no tools run and nothing is spoken on a partial answer.
             if (this.shouldStopChat(maid) || ChatFlowManager.isSuperseded(maidId, callback)) {
-                if (callback.getClass() == LLMCallback.class) ChatFlowManager.finishRequest(maidId, callback);
+                if (com.wjx.touhou_aifun.chat.agent.AgentExecution.managed(callback)) ChatFlowManager.finishRequest(maidId, callback);
                 return;
             }
 
+            guard.check();
+            if (accumulator.buildResponse().getFinishReason() == null)
+                throw new IllegalStateException("模型响应流提前结束，未收到完成原因；未完成的工具调用没有执行。");
+            timing.finish("ok");
             this.processStreamedResponse(callback, accumulator, request, ttsReply);
+            accepted = true;
         } catch (RuntimeException e) {
+            if (this.shouldStopChat(maid) || ChatFlowManager.isSuperseded(maid.getUUID(), callback)) return;
             TouhouLittleMaid.LOGGER.error("Failed to process streaming Anthropic LLM response from {}", request.uri(), e);
-            callback.onFailure(request, e, ErrorCode.JSON_DECODE_ERROR);
+            callback.onFailure(request, guard.expired() ? new IllegalStateException("模型请求超时，请检查 llm.requestTimeoutSeconds。") : e,
+                    guard.expired() ? ErrorCode.REQUEST_SENDING_ERROR : ErrorCode.JSON_DECODE_ERROR);
+        } finally {
+            timing.finish(this.shouldStopChat(maid) || ChatFlowManager.isSuperseded(maid.getUUID(),callback)?"cancelled"
+                    : guard.expired()?"timeout":accepted?"ok":"error");
+            if (!accepted && ttsReply != null) ttsReply.abort();
         }
     }
 
@@ -678,8 +715,9 @@ public class AnthropicCompatLLMClient implements LLMClient {
             case "content_block_delta" -> this.onBlockDelta(event, blockTypes, accumulator);
             case "content_block_stop" -> this.onBlockStop(event, blockTypes);
             case "message_delta" -> this.onMessageDelta(event, accumulator);
+            case "error" -> throw new IllegalStateException("服务商在响应流中返回了错误，请检查服务商状态并重试。");
             default -> {
-                // message_stop / ping / error events carry nothing we accumulate.
+                // message_stop / ping events carry nothing we accumulate.
             }
         }
 
@@ -704,10 +742,7 @@ public class AnthropicCompatLLMClient implements LLMClient {
             return;
         }
         JsonObject usage = message.getAsJsonObject("usage");
-        int input = optInt(usage, "input_tokens");
-        if (input > 0) {
-            accumulator.accept(usageChunk(input, 0));
-        }
+        accumulator.acceptAnthropicUsage(usage);
     }
 
     /** {@code content_block_start}: registers the block kind; a {@code tool_use} block seeds its id/name. */
@@ -773,13 +808,22 @@ public class AnthropicCompatLLMClient implements LLMClient {
 
     /** {@code message_delta}: final usage and stop reason. */
     private void onMessageDelta(JsonObject event, StreamAccumulator accumulator) {
+        if (event.has("delta") && event.get("delta").isJsonObject()) {
+            String reason = optString(event.getAsJsonObject("delta"), "stop_reason");
+            if (!reason.isBlank()) {
+                JsonObject choice = new JsonObject();
+                choice.addProperty("index", 0);
+                choice.addProperty("finish_reason", reason);
+                JsonArray choices = new JsonArray();
+                choices.add(choice);
+                JsonObject chunk = new JsonObject();
+                chunk.add("choices", choices);
+                accumulator.accept(GSON.fromJson(chunk, StreamChunk.class));
+            }
+        }
         if (event.has("usage") && event.get("usage").isJsonObject()) {
             JsonObject usage = event.getAsJsonObject("usage");
-            int input = optInt(usage, "input_tokens");
-            int output = optInt(usage, "output_tokens");
-            if (input + output > 0) {
-                accumulator.accept(usageChunk(input, output));
-            }
+            accumulator.acceptAnthropicUsage(usage);
         }
     }
 
@@ -831,17 +875,6 @@ public class AnthropicCompatLLMClient implements LLMClient {
         JsonObject delta = new JsonObject();
         delta.add("tool_calls", toolCalls);
         return choiceChunk(delta);
-    }
-
-    /** Anthropic usage is translated into the OpenAI shape the accumulator stores. */
-    private static StreamChunk usageChunk(int inputTokens, int outputTokens) {
-        JsonObject usage = new JsonObject();
-        usage.addProperty("prompt_tokens", inputTokens);
-        usage.addProperty("completion_tokens", outputTokens);
-        usage.addProperty("total_tokens", inputTokens + outputTokens);
-        JsonObject root = new JsonObject();
-        root.add("usage", usage);
-        return GSON.fromJson(root, StreamChunk.class);
     }
 
     private static StreamChunk choiceChunk(JsonObject delta) {

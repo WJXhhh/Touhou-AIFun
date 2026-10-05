@@ -15,6 +15,7 @@ import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import com.wjx.touhou_aifun.chat.ChatFlowManager;
+import com.wjx.touhou_aifun.chat.agent.AgentTelemetry;
 import com.wjx.touhou_aifun.chat.context.AIFunMemoryManager;
 import com.wjx.touhou_aifun.chat.context.ContextBudgetPlanner;
 import com.wjx.touhou_aifun.chat.context.ContextTokenEstimator;
@@ -39,7 +40,6 @@ import static com.github.tartaricacid.touhoulittlemaid.ai.service.Client.GSON;
  * deliberately disabled for now; the completed response still participates in the full agent loop.
  */
 public final class OpenAIResponsesCompatLLMClient extends ReasoningCompatOpenAIClient {
-    private static final int MAX_OUTPUT_TOKENS = 2048;
     private final HttpClient responsesHttpClient;
     private final LLMOpenAISite responsesSite;
 
@@ -51,12 +51,13 @@ public final class OpenAIResponsesCompatLLMClient extends ReasoningCompatOpenAIC
 
     @Override
     public void chat(LLMCallback callback) {
+        if (!com.wjx.touhou_aifun.chat.agent.AgentContext.prepare(callback)) return;
         EntityMaid maid = callback.getMaid();
-        if (callback.getClass() == LLMCallback.class
+        if (com.wjx.touhou_aifun.chat.agent.AgentExecution.managed(callback)
                 && ChatFlowManager.isSuperseded(maid.getUUID(), callback)) return;
 
         ToolCatalogSnapshot snapshot = ToolContextSelector.snapshot(maid, callback);
-        if (callback.getClass() == LLMCallback.class) {
+        if (com.wjx.touhou_aifun.chat.agent.AgentExecution.managed(callback)) {
             var planned = ContextBudgetPlanner.trim(callback.getMessages(),
                     TouhouAIFunConfig.CONTEXT_INPUT_BUDGET_TOKENS.get(),
                     snapshot.schemaBudget(ChatFlowManager.requestedToolIds(maid.getUUID(), callback))
@@ -67,36 +68,44 @@ public final class OpenAIResponsesCompatLLMClient extends ReasoningCompatOpenAIC
             callback.getMessages().addAll(planned);
         }
 
+        var preparation=AgentTelemetry.root(callback,"model_prepare");
         JsonObject body = buildRequest(callback, snapshot);
         HttpRequest.Builder builder = HttpRequest.newBuilder()
                 .uri(URI.create(this.responsesSite.url()))
-                .timeout(MAX_TIMEOUT)
+                .timeout(com.wjx.touhou_aifun.config.LLMRuntimeBudget.timeout())
                 .header(HttpHeaders.CONTENT_TYPE, MediaType.JSON_UTF_8.toString())
                 .header(HttpHeaders.ACCEPT, MediaType.JSON_UTF_8.toString())
                 .header(HttpHeaders.AUTHORIZATION, "Bearer " + this.responsesSite.secretKey())
                 .POST(HttpRequest.BodyPublishers.ofString(GSON.toJson(body)));
         this.responsesSite.headers().forEach(builder::header);
         HttpRequest request = builder.build();
+        preparation.finish("ok",0);
 
         if (TouhouLittleMaid.DEBUG) TouhouLittleMaid.LOGGER.info(GSON.toJson(com.wjx.touhou_aifun.vision.MultimodalContent.redacted(body)));
+        var timing=AgentTelemetry.model(callback);
         CompletableFuture<HttpResponse<String>> future = this.responsesHttpClient.sendAsync(
                 request, HttpResponse.BodyHandlers.ofString());
-        ChatFlowManager.setInFlight(maid.getUUID(), callback, future);
-        future.orTimeout(MAX_TIMEOUT.toSeconds() + 5, TimeUnit.SECONDS)
-                .whenComplete((response, throwable) -> completeResponses(callback, response, throwable, request));
+        ChatFlowManager.setModelInFlight(maid.getUUID(), callback, future);
+        future.orTimeout(request.timeout().orElseThrow().toSeconds() + 5, TimeUnit.SECONDS)
+                .whenComplete((response, throwable) -> {
+                    timing.headers(throwable,false);
+                    try { completeResponses(callback, response, throwable, request); }
+                    finally { timing.finish(ChatFlowManager.isSuperseded(maid.getUUID(),callback)?"cancelled"
+                            : throwable!=null || response==null || !isSuccessful(response)?"error":"body_received"); }
+                });
     }
 
     private JsonObject buildRequest(LLMCallback callback, ToolCatalogSnapshot snapshot) {
         EntityMaid maid = callback.getMaid();
         JsonObject body = new JsonObject();
         body.addProperty("model", maid.getAiChatManager().getLLMModel());
-        body.addProperty("max_output_tokens", MAX_OUTPUT_TOKENS);
+        body.addProperty("max_output_tokens", com.wjx.touhou_aifun.config.LLMRuntimeBudget.outputTokens());
         body.addProperty("store", false);
         body.addProperty("stream", false);
 
         JsonArray input = new JsonArray();
         for (LLMMessage message : callback.getMessages()) appendInput(input, message);
-        if (callback.getClass() == LLMCallback.class) {
+        if (com.wjx.touhou_aifun.chat.agent.AgentExecution.managed(callback)) {
             appendMessage(input, "system", snapshot.directory());
             String emotionChange = EmotionControlPrompts.changeNotice(maid);
             if (emotionChange != null) appendMessage(input, "system", emotionChange);
@@ -232,6 +241,14 @@ public final class OpenAIResponsesCompatLLMClient extends ReasoningCompatOpenAIC
         JsonObject choice = new JsonObject();
         choice.addProperty("index", 0);
         choice.add("message", message);
+        String status = scalar(source, "status");
+        if ("incomplete".equals(status) && source.has("incomplete_details")
+                && source.get("incomplete_details").isJsonObject()) {
+            String reason = scalar(source.getAsJsonObject("incomplete_details"), "reason");
+            choice.addProperty("finish_reason", "max_output_tokens".equals(reason) ? "length" : "incomplete");
+        } else if ("incomplete".equals(status) || "failed".equals(status) || "cancelled".equals(status)) {
+            choice.addProperty("finish_reason", status);
+        }
         JsonArray choices = new JsonArray();
         choices.add(choice);
 
@@ -240,13 +257,7 @@ public final class OpenAIResponsesCompatLLMClient extends ReasoningCompatOpenAIC
         adapted.add("choices", choices);
         if (source.has("usage") && source.get("usage").isJsonObject()) {
             JsonObject original = source.getAsJsonObject("usage");
-            JsonObject usage = new JsonObject();
-            int input = integer(original, "input_tokens");
-            int outputTokens = integer(original, "output_tokens");
-            usage.addProperty("prompt_tokens", input);
-            usage.addProperty("completion_tokens", outputTokens);
-            usage.addProperty("total_tokens", integer(original, "total_tokens", input + outputTokens));
-            adapted.add("usage", usage);
+            adapted.add("usage", com.wjx.touhou_aifun.compat.ai.openai.response.TokenUsage.responses(original));
         }
         return GSON.fromJson(adapted, ReasoningOpenAIChatCompletionResponse.class);
     }

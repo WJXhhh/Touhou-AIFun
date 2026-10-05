@@ -35,6 +35,8 @@ public final class MaidGuiSessionManager {
     private static final Map<UUID, MaidGuiSession> SESSIONS = new HashMap<>();
     private static final Map<UUID, Opening> OPENING = new HashMap<>();
     private static final Map<UUID, Task> TASKS = new HashMap<>();
+    private static final Map<UUID, Long> NEXT_PATH = new HashMap<>();
+    private static final Map<UUID,com.wjx.touhou_aifun.chat.agent.AgentTiming.Span> WALK_TIMINGS=new java.util.concurrent.ConcurrentHashMap<>();
     private MaidGuiSessionManager() { }
     private static final class Task {
         final Object callback;
@@ -62,8 +64,15 @@ public final class MaidGuiSessionManager {
     }
     public static int number(JsonObject json, String key, int fallback, int min, int max) {
         int value = json.has(key) ? json.get(key).getAsInt() : fallback;
+        if (json.has(key) && json.get(key).getAsDouble() != value) throw new IllegalArgumentException("invalid_" + key);
         if (value < min || value > max) throw new IllegalArgumentException("invalid_" + key);
         return value;
+    }
+    private static int sourceSlot(JsonObject request,int maximum) {
+        if(request.has("slot") && request.has("from_slot") && request.get("slot").getAsDouble()!=request.get("from_slot").getAsDouble())
+            throw new IllegalArgumentException("conflicting_slot_and_from_slot");
+        if(!request.has("slot") && !request.has("from_slot")) throw new IllegalArgumentException("source_slot_required_use_observed_slot_or_from_slot");
+        return number(request,request.has("slot")?"slot":"from_slot",-1,0,maximum);
     }
     public static CompletableFuture<JsonObject> call(LLMCallback callback, String tool, String actionId, JsonObject request) {
         EntityMaid maid = callback.getMaid();
@@ -103,6 +112,7 @@ public final class MaidGuiSessionManager {
                         if (Set.of("click", "type", "scroll", "widget", "key").contains(action)) future = GuiClientBridge.request(session, "input", request);
                         else future = CompletableFuture.completedFuture(action(session, request));
                     }
+                    case "gui_batch" -> future = CompletableFuture.completedFuture(batch(session, request));
                     case "wait_gui" -> future = waitFor(session, request);
                     case "close_gui" -> {
                         JsonObject result = session.snapshot("closed"); closeSession(maid.getUUID(), "closed");
@@ -113,17 +123,59 @@ public final class MaidGuiSessionManager {
                 }
             }
         } catch (RuntimeException e) {
-            if (tool.equals("open_gui")) closeSession(maid.getUUID(), "opening_failed");
+            String reason = e.getMessage() == null ? "gui_error" : e.getMessage();
+            JsonObject rejected = error(reason);
+            if (tool.equals("open_gui")) {
+                MaidGuiSession active = SESSIONS.get(maid.getUUID());
+                if (active != null) rejected = openingError(active, reason);
+                closeSession(maid.getUUID(), "opening_failed");
+            }
             TouhouAIFun.LOGGER.warn("Maid GUI {} rejected: {}", tool, e.toString());
-            future = CompletableFuture.completedFuture(error(e.getMessage() == null ? "gui_error" : e.getMessage()));
+            future = CompletableFuture.completedFuture(rejected);
         }
         Task captured = task;
+        future = future.thenApply(value -> {
+            MaidGuiSession current = SESSIONS.get(maid.getUUID());
+            if (value.has("slots") && current != null) {
+                JsonObject projection=current.projection.project(value,
+                    tool.equals("open_gui") || tool.equals("inspect_gui") || "full".equals(string(request, "detail", "")), false);
+                return callback instanceof com.wjx.touhou_aifun.chat.agent.TaskCallback && !"full".equals(string(request,"detail",""))
+                        ? GuiSnapshotProjection.taskView(projection) : projection;
+            }
+            if (tool.equals("close_gui")) return new GuiSnapshotProjection().project(value, false, true);
+            return value;
+        });
         captured.pending.put(key, future);
         return future.thenApply(result -> {
             captured.pending.remove(key);
             JsonObject cached = result.deepCopy(); cached.remove("_gui_image");
             captured.results.put(key, cached); return result;
         });
+    }
+    private static JsonObject batch(MaidGuiSession session, JsonObject request) {
+        if (!request.has("expected_revision") || request.get("expected_revision").getAsLong() != session.projection.revision()) return error("stale_revision_reinspect");
+        JsonArray actions = request.getAsJsonArray("actions");
+        if (actions == null || actions.size() < 1 || actions.size() > 16) return error("invalid_batch_size");
+        JsonArray outcomes = new JsonArray();
+        // Reject unsupported operation kinds before any mutation.
+        for (JsonElement action : actions) if (!action.isJsonObject() || !Set.of("transfer", "click_slot", "quick_move", "button", "rename", "trade", "backpack_to_cursor", "cursor_to_backpack").contains(string(action.getAsJsonObject(), "action", ""))) return error("unsupported_batch_action");
+        JsonObject last = null;
+        for (JsonElement command : actions) {
+            try {
+                if (ChatFlowManager.isSuperseded(session.maid.getUUID(), session.callback)) throw new IllegalStateException("cancelled");
+                reserveActions(session, 1);
+                last = action(session, command.getAsJsonObject());
+            } catch (RuntimeException failure) { last = error(failure.getMessage()); }
+            JsonObject outcome = last.deepCopy();
+            outcome.remove("slots"); outcome.remove("backpack_slots"); outcome.remove("controls");
+            outcomes.add(outcome);
+            if (last.has("error")) break;
+        }
+        JsonObject result = session.snapshot(last != null && last.has("error") ? "partial" : "ok");
+        result.add("action_results", outcomes);
+        result.addProperty("executed_count", outcomes.size() - (last != null && last.has("error") ? 1 : 0));
+        if (last != null && last.has("error")) result.add("error", last.get("error"));
+        return result;
     }
     public static void reserveActions(MaidGuiSession session, int count) {
         Task task = TASKS.get(session.maid.getUUID());
@@ -132,6 +184,8 @@ public final class MaidGuiSessionManager {
         task.actions += count; session.actionCount = task.actions;
     }
     private static CompletableFuture<JsonObject> open(EntityMaid maid, Object callback, JsonObject request, Task task) {
+        var selection=com.wjx.touhou_aifun.chat.agent.AgentTelemetry.start(callback,"gui_find_target");
+        try {
         closeSession(maid.getUUID(), "reopened");
         MaidEatFoodActionManager.cancelForMaid(maid.getUUID(), "GUI action started.");
         if (maid.isSleeping() || maid.isPassenger() || maid.isLeashed()) return CompletableFuture.completedFuture(error("movement_blocked"));
@@ -157,39 +211,84 @@ public final class MaidGuiSessionManager {
         UUID entityId = request.has("entity_uuid") ? UUID.fromString(request.get("entity_uuid").getAsString()) : null;
         Entity entity = entityId == null ? null : level.getEntity(entityId);
         BlockPos target = null;
+        BlockPos selectedApproach = null;
+        BlockPos requestedPosition = itemSlot < 0 && entityId == null ? GuiBlockTarget.coordinates(request, maid.blockPosition()) : null;
         if (itemSlot < 0) {
             if (entityId != null) {
                 if (entity == null || maid.distanceToSqr(entity) > radius * radius) throw new IllegalArgumentException("entity_unavailable");
                 target = entity.blockPosition();
-            } else if (request.has("x") && request.has("y") && request.has("z")) {
-                target = new BlockPos(request.get("x").getAsInt(), request.get("y").getAsInt(), request.get("z").getAsInt());
+            } else if (requestedPosition != null) {
+                target = requestedPosition;
+                session.targetPosition = target;
                 if (maid.distanceToSqr(Vec3.atCenterOf(target)) > radius * radius) throw new IllegalArgumentException("target_out_of_range");
+                String requestedRegistry=GuiBlockTarget.qualifiedRegistry(request);
+                if(requestedRegistry!=null && (!level.hasChunkAt(target) || !requestedRegistry.equals(BuiltInRegistries.BLOCK.getKey(level.getBlockState(target).getBlock()).toString())))
+                    throw new IllegalArgumentException("qualified_target_block_changed_reobserve");
             } else {
                 String wanted = string(request, "target", "nearest").toLowerCase(Locale.ROOT);
                 List<BlockPos> candidates = new ArrayList<>();
+                // Loaded chunk block-entity tables avoid inspecting thousands of ordinary blocks.
+                for (int cx = (maid.blockPosition().getX() - radius) >> 4; cx <= (maid.blockPosition().getX() + radius) >> 4; cx++)
+                    for (int cz = (maid.blockPosition().getZ() - radius) >> 4; cz <= (maid.blockPosition().getZ() + radius) >> 4; cz++) {
+                        var chunk = level.getChunkSource().getChunkNow(cx, cz);
+                        if (chunk == null) continue;
+                        for (BlockPos pos : chunk.getBlockEntitiesPos()) {
+                            if (!maid.isWithinRestriction(pos) || maid.distanceToSqr(Vec3.atCenterOf(pos)) > radius * radius) continue;
+                            var state = level.getBlockState(pos);
+                            if (GuiBlockTarget.matches(wanted, BuiltInRegistries.BLOCK.getKey(state.getBlock()).toString())
+                                    && state.getMenuProvider(level, pos) != null) candidates.add(pos.immutable());
+                        }
+                    }
+                candidates.sort(Comparator.comparingDouble(pos -> maid.distanceToSqr(Vec3.atCenterOf(pos))));
+                Set<BlockPos> attempted = new HashSet<>(candidates);
+                for (BlockPos candidate : candidates) {
+                    BlockPos reachable = approach(maid, candidate, radius);
+                    if (reachable != null) { target = candidate; selectedApproach = reachable; break; }
+                }
+                candidates.clear();
+                // Workbenches and modded menus can exist without a block entity.
+                if (target == null)
                 for (BlockPos pos : BlockPos.betweenClosed(maid.blockPosition().offset(-radius, -Math.min(radius, 4), -radius),
                         maid.blockPosition().offset(radius, Math.min(radius, 4), radius))) {
-                    if (!level.hasChunkAt(pos) || !maid.isWithinRestriction(pos) || maid.distanceToSqr(Vec3.atCenterOf(pos)) > radius * radius) continue;
+                    if (attempted.contains(pos) || !level.hasChunkAt(pos) || !maid.isWithinRestriction(pos) || maid.distanceToSqr(Vec3.atCenterOf(pos)) > radius * radius) continue;
                     var state = level.getBlockState(pos);
                     String id = BuiltInRegistries.BLOCK.getKey(state.getBlock()).toString();
-                    if ((wanted.equals("nearest") || wanted.equals("any") || id.contains(wanted)) && state.getMenuProvider(level, pos) != null) candidates.add(pos.immutable());
+                    if (GuiBlockTarget.matches(wanted, id) && state.getMenuProvider(level, pos) != null) candidates.add(pos.immutable());
                 }
                 candidates.sort(Comparator.comparingDouble(pos -> maid.distanceToSqr(Vec3.atCenterOf(pos))));
-                for (BlockPos candidate : candidates) if (approach(maid, candidate, radius) != null) { target = candidate; break; }
+                for (BlockPos candidate : candidates) {
+                    BlockPos reachable = approach(maid, candidate, radius);
+                    if (reachable != null) { target = candidate; selectedApproach = reachable; break; }
+                }
             }
             if (target == null || !level.hasChunkAt(target) || !maid.isWithinRestriction(target)) throw new IllegalArgumentException("target_not_found_or_restricted");
+            session.targetPosition = target;
+            if (entityId == null && request.has("target") && !GuiBlockTarget.matches(string(request, "target", "nearest").toLowerCase(Locale.ROOT),
+                    BuiltInRegistries.BLOCK.getKey(level.getBlockState(target).getBlock()).toString()))
+                throw new IllegalArgumentException("target_block_mismatch");
         } else if (!MaidGuiInventoryBinding.enabled(session.actor.getInventory(), itemSlot) || session.actor.getInventory().getItem(itemSlot).isEmpty()) {
             throw new IllegalArgumentException("item_slot_unavailable");
         }
-        BlockPos approach = itemSlot >= 0 ? maid.blockPosition() : approach(maid, target, radius);
+        BlockPos approach = itemSlot >= 0 ? maid.blockPosition() : selectedApproach != null ? selectedApproach : approach(maid, target, radius);
         if (approach == null) throw new IllegalArgumentException("unreachable");
+        selection.finish("ok",0);
         String blockId = target == null || entityId != null ? "" : BuiltInRegistries.BLOCK.getKey(level.getBlockState(target).getBlock()).toString();
         session.targetPosition = target;
         CompletableFuture<JsonObject> future = new CompletableFuture<>();
+        long navigationStarted=System.nanoTime();
+        var walking=com.wjx.touhou_aifun.chat.agent.AgentTelemetry.start(callback,"gui_navigation");WALK_TIMINGS.put(maid.getUUID(),walking);
+        future.whenComplete((value,failure)-> {
+            walking.finish(failure!=null?com.wjx.touhou_aifun.chat.agent.AgentTelemetry.failureStatus(failure)
+                    :value!=null && value.has("error")?"error":"ok",0);
+            WALK_TIMINGS.remove(maid.getUUID(),walking);
+        });
+        future.whenComplete((result,error)->com.wjx.touhou_aifun.chat.agent.AgentTelemetry.stage("gui_open_and_walk",navigationStarted,0));
         OPENING.put(maid.getUUID(), new Opening(session, target, approach, entityId, blockId, itemSlot, level.getGameTime() + 400, future));
         ChatFlowManager.setInFlight(maid.getUUID(), callback, future);
+        NEXT_PATH.remove(maid.getUUID());
         tickOpening(OPENING.get(maid.getUUID()));
         return future;
+        } finally {selection.finish("finished",0);}
     }
     private static BlockPos approach(EntityMaid maid, BlockPos target, int radius) {
         if (maid.distanceToSqr(Vec3.atCenterOf(target)) <= 2.25 * 2.25) return maid.blockPosition();
@@ -202,10 +301,16 @@ public final class MaidGuiSessionManager {
         try {
             // canPathReach also accepts the floor below a reachable node. Navigation needs
             // the actual standing position, so select a visited node within interaction range.
-            return bfs.find(pos -> !pos.equals(target) && maid.isWithinRestriction(pos)
+            // The current block's centre can be in range while the maid's exact feet
+            // are outside. Navigating back to that same node completes without moving.
+            return bfs.find(pos -> !pos.equals(target) && !sameStandingColumn(maid,pos) && maid.isWithinRestriction(pos)
                     && Vec3.atBottomCenterOf(pos).distanceToSqr(Vec3.atCenterOf(target)) <= 2.25 * 2.25)
                     .map(BlockPos::immutable).orElse(null);
         } finally { bfs.finish(); }
+    }
+    private static boolean sameStandingColumn(EntityMaid maid,BlockPos pos) {
+        return pos.getX()==maid.blockPosition().getX() && pos.getZ()==maid.blockPosition().getZ()
+                && Math.abs(pos.getY()-maid.getY())<=1.01;
     }
     private static boolean loadedRegion(ServerLevel level, BlockPos center, int radius) {
         for (int x = (center.getX() - radius) >> 4; x <= (center.getX() + radius) >> 4; x++)
@@ -216,7 +321,27 @@ public final class MaidGuiSessionManager {
         MaidGuiSession session = opening.session; EntityMaid maid = session.maid;
         ServerLevel level = (ServerLevel) maid.level();
         if (opening.future.isDone()) { closeSession(maid.getUUID(), "cancelled"); return; }
-        if (level.getGameTime() >= opening.deadline) { closeSession(maid.getUUID(), "unreachable_timeout"); return; }
+        if (level.getGameTime() >= opening.deadline) {
+            JsonObject failure = openingError(session, "unreachable_timeout");
+            failure.addProperty("phase", "navigation");
+            failure.addProperty("elapsed_ticks", level.getGameTime() - (opening.deadline - 400));
+            JsonArray exactPosition = new JsonArray(); exactPosition.add(maid.getX()); exactPosition.add(maid.getY()); exactPosition.add(maid.getZ());
+            failure.add("maid_exact_position", exactPosition);
+            JsonArray approachPosition = new JsonArray(); approachPosition.add(opening.approach.getX()); approachPosition.add(opening.approach.getY()); approachPosition.add(opening.approach.getZ());
+            failure.add("approach_position", approachPosition);
+            if (opening.target != null) failure.addProperty("distance_to_target", Math.sqrt(maid.distanceToSqr(Vec3.atCenterOf(opening.target))));
+            var path = maid.getNavigation().getPath();
+            String navigationState = path == null ? "no_path" : path.isDone() ? "path_finished" : "path_active";
+            failure.addProperty("navigation_state", navigationState);
+            if (path != null) {
+                failure.addProperty("path_nodes", path.getNodeCount());
+                failure.addProperty("next_path_node", path.getNextNodeIndex());
+            }
+            failure.addProperty("movement_disabled", maid.isNoAi());
+            failure.addProperty("recovery_hint", "Navigation timed out before any container interaction. Reobserve the current route and approach position before retrying; changing wait_policy does not skip walking.");
+            TouhouAIFun.LOGGER.warn("Maid GUI stage=navigation status=unreachable_timeout elapsed_ticks={} navigation_state={}", failure.get("elapsed_ticks"), navigationState);
+            closeSession(maid.getUUID(), "unreachable_timeout", failure); return;
+        }
         Entity entity = opening.entity == null ? null : level.getEntity(opening.entity);
         BlockPos target = entity == null ? opening.target : entity.blockPosition();
         if (opening.itemSlot < 0 && (target == null || !level.hasChunkAt(target) || !maid.isWithinRestriction(target)
@@ -228,10 +353,31 @@ public final class MaidGuiSessionManager {
             BlockPos walk = entity == null ? opening.approach : target;
             int pathRadius = (int) Math.ceil(maid.getAttributeValue(net.minecraft.world.entity.ai.attributes.Attributes.FOLLOW_RANGE)) + 8;
             if (!loadedRegion(level, maid.blockPosition(), pathRadius)) { closeSession(maid.getUUID(), "path_region_not_loaded"); return; }
+            long now = level.getGameTime();
+            if (now < NEXT_PATH.getOrDefault(maid.getUUID(), 0L)) return;
+            NEXT_PATH.put(maid.getUUID(), now + (maid.getNavigation().isDone() ? 5 : 20));
+            // Vanilla navigation may finish near a standing node, not at its exact centre.
+            // Reusing that node then produces a finished one-node path forever while the
+            // actual feet remain outside interaction range. Replan only this stale approach.
+            if(entity==null && (sameStandingColumn(maid,walk) || maid.getNavigation().isDone()
+                    && Vec3.atBottomCenterOf(walk).distanceToSqr(maid.position())<=.75*.75)) {
+                BlockPos revised=approach(maid,target,Math.min(16,pathRadius));
+                if(revised==null) {closeSession(maid.getUUID(),"unreachable");return;}
+                walk=revised;
+                opening=new Opening(session,opening.target,revised,opening.entity,opening.blockId,opening.itemSlot,opening.deadline,opening.future);
+                OPENING.put(maid.getUUID(),opening);
+            }
+            var pathTiming=com.wjx.touhou_aifun.chat.agent.AgentTelemetry.start(session.callback,"gui_path_find");
             var path = maid.getNavigation().createPath(walk, entity == null ? 0 : 1);
+            pathTiming.finish(path==null?"no_path":"ok",0);
             // Newly spawned/falling mobs cannot create a ground path yet. Retry within
             // the opening deadline rather than treating that transient state as failure.
-            if (path == null || !path.canReach()) return;
+            if (path == null || path.getEndNode() == null) return;
+            // A partial path may already end inside the container's interaction range.
+            // Rejecting it solely on canReach can leave a maid motionless for 400 ticks
+            // even when the returned endpoint is the requested standing position.
+            if (!path.canReach() && Vec3.atBottomCenterOf(path.getEndNode().asBlockPos())
+                    .distanceToSqr(Vec3.atCenterOf(target)) > 2.25 * 2.25) return;
             for (int i = 0; i < path.getNodeCount(); i++) if (!maid.isWithinRestriction(path.getNode(i).asBlockPos())) {
                 closeSession(maid.getUUID(), "path_outside_restriction"); return;
             }
@@ -239,6 +385,9 @@ public final class MaidGuiSessionManager {
             maid.getLookControl().setLookAt(target.getX() + .5, target.getY() + .5, target.getZ() + .5);
             return;
         }
+        var walking=WALK_TIMINGS.get(maid.getUUID());if(walking!=null) walking.finish("arrived",0);
+        var interactionTiming=com.wjx.touhou_aifun.chat.agent.AgentTelemetry.start(session.callback,"gui_interaction");
+        try {
         maid.getNavigation().stop(); maid.getBrain().eraseMemory(MemoryModuleType.WALK_TARGET);
         session.actor.align();
         if (opening.itemSlot >= 0) {
@@ -260,13 +409,66 @@ public final class MaidGuiSessionManager {
                 closeSession(maid.getUUID(), "player_storage_not_bridged"); return;
             }
             BlockHitResult hit = new BlockHitResult(Vec3.atCenterOf(target), Direction.UP, target, false);
-            session.actor.gameMode.useItemOn(session.actor, level, session.actor.getMainHandItem(), InteractionHand.MAIN_HAND, hit);
+            var interaction = session.actor.gameMode.useItemOn(session.actor, level, session.actor.getMainHandItem(), InteractionHand.MAIN_HAND, hit);
+            if (session.menu() == session.actor.inventoryMenu) {
+                JsonObject failure = openingError(session, "no_server_menu");
+                failure.addProperty("interaction_result", interaction.name().toLowerCase(Locale.ROOT));
+                failure.addProperty("menu_provider_present", level.getBlockState(target).getMenuProvider(level, target) != null);
+                OPENING.remove(maid.getUUID());
+                try { closeSession(maid.getUUID(), "no_server_menu"); }
+                finally { opening.future.complete(failure); }
+                return;
+            }
         }
         if (session.menu() == session.actor.inventoryMenu) { closeSession(maid.getUUID(), "no_server_menu"); return; }
         OPENING.remove(maid.getUUID()); session.lastAction = "opened";
         opening.future.complete(session.snapshot("opened"));
+        } finally {interactionTiming.finish("finished",0);}
+    }
+    private static JsonObject openingError(MaidGuiSession session, String reason) {
+        JsonObject result = error(reason);
+        JsonArray origin = new JsonArray(); BlockPos maidPos = session.maid.blockPosition();
+        origin.add(maidPos.getX()); origin.add(maidPos.getY()); origin.add(maidPos.getZ());
+        result.add("maid_position", origin);
+        result.addProperty("coordinate_space", "world");
+        BlockPos target = session.targetPosition;
+        if (target != null) {
+            JsonArray position = new JsonArray(); position.add(target.getX()); position.add(target.getY()); position.add(target.getZ());
+            result.add("target_position", position);
+            if (session.maid.level().hasChunkAt(target)) result.addProperty("actual_block",
+                    BuiltInRegistries.BLOCK.getKey(session.maid.level().getBlockState(target).getBlock()).toString());
+        }
+        result.add("main_hand", MaidGuiSession.stack(session.maid.getMainHandItem()));
+        result.addProperty("recovery_hint", "Check actual_block and target_position. x/y/z default to world coordinates; use coordinate_space=maid_relative for current maid block offsets. Never retry the same failed coordinates blindly.");
+        return result;
     }
     public static JsonObject action(MaidGuiSession session, JsonObject request) {
+        String kind = string(request,"action","");
+        if (kind.equals("transfer") || kind.equals("quick_move") || kind.equals("close_menu")) return actionInternal(session,request);
+        var menu = session.menu();
+        var external = externalItems(session,menu);var inventory = maidItems(session);
+        try { return actionInternal(session,request); }
+        finally { recordLedger(session,menu,external,inventory); }
+    }
+    private static Map<String,Integer> maidItems(MaidGuiSession session) {
+        Map<String,Integer> counts=new HashMap<>();
+        for(int i=0;i<41;i++) {ItemStack stack=session.actor.getInventory().getItem(i);if(!stack.isEmpty()) counts.merge(MaidGuiSession.itemId(stack),stack.getCount(),Integer::sum);}
+        return counts;
+    }
+    private static Map<String,Integer> externalItems(MaidGuiSession session,AbstractContainerMenu menu) {
+        Map<String,Integer> counts=new HashMap<>();
+        Map<net.minecraft.world.Container,Set<Integer>> seen=new IdentityHashMap<>();
+        for(Slot slot:menu.slots) if(slot.container!=session.actor.getInventory()
+                && seen.computeIfAbsent(slot.container,k->new HashSet<>()).add(slot.getContainerSlot())) {
+            var stack=slot.getItem();if(!stack.isEmpty()) counts.merge(MaidGuiSession.itemId(stack),stack.getCount(),Integer::sum);
+        }
+        return counts;
+    }
+    private static void recordLedger(MaidGuiSession session,AbstractContainerMenu menu,Map<String,Integer> external,Map<String,Integer> inventory) {
+        for(var transfer:session.transferLedger.observe(external,externalItems(session,menu),inventory,maidItems(session)))
+            recordTaskTransfer(session,transfer.item(),transfer.count(),!transfer.toMaid(),transfer.toMaid());
+    }
+    private static JsonObject actionInternal(MaidGuiSession session, JsonObject request) {
         if (!session.maid.isAlive() || session.maid.isRemoved()) return error("maid_unavailable");
         if (!Objects.equals(session.owner, session.maid.getOwnerUUID())) return error("owner_changed");
         if (ChatFlowManager.isSuperseded(session.maid.getUUID(), session.callback)) return error("superseded");
@@ -279,20 +481,25 @@ public final class MaidGuiSessionManager {
                 result.addProperty("dropped_count", session.droppedCount + session.actor.droppedCount); return result;
             }
             case "transfer" -> {
-                int from = number(request, "slot", -1, 0, session.menu().slots.size() - 1);
+                int from = sourceSlot(request, session.menu().slots.size() - 1);
                 int to = number(request, "to_slot", -1, 0, session.menu().slots.size() - 1);
                 int count = number(request, "count", 64, 1, 64);
+                String movedItem = MaidGuiSession.itemId(session.menu().getSlot(from).getItem());
+                boolean toMaid = session.menu().getSlot(to).container == session.actor.getInventory();
+                boolean fromMaid = session.menu().getSlot(from).container == session.actor.getInventory();
                 int moved = transfer(session, from, to, count, true);
-                JsonObject result = session.snapshot(moved > 0 ? "ok" : "no_change"); result.addProperty("moved_count", moved); return result;
+                JsonObject result = session.snapshot(moved > 0 ? "ok" : "no_change"); result.addProperty("external_transfer", fromMaid != toMaid); result.addProperty("moved_item", movedItem); result.addProperty("to_maid", toMaid); result.addProperty("moved_count", moved); return result;
             }
             case "click_slot", "quick_move" -> {
-                int slot = number(request, "slot", -1, 0, session.menu().slots.size() - 1);
+                int slot = sourceSlot(request, session.menu().slots.size() - 1);
                 checkObserved(session, slot);
                 ItemStack source = session.menu().getSlot(slot).getItem().copy();
                 int before = inventoryCount(session, MaidGuiSession.itemId(source));
                 session.menu().clicked(slot, number(request, "button", 0, 0, 1),
                         kind.equals("quick_move") ? ClickType.QUICK_MOVE : ClickType.PICKUP, session.actor);
-                int moved = Math.max(0, inventoryCount(session, MaidGuiSession.itemId(source)) - before);
+                int delta = inventoryCount(session, MaidGuiSession.itemId(source)) - before;
+                if (kind.equals("quick_move") && delta != 0) recordTaskTransfer(session,MaidGuiSession.itemId(source),Math.abs(delta),delta < 0,delta > 0);
+                int moved = Math.max(0, delta);
                 if (session.menu().getSlot(slot).container != session.actor.getInventory()) session.delivered.merge(MaidGuiSession.itemId(source), moved, Integer::sum);
             }
             case "button" -> {
@@ -346,6 +553,10 @@ public final class MaidGuiSessionManager {
                 || !ItemStack.matches(session.observedCarried, session.menu().getCarried())) throw new IllegalArgumentException("stale_slots_reinspect");
     }
     public static int transfer(MaidGuiSession session, int from, int to, int count, boolean observed) {
+        if (session.callback instanceof com.wjx.touhou_aifun.chat.agent.TaskCallback task) {
+            if(task.stopped()) throw new IllegalArgumentException("task_cancelled");
+            if(!task.task.pendingAmendment.isBlank()) throw new IllegalArgumentException("goal_updated_before_atomic_action");
+        }
         if (from == to || !session.menu().getCarried().isEmpty()) throw new IllegalArgumentException("invalid_transfer_or_cursor_busy");
         if (observed) { checkObserved(session, from); checkObserved(session, to); }
         Slot source = session.menu().getSlot(from), target = session.menu().getSlot(to);
@@ -370,7 +581,17 @@ public final class MaidGuiSessionManager {
         }
         int moved = Math.max(0, target.getItem().getCount() - before);
         if (source.container != session.actor.getInventory() && target.container == session.actor.getInventory()) session.delivered.merge(MaidGuiSession.itemId(stack), moved, Integer::sum);
+        if (source.container != target.container && moved > 0) recordTaskTransfer(session, MaidGuiSession.itemId(stack), moved,
+                source.container == session.actor.getInventory(), target.container == session.actor.getInventory());
         session.menu().broadcastChanges(); return moved;
+    }
+    private static void recordTaskTransfer(MaidGuiSession session, String item, int count, boolean fromMaid, boolean toMaid) {
+        if (!(session.callback instanceof com.wjx.touhou_aifun.chat.agent.TaskCallback task) || fromMaid == toMaid || session.targetPosition == null) return;
+        JsonObject fact = new JsonObject(); fact.addProperty("external_transfer",true); fact.addProperty("moved_item",item);
+        fact.addProperty("moved_count",count); fact.addProperty("to_maid",toMaid);
+        fact.addProperty("dimension",session.maid.level().dimension().location().toString());
+        JsonArray pos = new JsonArray(); pos.add(session.targetPosition.getX()); pos.add(session.targetPosition.getY()); pos.add(session.targetPosition.getZ());
+        fact.add("target_position",pos); task.recordMutation(fact);
     }
     private static CompletableFuture<JsonObject> waitFor(MaidGuiSession session, JsonObject request) {
         String goalItem = string(request, "item", session.goalItem);
@@ -432,6 +653,10 @@ public final class MaidGuiSessionManager {
                 session.lastTick = now;
                 if (!session.maid.isAlive() || session.maid.isRemoved() || ChatFlowManager.isSuperseded(session.maid.getUUID(), session.callback)
                         || !Objects.equals(session.owner, session.maid.getOwnerUUID())) { cancel(session.maid.getUUID(), "cancelled"); continue; }
+                if(session.callback instanceof com.wjx.touhou_aifun.chat.agent.TaskCallback execution && !execution.task.pendingAmendment.isBlank()
+                        && (session.waitFuture!=null || OPENING.containsKey(session.maid.getUUID()))) {
+                    cancel(session.maid.getUUID(),"goal_updated_before_next_atomic_action"); continue;
+                }
                 if (task != null && task.activeTicks >= 6000) { cancel(session.maid.getUUID(), "active_time_limit"); continue; }
                 Opening opening = OPENING.get(session.maid.getUUID());
                 if (opening != null) { tickOpening(opening); continue; }
@@ -499,10 +724,18 @@ public final class MaidGuiSessionManager {
         if (!reason.equals("stopped_by_owner")) TASKS.remove(maid);
     }
     private static void closeSession(UUID maid, String reason) {
+        closeSession(maid, reason, null);
+    }
+    private static void closeSession(UUID maid, String reason, JsonObject openingFailure) {
+        NEXT_PATH.remove(maid);
         MaidGuiSession session = SESSIONS.remove(maid); Opening opening = OPENING.remove(maid);
         if (session == null) return;
         try {
-            if (session.menu() != session.actor.inventoryMenu) session.actor.closeContainer();
+            if (session.menu() != session.actor.inventoryMenu) {
+                var menu=session.menu();var external=externalItems(session,menu);var inventory=maidItems(session);
+                try { session.actor.closeContainer(); }
+                finally { recordLedger(session,menu,external,inventory); }
+            }
             if (session.borrowedItemSlot > 0) {
                 ItemStack hand = session.maid.getMainHandItem();
                 ItemStack originalHand = session.maid.getMaidInv().getStackInSlot(session.borrowedItemSlot - 1);
@@ -512,7 +745,7 @@ public final class MaidGuiSessionManager {
         } finally {
             session.maid.getNavigation().stop(); session.maid.getBrain().eraseMemory(MemoryModuleType.WALK_TARGET);
             MaidActionLease.release(maid, session); GuiClientBridge.cancel(session);
-            if (opening != null && !opening.future.isDone()) opening.future.complete(error(reason));
+            if (opening != null && !opening.future.isDone()) opening.future.complete(openingFailure == null ? error(reason) : openingFailure);
             if (session.waitFuture != null && !session.waitFuture.isDone()) session.waitFuture.complete(error(reason));
         }
     }

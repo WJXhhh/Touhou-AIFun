@@ -8,6 +8,7 @@ import java.util.concurrent.ConcurrentHashMap;
 
 /** Ten-tick cache for scan-then-observe grounding, keyed by the pose that affects ray directions. */
 public final class VisionScanCache {
+    public static boolean isFreshCached(EntityMaid maid,EnvironmentScanRequest request) { return getIfFresh(maid,request)!=null; }
     private static final int MAX_ENTRIES = 256;
     private static final long MAX_AGE_TICKS = 10;
     private static final Map<Key, Entry> CACHE = new ConcurrentHashMap<>();
@@ -22,9 +23,9 @@ public final class VisionScanCache {
         if (cached != null) {
             return cached;
         }
-        EnvironmentScanResult result = ShallowEnvironmentScanner.scan(maid, normalized);
+        EnvironmentScanResult result = ShallowEnvironmentScanner.scan(maid, geometryRequest(normalized));
         put(key, result);
-        return result;
+        return result.project(normalized);
     }
 
     /** Schedule a server-thread scan while retaining this class as the public cache facade. */
@@ -40,20 +41,23 @@ public final class VisionScanCache {
         return new Key(maid.level().dimension().location().toString(), maid.getUUID(), maid.blockPosition().asLong(),
                 Math.round(maid.getYRot() * 2.0f) / 2.0f,
                 Math.round(maid.getXRot() * 2.0f) / 2.0f,
-                request.mode(), request.direction(), request.maxDistance(), normalizeFocus(request.focus()));
+                request.mode(), request.direction(), request.maxDistance(), "", request.intent(), maid.getX(), maid.getY(), maid.getZ(),
+                ScanRegionVersions.version(maid.level(),maid.blockPosition(),request.maxDistance()));
     }
 
     static EnvironmentScanResult getIfFresh(EntityMaid maid, EnvironmentScanRequest request) {
         long tick = maid.level().getGameTime();
         Entry current = CACHE.get(keyOf(maid, request));
-        return current != null && isFresh(tick, current.tick) ? current.result : null;
+        return current != null && !normalizedSignRequest(request) && isFresh(tick, current.tick)
+                && isFresh(tick, current.result.gameTick()) && (!request.mode().includesEntities() || current.tick==tick)
+                ? current.result.project(request) : null;
     }
 
     static void put(Key key, EnvironmentScanResult result) {
         if (result == null) {
             return;
         }
-        long tick = result.gameTick();
+        long tick = result.completedTick();
         CACHE.put(key, new Entry(tick, result));
         if (CACHE.size() > MAX_ENTRIES) {
             long now = tick;
@@ -81,7 +85,13 @@ public final class VisionScanCache {
     }
 
     static record Key(String dimension, java.util.UUID maid, long blockPosition, float yaw, float pitch,
-                      ScanMode mode, ScanDirection direction, int maxDistance, String focus) {
+                      ScanMode mode, ScanDirection direction, int maxDistance, String focus, String intent, double x, double y, double z,String regionVersion) {
+        Key(String dimension, java.util.UUID maid, long blockPosition, float yaw, float pitch, ScanMode mode, ScanDirection direction, int maxDistance, String focus) { this(dimension, maid, blockPosition, yaw, pitch, mode, direction, maxDistance, focus, "overview", 0, 0, 0,""); }
+    }
+
+    private static boolean normalizedSignRequest(EnvironmentScanRequest request) { return request.intent().equals("read_signs"); }
+    static EnvironmentScanRequest geometryRequest(EnvironmentScanRequest request) {
+        return request.intent().equals("read_signs") ? request : new EnvironmentScanRequest(request.mode(),request.direction(),request.maxDistance(),"",request.intent(),"full");
     }
 
     private static String normalizeFocus(String focus) {

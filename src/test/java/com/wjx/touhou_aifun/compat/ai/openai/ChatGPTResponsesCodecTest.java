@@ -15,6 +15,18 @@ import java.util.List;
 import static org.junit.jupiter.api.Assertions.*;
 
 class ChatGPTResponsesCodecTest {
+    @Test void fastUsesTheSubscriptionCompatibleTierWithoutReducingReasoningOrChangingSearch() {
+        var settings = new ChatGPTReasoningSettings(true, "high");
+        var normal = ChatGPTResponsesCodec.request("gpt-6.1-sol", List.of(), List.of(), new JsonArray(), settings, true);
+        var fast = ChatGPTResponsesCodec.request("gpt-6.1-sol", List.of(), List.of(), new JsonArray(), settings, true, true);
+        assertFalse(normal.has("service_tier"));
+        assertEquals("priority", fast.get("service_tier").getAsString());
+        assertEquals("high", fast.getAsJsonObject("reasoning").get("effort").getAsString());
+        assertEquals("auto", fast.getAsJsonObject("reasoning").get("summary").getAsString());
+        fast.remove("service_tier");
+        assertEquals(normal, fast);
+        assertEquals(normal, ChatGPTResponsesCodec.request("gpt-6.1-sol", List.of(), List.of(), new JsonArray(), settings, true, false));
+    }
     @Test void nativeSearchCoexistsWithMaidActionsWithoutExposingDeepSeekSearch() {
         JsonArray functions = new JsonArray();
         functions.add(json("{\"type\":\"function\",\"name\":\"web_search\"}"));

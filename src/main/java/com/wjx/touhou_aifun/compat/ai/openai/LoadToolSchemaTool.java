@@ -45,7 +45,7 @@ public final class LoadToolSchemaTool implements ITool<String> {
         StringParameter value = StringParameter.create();
         // The immutable per-turn directory is authoritative. Avoid rebuilding every third-party
         // trigger/schema here merely to duplicate a potentially huge enum in the meta-tool schema.
-        value.setDescription("Exact extension tool id listed in the optional tool directory.");
+        value.setDescription("Exact missing extension tool id, or group:gui to load the GUI family together.");
         root.addProperties("tool_name", value);
         return root;
     }
@@ -55,6 +55,17 @@ public final class LoadToolSchemaTool implements ITool<String> {
 
     @Override
     public LLMCallback onCall(String toolId, String result, LLMCallback callback) {
+        if(com.wjx.touhou_aifun.chat.agent.AgentRuntime.enabled(callback.getMaid())
+                && com.wjx.touhou_aifun.chat.agent.AgentExecution.foreground(callback)
+                && ("group:gui".equals(result) || !com.wjx.touhou_aifun.chat.agent.AgentExecution.foregroundTool(result)))
+            return callback.addToolResult("foreground_action_boundary: GUI, scans and physical tools belong to the background executor. Use task_control once and return an acknowledgement; loading schemas here cannot grant execution permission.",toolId);
+        if ("group:gui".equals(result)) {
+            for (String id : com.wjx.touhou_aifun.compat.ai.action.GuiTool.IDS)
+                if (ToolContextSelector.optionalAvailable(callback.getMaid(), callback, id)) ChatFlowManager.requestToolSchema(callback.getMaid().getUUID(), callback, id);
+            return callback.addToolResult("GUI schemas loaded. Invoke directly; do not load again in this task.", toolId);
+        }
+        if (ChatFlowManager.requestedToolIds(callback.getMaid().getUUID(), callback).contains(result))
+            return callback.addToolResult("Already loaded: " + result + ". Invoke directly.", toolId);
         ITool<?> tool = ToolRegister.getTool(result);
         if (tool == null || ToolContextSelector.isCore(result)
                 || !ToolContextSelector.optionalAvailable(callback.getMaid(), callback, result)) {

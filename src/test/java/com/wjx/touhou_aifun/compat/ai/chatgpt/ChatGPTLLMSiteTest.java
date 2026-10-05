@@ -11,7 +11,7 @@ import static org.junit.jupiter.api.Assertions.*;
 
 class ChatGPTLLMSiteTest {
     @Test void reasoningSettingsSurviveModelRefreshAndSerialization() {
-        var site = new ChatGPTLLMSite(ChatGPTLLMSite.API_TYPE, true, Map.of("old", "Old"), false, "high", false);
+        var site = new ChatGPTLLMSite(ChatGPTLLMSite.API_TYPE, true, Map.of("old", "Old"), false, "high", false, true);
         var refreshed = site.withModels(Map.of("gpt-6.1-sol", "GPT-6.1-Sol"));
         var codec = new ChatGPTLLMSite.Serializer().codec();
         var saved = codec.encodeStart(JsonOps.INSTANCE, refreshed).result().orElseThrow();
@@ -20,6 +20,8 @@ class ChatGPTLLMSiteTest {
         assertTrue(reloaded.enabled());
         assertFalse(reloaded.webSearch());
         assertFalse(reloaded.withModels(Map.of()).webSearch());
+        assertTrue(reloaded.fastMode());
+        assertTrue(reloaded.withModels(Map.of()).fastMode());
         assertEquals(refreshed.models(), reloaded.models());
         assertEquals(reloaded.reasoningSettings(), reloaded.withModels(Map.of()).reasoningSettings());
     }
@@ -29,6 +31,26 @@ class ChatGPTLLMSiteTest {
                 JsonParser.parseString("{\"id\":\"chatgpt_subscription\",\"enabled\":true}")).result().orElseThrow();
         assertEquals(ChatGPTReasoningSettings.DEFAULT, site.reasoningSettings());
         assertTrue(site.webSearch());
+        assertFalse(site.fastMode());
+    }
+
+    @Test void fastRequestDoesNotPretendTheServerUsedFastAndTransientStatusIsNotSaved() {
+        var site = new ChatGPTLLMSite(ChatGPTLLMSite.API_TYPE, true, Map.of());
+        site.setFastMode(true);
+        assertEquals("unknown", site.lastServiceTier());
+        site.recordServiceTier("default");
+        assertTrue(site.fastMode());
+        assertEquals("default", site.lastServiceTier());
+        site.recordServiceTier("priority");
+        assertEquals("priority", site.lastServiceTier());
+        var codec = new ChatGPTLLMSite.Serializer().codec();
+        var saved = codec.encodeStart(JsonOps.INSTANCE, site).result().orElseThrow();
+        assertFalse(saved.getAsJsonObject().has("last_service_tier"));
+        assertEquals("unknown", codec.parse(JsonOps.INSTANCE, saved).result().orElseThrow().lastServiceTier());
+        site.recordServiceTier("unrecognized");
+        assertEquals("unknown", site.lastServiceTier());
+        site.recordServiceTier(null);
+        assertEquals("unknown", site.lastServiceTier());
     }
 
     @Test void syncedSiteContainsOnlyModelMetadataAndUsesFixedOfficialEndpoint() {

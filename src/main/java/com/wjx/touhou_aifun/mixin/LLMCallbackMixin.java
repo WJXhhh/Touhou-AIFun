@@ -10,6 +10,9 @@ import com.github.tartaricacid.touhoulittlemaid.entity.passive.EntityMaid;
 import net.minecraft.server.level.ServerLevel;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Unique;
+import org.spongepowered.asm.mixin.Shadow;
+import org.spongepowered.asm.mixin.injection.Constant;
+import org.spongepowered.asm.mixin.injection.ModifyConstant;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.Redirect;
@@ -29,6 +32,26 @@ import java.util.concurrent.CompletableFuture;
 
 @Mixin(value = LLMCallback.class, remap = false)
 public abstract class LLMCallbackMixin {
+    @Shadow protected int repeatedToolBatchCount;
+    @Shadow private String createToolBatchSignature(java.util.List<ToolCall> toolCalls) { throw new AssertionError(); }
+
+    @Unique private final com.wjx.touhou_aifun.chat.ToolBatchProgress touhouAIFun$toolProgress =
+            new com.wjx.touhou_aifun.chat.ToolBatchProgress();
+
+    @ModifyConstant(method = "beginToolBatch", constant = @Constant(intValue = 16))
+    private int touhouAIFun$toolRoundBudget(int original) {
+        return com.wjx.touhou_aifun.config.LLMRuntimeBudget.toolRounds();
+    }
+
+    @ModifyConstant(method = "beginToolBatch", constant = @Constant(intValue = 2))
+    private int touhouAIFun$repeatBatchBudget(int original) {
+        return com.wjx.touhou_aifun.config.LLMRuntimeBudget.repeatBatches();
+    }
+
+    @Inject(method = "beginToolBatch", at = @At("HEAD"))
+    private void touhouAIFun$checkToolProgress(java.util.List<ToolCall> calls, CallbackInfoReturnable<Boolean> cir) {
+        if (touhouAIFun$toolProgress.begin(createToolBatchSignature(calls))) repeatedToolBatchCount = 0;
+    }
     @Unique
     private boolean touhouAIFun$requestRegistered;
 
@@ -43,7 +66,7 @@ public abstract class LLMCallbackMixin {
         touhouAIFun$requestRegistered = true;
 
         EntityMaid maid = ((LLMCallback) (Object) this).getMaid();
-        if (maid != null && ((Object) this).getClass() == LLMCallback.class) {
+        if (maid != null && com.wjx.touhou_aifun.chat.agent.AgentExecution.foreground(((Object) this))) {
             ChatFlowManager.registerRequest(maid.getUUID(), this);
             LLMCallback callback = (LLMCallback) (Object) this;
             if (!ToolContextSelector.usesAIFunClient(callback.getMaid())) {
@@ -63,7 +86,7 @@ public abstract class LLMCallbackMixin {
     @Inject(method = "onFailure", at = @At("HEAD"), cancellable = true)
     private void touhouAIFun$suppressSupersededFailure(HttpRequest request, Throwable throwable,
                                                        int errorCode, CallbackInfo ci) {
-        if (((Object) this).getClass() != LLMCallback.class) {
+        if (!com.wjx.touhou_aifun.chat.agent.AgentExecution.foreground(((Object) this))) {
             return;
         }
         EntityMaid maid = ((LLMCallback) (Object) this).getMaid();
@@ -78,7 +101,7 @@ public abstract class LLMCallbackMixin {
     @Inject(method = "onFailure", at = @At("RETURN"))
     private void touhouAIFun$releaseFailedRequest(HttpRequest request, Throwable throwable,
                                                    int errorCode, CallbackInfo ci) {
-        if (((Object) this).getClass() != LLMCallback.class) return;
+        if (!com.wjx.touhou_aifun.chat.agent.AgentExecution.foreground(((Object) this))) return;
         LLMCallback self = (LLMCallback) (Object) this;
         ChatFlowManager.finishRequest(self.getMaid().getUUID(), this);
     }
@@ -87,7 +110,7 @@ public abstract class LLMCallbackMixin {
             at = @At("HEAD"), cancellable = true)
     private void touhouAIFun$flowControl(ResponseChat responseChat, CallbackInfo ci) {
         LLMCallback self = (LLMCallback) (Object) this;
-        if (((Object) this).getClass() != LLMCallback.class) {
+        if (!com.wjx.touhou_aifun.chat.agent.AgentExecution.foreground(((Object) this))) {
             return;
         }
         EntityMaid maid = self.getMaid();
@@ -126,6 +149,11 @@ public abstract class LLMCallbackMixin {
         // Arm a same-thread guard for the base method's legacy history write. The return hook
         // records the durable turn only after that write has either happened or been rejected by
         // the guard, so a concurrent B request cannot leave an assistant-A orphan in AIFun memory.
+        var guarded=com.wjx.touhou_aifun.chat.agent.AgentRuntime.guardForegroundReply(self,responseChat);
+        if(guarded!=responseChat) {
+            // Keep a single base finalization/history/TTS pass, including the existing RETURN hook.
+            responseChat.chatText=guarded.getChatText();responseChat.ttsText=guarded.getTtsText();
+        }
         ChatFlowManager.beginHistoryGuard(this);
 
         // This is the latest reply: cut off any TTS still playing from the previous reply, then let
@@ -151,7 +179,7 @@ public abstract class LLMCallbackMixin {
     @Inject(method = "onSuccess(Lcom/github/tartaricacid/touhoulittlemaid/ai/manager/response/ResponseChat;)V",
             at = @At("RETURN"))
     private void touhouAIFun$finishAcceptedTurn(ResponseChat responseChat, CallbackInfo ci) {
-        if (((Object) this).getClass() != LLMCallback.class) return;
+        if (!com.wjx.touhou_aifun.chat.agent.AgentExecution.foreground(((Object) this))) return;
         LLMCallback self = (LLMCallback) (Object) this;
         UUID maidId = self.getMaid().getUUID();
         try {
@@ -172,7 +200,7 @@ public abstract class LLMCallbackMixin {
 
     @Inject(method = "onFunctionCall", at = @At("HEAD"), cancellable = true)
     private void touhouAIFun$dropSupersededToolCall(Message choice, LLMClient client, CallbackInfo ci) {
-        if (((Object) this).getClass() != LLMCallback.class) return;
+        if (!com.wjx.touhou_aifun.chat.agent.AgentExecution.foreground(((Object) this))) return;
         LLMCallback self = (LLMCallback) (Object) this;
         EntityMaid maid = self.getMaid();
         UUID maidId = maid.getUUID();
@@ -208,8 +236,14 @@ public abstract class LLMCallbackMixin {
     private void touhouAIFun$stopSupersededToolBatch(ToolCall toolCall, LLMCallback callback,
                                                       LLMClient client,
                                                       CallbackInfoReturnable<CompletableFuture<LLMCallback>> cir) {
-        if (((Object) this).getClass() != LLMCallback.class) return;
+        if (!com.wjx.touhou_aifun.chat.agent.AgentExecution.foreground(((Object) this))) return;
         LLMCallback self = (LLMCallback) (Object) this;
+        if (com.wjx.touhou_aifun.chat.agent.AgentRuntime.enabled(self.getMaid())
+                && !com.wjx.touhou_aifun.chat.agent.AgentExecution.foregroundTool(toolCall.getFunction().getName())) {
+            cir.setReturnValue(CompletableFuture.completedFuture(callback.addToolResult(
+                    "foreground_action_boundary: This is foreground chat, not the task executor. If the owner task is already registered, return one acknowledgement or read task_control status. Do not enqueue, amend, replace or resume again. Only the separate background task may operate the world or GUI.", toolCall.getId())));
+            return;
+        }
         if (ChatFlowManager.isSuperseded(self.getMaid().getUUID(), this)) {
             AIFunMemoryManager.interruptCallback(self);
             cir.setReturnValue(CompletableFuture.completedFuture(callback));
@@ -218,7 +252,7 @@ public abstract class LLMCallbackMixin {
 
     @Inject(method = "onFunctionCall", at = @At("RETURN"))
     private void touhouAIFun$releaseToolHistoryGuard(Message choice, LLMClient client, CallbackInfo ci) {
-        if (((Object) this).getClass() == LLMCallback.class) {
+        if (com.wjx.touhou_aifun.chat.agent.AgentExecution.foreground(((Object) this))) {
             ChatFlowManager.clearHistoryGuard(this);
         }
     }
@@ -243,7 +277,7 @@ public abstract class LLMCallbackMixin {
     @Inject(method = "addToolResult", at = @At("HEAD"), cancellable = true)
     private void touhouAIFun$dropSupersededToolResult(String result, String toolId,
                                                        CallbackInfoReturnable<LLMCallback> cir) {
-        if (((Object) this).getClass() != LLMCallback.class) return;
+        if (!com.wjx.touhou_aifun.chat.agent.AgentExecution.foreground(((Object) this))) return;
         LLMCallback self = (LLMCallback) (Object) this;
         if (ChatFlowManager.isSuperseded(self.getMaid().getUUID(), this)) {
             AIFunMemoryManager.interruptCallback(self);
@@ -255,8 +289,10 @@ public abstract class LLMCallbackMixin {
     @Inject(method = "addToolResult", at = @At("RETURN"))
     private void touhouAIFun$recordCompactToolResult(String result, String toolId,
                                                      CallbackInfoReturnable<LLMCallback> cir) {
-        if (((Object) this).getClass() != LLMCallback.class) return;
         LLMCallback callback = (LLMCallback) (Object) this;
+        if (!com.wjx.touhou_aifun.chat.agent.AgentExecution.foreground(((Object) this))
+                || !ChatFlowManager.isSuperseded(callback.getMaid().getUUID(), callback)) touhouAIFun$toolProgress.result(result);
+        if (!com.wjx.touhou_aifun.chat.agent.AgentExecution.foreground(((Object) this))) return;
         AIFunMemoryManager.addToolOutcome(callback, result);
         if (!ToolContextSelector.usesAIFunClient(callback.getMaid())
                 && !ChatFlowManager.isSuperseded(callback.getMaid().getUUID(), callback)) {

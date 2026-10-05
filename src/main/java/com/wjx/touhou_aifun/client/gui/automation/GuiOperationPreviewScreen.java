@@ -19,6 +19,8 @@ public final class GuiOperationPreviewScreen extends Screen {
     private ResourceLocation texture;
     private int imageWidth, imageHeight, ticks;
     private String status = "";
+    private String taskLine = "";
+    private Button pauseButton, resumeButton;
     private String processLine = "", actionLine = "";
     public GuiOperationPreviewScreen(Screen parent, UUID maid) {
         super(Component.translatable("gui.touhou_aifun.gui_preview.title")); this.parent = parent; this.maid = maid;
@@ -27,6 +29,11 @@ public final class GuiOperationPreviewScreen extends Screen {
         addRenderableWidget(Button.builder(Component.translatable("gui.touhou_aifun.gui_preview.stop"), button -> AIFunNetwork.requestGuiPreview(maid, true))
                 .bounds(width / 2 - 105, height - 26, 100, 20).build());
         addRenderableWidget(Button.builder(Component.translatable("gui.back"), button -> onClose()).bounds(width / 2 + 5, height - 26, 100, 20).build());
+        pauseButton = addRenderableWidget(Button.builder(Component.translatable("gui.touhou_aifun.task.pause"), button -> AIFunNetwork.requestTaskControl(maid,"pause"))
+                .bounds(width/2-105,height-50,100,20).build());
+        resumeButton = addRenderableWidget(Button.builder(Component.translatable("gui.touhou_aifun.task.resume"), button -> AIFunNetwork.requestTaskControl(maid,"resume"))
+                .bounds(width/2+5,height-50,100,20).build());
+        pauseButton.active = false; resumeButton.active = false;
         AIFunNetwork.requestGuiPreview(maid, false);
     }
     @Override public void tick() { if (++ticks % 20 == 0) AIFunNetwork.requestGuiPreview(maid, false); }
@@ -36,14 +43,15 @@ public final class GuiOperationPreviewScreen extends Screen {
     @Override public void render(GuiGraphics graphics, int x, int y, float partial) {
         renderBackground(graphics); graphics.drawCenteredString(font, title, width / 2, 8, 0xffffff);
         if (texture != null) {
-            float scale = Math.min((width - 20F) / imageWidth, (height - 110F) / imageHeight);
+            float scale = Math.min((width - 20F) / imageWidth, (height - 150F) / imageHeight);
             int w = (int) (imageWidth * scale), h = (int) (imageHeight * scale);
             graphics.blit(texture, (width - w) / 2, 26, w, h, 0, 0, imageWidth, imageHeight, imageWidth, imageHeight);
         }
-        graphics.fill(5, height - 82, width - 5, height - 34, 0xee101018);
-        graphics.drawCenteredString(font, Component.literal(status), width / 2, height - 76, 0xcccccc);
-        graphics.drawCenteredString(font, Component.literal(processLine), width / 2, height - 64, 0xcccccc);
-        graphics.drawCenteredString(font, Component.literal(actionLine), width / 2, height - 52, 0xcccccc);
+        graphics.fill(5, height - 116, width - 5, height - 56, 0xee101018);
+        graphics.drawCenteredString(font, Component.literal(status), width / 2, height - 110, 0xcccccc);
+        graphics.drawCenteredString(font, Component.literal(processLine), width / 2, height - 98, 0xcccccc);
+        graphics.drawCenteredString(font, Component.literal(actionLine), width / 2, height - 86, 0xcccccc);
+        graphics.drawCenteredString(font, Component.literal(font.plainSubstrByWidth(taskLine,width-20)), width/2,height-72,0xcccccc);
         super.render(graphics, x, y, partial);
     }
     public static void update(UUID maid, JsonObject state, NativeImage image) {
@@ -64,6 +72,17 @@ public final class GuiOperationPreviewScreen extends Screen {
         String key = "gui.touhou_aifun.gui_preview.action." + action;
         if (net.minecraft.locale.Language.getInstance().has(key)) action = Component.translatable(key).getString();
         preview.actionLine = Component.translatable("gui.touhou_aifun.gui_preview.recent", action).getString();
+    }
+    public static void updateTask(UUID maid, JsonObject state) {
+        if (current==null || !current.maid.equals(maid)) return;
+        if (state.has("error")) { current.taskLine=""; current.pauseButton.active=false; current.resumeButton.active=false; return; }
+        current.pauseButton.active=!state.get("paused").getAsBoolean();
+        current.resumeButton.active=state.get("paused").getAsBoolean();
+        var tasks=state.getAsJsonArray("tasks");
+        current.taskLine = tasks.isEmpty() ? Component.translatable("gui.touhou_aifun.task.empty").getString()
+                : tasks.get(0).getAsJsonObject().get("goal").getAsString() + " | "
+                + Component.translatable("gui.touhou_aifun.task.state." + (state.get("paused").getAsBoolean() ? "paused" : tasks.get(0).getAsJsonObject().get("status").getAsString())).getString() + " | "
+                + Component.translatable("gui.touhou_aifun.task.queue",Math.max(0,tasks.size()-1)).getString();
     }
     private static GuiOperationPreviewScreen current;
     @Override public void added() { current = this; }

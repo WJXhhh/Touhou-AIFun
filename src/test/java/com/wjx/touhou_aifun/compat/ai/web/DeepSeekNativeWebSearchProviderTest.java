@@ -6,12 +6,14 @@ import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 class DeepSeekNativeWebSearchProviderTest {
     @Test
     void buildsIsolatedNativeSearchRequest() {
         JsonObject body = DeepSeekNativeWebSearchProvider.requestBody("latest Minecraft release", "deepseek-flash");
         assertEquals("deepseek-flash", body.get("model").getAsString());
+        assertEquals(65536, body.get("max_tokens").getAsInt());
         assertEquals("web_search_20250305",
                 body.getAsJsonArray("tools").get(0).getAsJsonObject().get("type").getAsString());
         assertFalse(body.has("stream"));
@@ -52,6 +54,20 @@ class DeepSeekNativeWebSearchProviderTest {
                 DeepSeekNativeWebSearchProvider.messagesEndpoint("https://api.deepseek.com/anthropic"));
         assertEquals("https://api.deepseek.com/anthropic/v1/messages",
                 DeepSeekNativeWebSearchProvider.messagesEndpoint("https://api.deepseek.com/anthropic/v1"));
+    }
+
+    @Test void distinguishesExhaustedReasoningFromEmptySearchAndMarksPartialSources() {
+        var failure = assertThrows(IllegalStateException.class, () -> DeepSeekNativeWebSearchProvider.mapResponse("""
+                {"stop_reason":"max_tokens","content":[{"type":"thinking","thinking":"private"}]}
+                """));
+        assertTrue(failure.getMessage().contains("输出预算"));
+        assertFalse(failure.getMessage().contains("private"));
+        var result = DeepSeekNativeWebSearchProvider.mapResponse("""
+                {"stop_reason":"max_tokens","content":[{"type":"web_search_tool_result","content":[
+                  {"type":"web_search_result","url":"https://example.com","title":"source"}]}]}
+                """);
+        assertTrue(result.truncated());
+        assertEquals(1, result.sources().size());
     }
 
     @Test

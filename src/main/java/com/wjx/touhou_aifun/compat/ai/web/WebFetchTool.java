@@ -84,7 +84,9 @@ public final class WebFetchTool implements ITool<String> {
                         "Web fetch failed: " + rootMessage(throwable), toolCallId));
                 return;
             }
-            completed.complete(callback.addToolResult(format(result), toolCallId));
+            String raw = format(result);
+            String ref = com.wjx.touhou_aifun.chat.agent.AgentContext.store(callback).put(raw);
+            completed.complete(callback.addToolResult(com.wjx.touhou_aifun.chat.agent.ToolResultProjection.project(raw, ref), toolCallId));
         }));
         return completed;
     }

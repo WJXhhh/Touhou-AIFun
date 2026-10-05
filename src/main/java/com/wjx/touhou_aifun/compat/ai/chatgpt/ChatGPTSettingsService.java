@@ -79,6 +79,7 @@ public final class ChatGPTSettingsService {
                             if (site instanceof ChatGPTLLMSite subscription) {
                                 subscription.setReasoningSettings(new ChatGPTReasoningSettings(action.reasoningSummary(), action.reasoningEffort()));
                                 subscription.setWebSearch(action.webSearch());
+                                subscription.setFastMode(action.fastMode());
                             }
                             AvailableSites.saveSites();
                         }).join();
@@ -132,6 +133,8 @@ public final class ChatGPTSettingsService {
                     ? subscription.reasoningSettings() : ChatGPTReasoningSettings.DEFAULT;
             result.addProperty("reasoning_summary", settings.summary()); result.addProperty("reasoning_effort", settings.effort());
             result.addProperty("web_search", !(site instanceof ChatGPTLLMSite subscription) || subscription.webSearch());
+            result.addProperty("fast_mode", site instanceof ChatGPTLLMSite subscription && subscription.fastMode());
+            result.addProperty("last_service_tier", site instanceof ChatGPTLLMSite subscription ? subscription.lastServiceTier() : "unknown");
             JsonObject models = new JsonObject();
             if (site instanceof ChatGPTLLMSite subscription) subscription.models().entrySet().stream().limit(256)
                     .forEach(entry -> models.addProperty(entry.getKey(), entry.getValue()));

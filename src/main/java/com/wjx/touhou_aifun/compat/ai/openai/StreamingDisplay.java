@@ -38,6 +38,7 @@ final class StreamingDisplay {
     private final boolean singleSegment;
     /** Whether the chat bubble keeps the leading {@code (emotion)} marker. */
     private final boolean showMarkerInChat;
+    private final boolean validateTaskAnswer;
 
     private long lastUpdateMs;
     private String lastShown = StringUtils.EMPTY;
@@ -47,10 +48,12 @@ final class StreamingDisplay {
 
     StreamingDisplay(LLMCallback callback, boolean singleSegment, boolean showMarkerInChat) {
         this.callback = callback;
+        this.done = com.wjx.touhou_aifun.chat.agent.AgentExecution.task(callback);
         this.maid = callback.getMaid();
         this.maidId = this.maid.getUUID();
         this.singleSegment = singleSegment;
         this.showMarkerInChat = showMarkerInChat;
+        this.validateTaskAnswer=com.wjx.touhou_aifun.chat.agent.AgentRuntime.validateForegroundAnswer(callback);
         this.bubbles = new StreamingBubbleDisplay(new StreamingBubbleDisplay.Bubbles() {
             private ChatBubbleManager manager() { return maid.getChatBubbleManager(); }
             @Override public long waitingId() { return callback.getWaitingChatBubbleId(); }
@@ -108,6 +111,7 @@ final class StreamingDisplay {
             answer = ReasoningOpenAIResponseChat.stripAllMarkers(answer);
         }
         boolean isAnswer = StringUtils.isNotBlank(answer);
+        if(isAnswer && this.validateTaskAnswer) return;
         String display;
         if (isAnswer) {
             display = tail(answer);

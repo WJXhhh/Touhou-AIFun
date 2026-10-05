@@ -1,6 +1,5 @@
 package com.wjx.touhou_aifun.compat.ai.openai.response;
 
-import com.github.tartaricacid.touhoulittlemaid.ai.service.llm.openai.response.Usage;
 import com.google.gson.Gson;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
@@ -24,14 +23,13 @@ public final class StreamAccumulator {
     private final TreeMap<Integer, ToolCallBuilder> toolCalls = new TreeMap<>();
 
     @Nullable
-    private Usage usage;
+    private JsonObject usage;
+    private boolean anthropicUsage;
     @Nullable
     private String finishReason;
 
     public void accept(StreamChunk chunk) {
-        if (chunk.getUsage() != null) {
-            this.usage = chunk.getUsage();
-        }
+        mergeUsage(chunk.getRawUsage());
         StreamChunk.StreamChoice choice = chunk.getFirstChoice();
         if (choice == null) {
             return;
@@ -69,6 +67,20 @@ public final class StreamAccumulator {
         }
     }
 
+    public void acceptAnthropicUsage(JsonObject partial) {
+        anthropicUsage = true;
+        mergeUsage(partial);
+    }
+
+    private void mergeUsage(@Nullable JsonObject partial) {
+        if (partial == null) return;
+        if (usage == null) usage = new JsonObject();
+        // Messages deltas report only output_tokens; absent input/cache fields must survive.
+        partial.entrySet().forEach(e -> {
+            if (!e.getValue().isJsonNull()) usage.add(e.getKey(), e.getValue().deepCopy());
+        });
+    }
+
     /** Raw assistant content accumulated so far (visible answer, may include partial text). */
     public String currentContent() {
         return this.content.toString();
@@ -81,6 +93,10 @@ public final class StreamAccumulator {
 
     public boolean hasToolCalls() {
         return !this.toolCalls.isEmpty();
+    }
+    public boolean hasEffectiveOutput() {
+        return content.length()>0 || reasoning.length()>0 || toolCalls.values().stream().anyMatch(t->
+                t.arguments.length()>0 || t.name!=null && !t.name.isEmpty());
     }
 
     /** Rebuilds the equivalent non-streaming response object. */
@@ -120,7 +136,7 @@ public final class StreamAccumulator {
         JsonObject root = new JsonObject();
         root.add("choices", choices);
         if (this.usage != null) {
-            root.add("usage", GSON.toJsonTree(this.usage));
+            root.add("usage", anthropicUsage ? TokenUsage.anthropic(usage) : usage.deepCopy());
         }
 
         return GSON.fromJson(root, ReasoningOpenAIChatCompletionResponse.class);

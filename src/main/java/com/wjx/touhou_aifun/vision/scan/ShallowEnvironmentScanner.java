@@ -19,6 +19,7 @@ import net.minecraft.world.entity.vehicle.AbstractMinecart;
 import net.minecraft.world.entity.vehicle.Boat;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.Block;
+import net.minecraft.world.level.block.entity.SignBlockEntity;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.block.state.properties.Property;
 import net.minecraft.world.level.chunk.ChunkAccess;
@@ -161,7 +162,7 @@ public final class ShallowEnvironmentScanner {
             BlockPos maidPos = maid.blockPosition();
             this.accumulator = new ScanAccumulator(maid, request, maid.getEyePosition(1.0F), maidPos);
             this.faces = request.mode().includesBlocks() ? faces(request.direction()) : List.of();
-            this.surfaceDone = faces.isEmpty();
+            this.surfaceDone = faces.isEmpty() || !request.intent().equals("overview");
             this.sections = request.mode().includesBlocks() ? discoverSections() : List.of();
             this.blockEntityWork = blockEntityCandidates.stream().sorted(Comparator.comparingDouble(packed -> {
                 BlockPos pos = BlockPos.of(packed);
@@ -174,6 +175,10 @@ public final class ShallowEnvironmentScanner {
             this.importantDone = !request.mode().includesBlocks()
                     || blockEntitiesDone && sections.isEmpty();
             this.entitiesDone = !request.mode().includesEntities();
+            if (request.intent().equals("read_signs")) {
+                this.sectionIndex = sections.size();
+                this.entitiesDone = true;
+            }
         }
 
         boolean step(int rayBudget, int ddaBudget, int sectionBudget) {
@@ -376,6 +381,7 @@ public final class ShallowEnvironmentScanner {
             }
             importantFound.add(packed);
             BlockState state = level.getBlockState(pos);
+            if (request.intent().equals("read_signs") && !(level.getBlockEntity(pos) instanceof SignBlockEntity)) return true;
             Visibility visibility = blockVisibility(level, accumulator.eye, pos, accumulator);
             if (!visibility.visible) {
                 return true;
@@ -867,6 +873,7 @@ public final class ShallowEnvironmentScanner {
         private final Map<String, Integer> surfaceDirectionSamples = new LinkedHashMap<>();
         private final Map<BlockState, OpacityClass> opacityByState = new HashMap<>();
         private final List<ImportantBlockHit> importantBlocks = new ArrayList<>();
+        private final SignTextCollector signTexts;
         private final List<ScannedEntity> entities = new ArrayList<>();
         private final Set<Long> importantSectionKeys = new HashSet<>();
         private int primaryRays;
@@ -904,6 +911,7 @@ public final class ShallowEnvironmentScanner {
         private ScanAccumulator(EntityMaid maid, EnvironmentScanRequest request, Vec3 eye, BlockPos maidPos) {
             this.maid = maid;
             this.request = request;
+            this.signTexts = new SignTextCollector(request.focus());
             this.eye = eye;
             this.maidPos = maidPos;
             this.originX = maid.getX();
@@ -975,6 +983,11 @@ public final class ShallowEnvironmentScanner {
             int dy = pos.getY() - maidPos.getY();
             int dz = pos.getZ() - maidPos.getZ();
             importantDirectionCounts.merge(direction, 1, Integer::sum);
+            // Independent of the important-block cap, but shares its loaded-chunk/visibility gate.
+            if (blockEntity instanceof SignBlockEntity sign) {
+                boolean filtered = !(maid.getOwner() instanceof Player owner) || owner.isTextFilteringEnabled();
+                signTexts.add(SignTextReader.read(sign, id.toString(), dx, dy, dz, distance, direction, filtered));
+            }
             minImportantDx = Math.min(minImportantDx, dx);
             minImportantDy = Math.min(minImportantDy, dy);
             minImportantDz = Math.min(minImportantDz, dz);
@@ -1098,12 +1111,14 @@ public final class ShallowEnvironmentScanner {
                 entities.subList(MAX_ENTITIES, entities.size()).clear();
                 markTruncated("entity_detail_limit");
             }
+            SignTextCollector.Snapshot signs = signTexts.finish();
+            signs.truncationReasons().forEach(this::markTruncated);
             return new EnvironmentScanResult(originTick, dimension, request, primaryRays,
                     ddaVisits, importantSectionKeys.size(), surfaces, importantBlocks, entities, omittedSurfaceGroups,
                     omittedImportantBlocks, omittedEntities, omittedEntityGroups, surfaceHitSamples,
                     surfaceRaysWithHits, surfaceDirectionSamples, surfaceBounds(), importantDirectionCounts,
                     importantBounds(), entityDirectionCounts, entityBounds(), truncated,
-                    List.copyOf(truncationReasons));
+                    List.copyOf(truncationReasons), signs.signs(), signs.omitted()).origin(maidPos.getX(),maidPos.getY(),maidPos.getZ());
         }
 
         private void markTruncated(String reason) {

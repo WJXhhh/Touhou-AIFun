@@ -31,10 +31,17 @@ final class ChatGPTResponsesCodec {
 
     static JsonObject request(String model, List<LLMMessage> history, List<String> reminders, JsonArray functions,
                               ChatGPTReasoningSettings settings, boolean webSearch) {
+        return request(model, history, reminders, functions, settings, webSearch, false);
+    }
+
+    static JsonObject request(String model, List<LLMMessage> history, List<String> reminders, JsonArray functions,
+                              ChatGPTReasoningSettings settings, boolean webSearch, boolean fastMode) {
         JsonObject body = new JsonObject();
         body.addProperty("model", model);
         body.addProperty("store", false);
         body.addProperty("stream", true);
+        // Official Fast alias accepted by the subscription route; "fast" currently returns HTTP 400 there.
+        if (fastMode) body.addProperty("service_tier", "priority");
         JsonObject reasoning = settings.requestOptions(model);
         if (reasoning.size() > 0) body.add("reasoning", reasoning);
         JsonArray input = new JsonArray();
@@ -141,7 +148,15 @@ final class ChatGPTResponsesCodec {
                 if (!code.matches("[a-zA-Z0-9_]{1,100}")) code = "request_failed";
                 throw new IllegalStateException(errorMessage(code));
             }
-            if ("response.incomplete".equals(type)) throw new IllegalStateException("ChatGPT 响应未完成，请重试");
+            if ("response.incomplete".equals(type)) {
+                JsonObject response = event.has("response") && event.get("response").isJsonObject()
+                        ? event.getAsJsonObject("response") : new JsonObject();
+                JsonObject details = response.has("incomplete_details") && response.get("incomplete_details").isJsonObject()
+                        ? response.getAsJsonObject("incomplete_details") : new JsonObject();
+                throw new IllegalStateException("max_output_tokens".equals(string(details, "reason"))
+                        ? "ChatGPT 订阅输出预算已耗尽（包含思考和正文），可降低思考强度后重试；订阅输出上限由服务端控制。"
+                        : "ChatGPT 响应未完成，请重试；未完成的工具调用没有执行。");
+            }
             if ("response.output_item.added".equals(type) && event.has("item")
                     && "function_call".equals(string(event.getAsJsonObject("item"), "type"))) tools = true;
             if ("response.output_item.added".equals(type) && event.has("item")
@@ -227,7 +242,7 @@ final class ChatGPTResponsesCodec {
         return switch (code) {
             case "subscription_sharing_usage_limit_exceeded" -> "ChatGPT 订阅使用额度已达限制，请到 https://chatgpt.com/settings/usage 管理额度";
             case "subscription_sharing_user_not_eligible" -> "当前账号、工作区或策略不允许此应用使用 ChatGPT 订阅";
-            case "subscription_sharing_unsupported_capability" -> "当前 ChatGPT 订阅不支持所选模型或请求能力；可关闭订阅联网或切换模型后重试";
+            case "subscription_sharing_unsupported_capability" -> "当前 ChatGPT 订阅不支持所选模型或请求能力；可关闭 Fast、订阅联网或切换模型后重试";
             case "subscription_sharing_usage_unavailable", "subscription_sharing_user_unavailable" -> "ChatGPT 订阅暂时不可用，请稍后重试";
             case "subscription_sharing_invalid_user" -> "ChatGPT 登录无法验证，请服主重新登录";
             default -> "ChatGPT 请求失败 (" + code + ")";

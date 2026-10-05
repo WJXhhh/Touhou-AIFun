@@ -19,6 +19,8 @@ public final class ChatGPTLLMSite extends LLMOpenAISite {
     private final Map<String, String> catalog;
     private volatile ChatGPTReasoningSettings reasoningSettings;
     private volatile boolean webSearch;
+    private volatile boolean fastMode;
+    private volatile String lastServiceTier = "unknown";
 
     public ChatGPTLLMSite(String id, boolean enabled, Map<String, String> catalog) {
         this(id, enabled, catalog, true, "default");
@@ -29,12 +31,18 @@ public final class ChatGPTLLMSite extends LLMOpenAISite {
     }
 
     public ChatGPTLLMSite(String id, boolean enabled, Map<String, String> catalog, boolean summary, String effort, boolean webSearch) {
+        this(id, enabled, catalog, summary, effort, webSearch, false);
+    }
+
+    public ChatGPTLLMSite(String id, boolean enabled, Map<String, String> catalog, boolean summary, String effort,
+                          boolean webSearch, boolean fastMode) {
         super(id, ICON, ENDPOINT, enabled, "", false, Map.of(), entries(catalog));
         this.models.clear();
         this.models.putAll(catalog);
         this.catalog = new LinkedHashMap<>(catalog);
         this.reasoningSettings = new ChatGPTReasoningSettings(summary, effort);
         this.webSearch = webSearch;
+        this.fastMode = fastMode;
     }
 
     private static Map<String, ModelEntry> entries(Map<String, String> catalog) {
@@ -53,8 +61,17 @@ public final class ChatGPTLLMSite extends LLMOpenAISite {
     public void setReasoningSettings(ChatGPTReasoningSettings settings) { reasoningSettings = settings; }
     public boolean webSearch() { return webSearch; }
     public void setWebSearch(boolean enabled) { webSearch = enabled; }
+    public boolean fastMode() { return fastMode; }
+    public void setFastMode(boolean enabled) { fastMode = enabled; }
+    public String lastServiceTier() { return lastServiceTier; }
+    public void recordServiceTier(String tier) {
+        lastServiceTier = normalizeServiceTier(tier);
+    }
+    public static String normalizeServiceTier(String tier) {
+        return tier != null && java.util.Set.of("fast", "priority", "default", "flex", "ultrafast").contains(tier) ? tier : "unknown";
+    }
     public ChatGPTLLMSite withModels(Map<String, String> models) {
-        return new ChatGPTLLMSite(id(), enabled(), models, reasoningSettings.summary(), reasoningSettings.effort(), webSearch);
+        return new ChatGPTLLMSite(id(), enabled(), models, reasoningSettings.summary(), reasoningSettings.effort(), webSearch, fastMode);
     }
 
     public static final class Serializer implements SerializableSite<ChatGPTLLMSite> {
@@ -65,7 +82,8 @@ public final class ChatGPTLLMSite extends LLMOpenAISite {
                         .forGetter(ChatGPTLLMSite::models),
                 Codec.BOOL.optionalFieldOf("reasoning_summary", true).forGetter(site -> site.reasoningSettings().summary()),
                 Codec.STRING.optionalFieldOf("reasoning_effort", "default").forGetter(site -> site.reasoningSettings().effort()),
-                Codec.BOOL.optionalFieldOf("web_search", true).forGetter(ChatGPTLLMSite::webSearch)
+                Codec.BOOL.optionalFieldOf("web_search", true).forGetter(ChatGPTLLMSite::webSearch),
+                Codec.BOOL.optionalFieldOf("fast_mode", false).forGetter(ChatGPTLLMSite::fastMode)
         ).apply(instance, ChatGPTLLMSite::new));
 
         @Override public ChatGPTLLMSite defaultSite() { return new ChatGPTLLMSite(API_TYPE, false, Map.of()); }

@@ -166,6 +166,8 @@ tasks.withType(JavaCompile).configureEach {
 // The compatibility fixture is opt-in and never included in the release jar.
 if (project.hasProperty('guiQa')) {
     def guiQa = sourceSets.create('guiQa')
+    def chestQaDirectory = project.hasProperty('cacheAgentQa') ? 'build/agent-cache-qa-server'
+            : project.hasProperty('isolatedAgentQa') ? 'build/agent-tail-isolated-qa-server' : 'build/four-chest-qa-server'
     guiQa.compileClasspath += sourceSets.main.output + sourceSets.main.compileClasspath
     guiQa.runtimeClasspath += sourceSets.main.output + sourceSets.main.runtimeClasspath
     minecraft.runs.configureEach {
@@ -173,7 +175,38 @@ if (project.hasProperty('guiQa')) {
     }
     minecraft.runs.gameTestServer {
         workingDirectory project.file('build/gui-qa-server')
-        property 'forge.enabledGameTestNamespaces', 'aifun_gui_test'
+        if (project.hasProperty('fourChestQa') || project.hasProperty('fourChestLiveQa') || project.hasProperty('foregroundLiveQa')) {
+            workingDirectory project.file(chestQaDirectory)
+        }
+        property 'forge.enabledGameTestNamespaces', (project.hasProperty('fourChestQa') || project.hasProperty('fourChestLiveQa') || project.hasProperty('foregroundLiveQa'))
+                ? 'aifun_gui_test,aifun_four_chest_test' : 'aifun_gui_test'
+        if (project.hasProperty('agentLiveQa')) property 'aifun.agentQa.sites', file('run/config/touhou_little_maid/sites/llm.json').absolutePath
+        if (project.hasProperty('fourChestLiveQa')) property 'aifun.fourChestQa.sites', file('run/config/touhou_little_maid/sites/llm.json').absolutePath
+        if (project.hasProperty('foregroundLiveQa')) property 'aifun.foregroundQa.sites', file('run/config/touhou_little_maid/sites/llm.json').absolutePath
+        if (project.hasProperty('foregroundRetrieveLiveQa')) property 'aifun.foregroundQa.retrieve', 'true'
+        if (project.hasProperty('foregroundLiveTrials')) {
+            int trials = Integer.parseInt(project.property('foregroundLiveTrials').toString())
+            if (trials < 1 || trials > 10) throw new GradleException('foregroundLiveTrials must be between 1 and 10')
+            property 'aifun.foregroundQa.trials', trials.toString()
+        }
+        if (project.hasProperty('foregroundAmendLiveQa')) property 'aifun.foregroundQa.amend', 'true'
+    }
+    if (project.hasProperty('fourChestQa') || project.hasProperty('fourChestLiveQa') || project.hasProperty('foregroundLiveQa')) {
+        tasks.matching { it.name == 'runGameTestServer' }.configureEach {
+            doFirst {
+                def fixtureDirectory = file(chestQaDirectory)
+                fixtureDirectory.mkdirs()
+                def fixtureProperties = new File(fixtureDirectory, 'server.properties')
+                if (!fixtureProperties.exists()) fixtureProperties.setText('''level-type=minecraft:flat
+generator-settings={"layers":[{"block":"minecraft:bedrock","height":1},{"block":"minecraft:dirt","height":2},{"block":"minecraft:grass_block","height":1}],"biome":"minecraft:plains","structures":{}}
+level-name=world
+''', 'UTF-8')
+                def fixtureSettings = new Properties()
+                fixtureProperties.withInputStream { fixtureSettings.load(it) }
+                if (fixtureSettings.getProperty('level-type') != 'minecraft:flat')
+                    throw new GradleException('Four-chest navigation QA requires its own flat world')
+            }
+        }
     }
     minecraft.runs.client {
         workingDirectory project.file('build/gui-qa-client')

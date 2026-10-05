@@ -48,12 +48,16 @@ public final class LittleMaidCompat implements ILittleMaid {
         register.register(new EatFoodBlockTool());
         for (String id : com.wjx.touhou_aifun.compat.ai.action.GuiTool.IDS) register.register(new com.wjx.touhou_aifun.compat.ai.action.GuiTool(id));
         register.register(new LoadToolSchemaTool());
+        register.register(new com.wjx.touhou_aifun.chat.agent.AgentTool("task_control"));
+        register.register(new com.wjx.touhou_aifun.chat.agent.AgentTool("read_task_result"));
+        register.register(new com.wjx.touhou_aifun.chat.agent.TaskPlanningTool());
         register.register(new ScanSurroundingsTool());
         register.register(new ObserveSurroundingsTool());
         register.register(new com.wjx.touhou_aifun.compat.ai.vision.ReviewObservationTool());
         register.register(new WebSearchTool());
         register.register(new WebFetchTool());
         register.register(new CurrentDateTimeTool());
+        register.register(new com.wjx.touhou_aifun.chat.agent.VersionedGameContextTool());
     }
 
     @Override

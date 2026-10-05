@@ -6,6 +6,7 @@ import java.util.Locale;
 /** Small deterministic alias table for sorting scan summaries; it never changes visibility. */
 final class VisionFocusMatcher {
     private static final List<Rule> RULES = List.of(
+            rule("sign", "告示牌", "牌子", "sign"),
             rule("cake", "蛋糕", "cake"),
             rule("snack_cabinet", "零食柜", "零食箱", "零食架", "snack cabinet"),
             rule("chest|barrel|shulker_box", "箱子", "容器", "chest", "container"),

@@ -5,6 +5,9 @@
   "compatibilityLevel": "JAVA_17",
   "refmap": "touhou_aifun.refmap.json",
   "mixins": [
+    "ScanRegionVersionMixin",
+    "UseSkillCostMixin",
+    "WikiCostMixin",
     "GuiActorInventoryMixin",
     "GuiActorSlotMixin",
     "GuiMenuDataAccessor",

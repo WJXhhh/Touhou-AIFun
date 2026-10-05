@@ -116,7 +116,9 @@ final class StreamingTtsReply {
 
         TTSSite site = this.chatManager.getTTSSite();
         this.batchWholeReply = site != null && requiresWholeReplyBatch(site.getApiType());
-        boolean ttsOn = AIConfig.TTS_ENABLED.get() && site != null && site.enabled();
+        boolean ttsOn = !com.wjx.touhou_aifun.chat.agent.AgentExecution.task(callback)
+                && !com.wjx.touhou_aifun.chat.agent.AgentRuntime.validateForegroundAnswer(callback)
+                && AIConfig.TTS_ENABLED.get() && site != null && site.enabled();
         TTSClient resolvedClient = ttsOn ? site.client() : null;
         // System/local TTS uses a different (local sound) path; let the normal onSuccess handle it.
         if (ttsOn && TouhouAIFunConfig.TTS_SENTENCE_STREAMING.get()

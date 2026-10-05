@@ -49,9 +49,9 @@ public final class VisionScanScheduler {
                 current.job.abort();
                 current.future.cancel(false);
             }
-            return new Active(key, ShallowEnvironmentScanner.begin(maid, normalized));
+            return new Active(key, ShallowEnvironmentScanner.begin(maid, VisionScanCache.geometryRequest(normalized)));
         });
-        return active.future;
+        return active.future.thenApply(result -> result.project(normalized));
     }
 
     public static void cancelForMaid(UUID maidId) {
@@ -124,10 +124,11 @@ public final class VisionScanScheduler {
                 remainingSections = Math.max(0,
                         remainingSections - (active.job.expandedSections() - beforeSections));
                 if (done || active.ticks >= HARD_TIMEOUT_TICKS) {
+                    com.wjx.touhou_aifun.chat.agent.AgentTelemetry.stage("scan_execution",active.started,0);
                     if (!done) {
                         active.job.abort("hard_timeout");
                     }
-                    EnvironmentScanResult result = active.job.result();
+                    EnvironmentScanResult result = active.job.result().completedAt(maid.level().getGameTime());
                     VisionScanCache.put(active.key, result);
                     active.future.complete(result);
                     ACTIVE.remove(maidId, active);
@@ -146,6 +147,7 @@ public final class VisionScanScheduler {
     }
 
     private static final class Active {
+        private final long started=System.nanoTime();
         private final VisionScanCache.Key key;
         private final ShallowEnvironmentScanner.ScanJob job;
         private final CompletableFuture<EnvironmentScanResult> future = new CompletableFuture<>();

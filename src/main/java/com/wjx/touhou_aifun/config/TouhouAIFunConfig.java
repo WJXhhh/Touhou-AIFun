@@ -4,10 +4,16 @@ import net.minecraftforge.common.ForgeConfigSpec;
 
 public final class TouhouAIFunConfig {
     public static final ForgeConfigSpec SPEC;
+    public static final ForgeConfigSpec.BooleanValue AGENT_RUNTIME;
+    public static final ForgeConfigSpec.BooleanValue AGENT_DIAGNOSTICS;
     public static final ForgeConfigSpec.BooleanValue TTS_SENTENCE_STREAMING;
     public static final ForgeConfigSpec.BooleanValue TTS_EMOTION_CONTROL;
     public static final ForgeConfigSpec.BooleanValue TTS_EMOTION_IN_TEXT;
     public static final ForgeConfigSpec.BooleanValue LLM_STREAMING;
+    public static final ForgeConfigSpec.IntValue LLM_OUTPUT_BUDGET_TOKENS;
+    public static final ForgeConfigSpec.IntValue LLM_MAX_TOOL_ROUNDS;
+    public static final ForgeConfigSpec.IntValue LLM_MAX_REPEAT_TOOL_BATCHES;
+    public static final ForgeConfigSpec.IntValue LLM_REQUEST_TIMEOUT_SECONDS;
     public static final ForgeConfigSpec.IntValue CONTEXT_INPUT_BUDGET_TOKENS;
     public static final ForgeConfigSpec.IntValue MEMORY_RECENT_TURNS;
     public static final ForgeConfigSpec.BooleanValue BACKGROUND_MEMORY_EXTRACTION;
@@ -20,6 +26,10 @@ public final class TouhouAIFunConfig {
 
     static {
         ForgeConfigSpec.Builder builder = new ForgeConfigSpec.Builder();
+        builder.push("agentRuntimeV1");
+        AGENT_RUNTIME = builder.comment("Experimental independent task runtime. Resume saved tasks explicitly after reload.").define("enabled", false);
+        AGENT_DIAGNOSTICS = builder.comment("Log stage timings and sizes, never arguments or dialogue.").define("diagnostics", false);
+        builder.pop();
         builder.push("tts");
         TTS_SENTENCE_STREAMING = builder
                 .comment("Split TTS text by sentence and play each synthesized chunk immediately.")
@@ -42,7 +52,20 @@ public final class TouhouAIFunConfig {
                 .define("streaming", true);
         CONTEXT_INPUT_BUDGET_TOKENS = builder
                 .comment("Target input-context budget for AIFun's layered memory planner.")
-                .defineInRange("contextInputBudgetTokens", 24576, 4096, 131072);
+                .defineInRange("contextInputBudgetTokens", 98304, 4096, 131072);
+        LLM_OUTPUT_BUDGET_TOKENS = builder
+                .comment("Maximum generated tokens per request, including reasoning and answer. Provider/model limits still apply.",
+                        "ChatGPT subscription controls its own output limit and does not accept this API parameter.")
+                .defineInRange("outputBudgetTokens", 65536, 1024, 262144);
+        LLM_MAX_TOOL_ROUNDS = builder
+                .comment("Maximum tool batches per user request. A batch can contain multiple tools.")
+                .defineInRange("maxToolRounds", 256, 1, 4096);
+        LLM_MAX_REPEAT_TOOL_BATCHES = builder
+                .comment("Maximum consecutive identical tool batches without changed results. Volatile timestamps do not count as progress.")
+                .defineInRange("maxRepeatToolBatches", 8, 2, 256);
+        LLM_REQUEST_TIMEOUT_SECONDS = builder
+                .comment("Timeout for each model request, including consumption of the streamed body; not a total task deadline.")
+                .defineInRange("requestTimeoutSeconds", 600, 10, 3600);
         MEMORY_RECENT_TURNS = builder
                 .comment("Number of completed conversation turns kept verbatim in the visible context.")
                 .defineInRange("recentTurns", 8, 2, 32);

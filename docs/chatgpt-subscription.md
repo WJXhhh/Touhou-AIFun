@@ -20,6 +20,31 @@
 
 两项设置写入站点 JSON 的 `reasoning_summary` 和 `reasoning_effort` 字段，不包含授权令牌。旧配置自动使用“摘要开启、模型默认强度”。这次网络消息格式已更新，客户端和服务端必须一起更新 JAR。
 
+## Fast 加速
+
+账号与模型页新增 **Fast：开/关**，默认关闭，打开后点击 **保存**。使用该订阅站点的女仆共用此设置；刷新模型、切换账号、重启会保留选择。Fast 与推理强度独立，开启不会自动降低推理强度或关闭摘要、搜索。Fast 可能增加额度消耗，实际支持情况取决于账号、模型和服务端。
+
+开启时，每次订阅推理请求发送 `service_tier: "priority"`，这是官方 Fast 的兼容参数；关闭时不发送此字段，恢复接口默认处理。配置字段为 `fast_mode`，旧站点配置自动关闭。本次网络协议版本更新为 14，客户端和服务器需要一起更新。
+
+悬停 Fast 按钮可查看**最近完成请求的实际档位**：`priority` / `fast` 表示服务端确认 Fast，`default` 表示普通处理，缺少字段时显示“尚未确认”。这个状态来自完成响应，不根据开关推断，也不跨刷新模型、切换账号或重启复用。日志记录 `fast_requested` 和 `actual_service_tier`，便于核对请求和实际处理。
+
+2026-10-03 进一步用同一份模组 OAuth 授权对公开订阅接口做了对照：
+
+| 模型 / 请求 | HTTP / 完成状态 | 服务端返回档位 |
+| --- | --- | --- |
+| `gpt-6.1-sol` + `priority` | 200 / completed | created 为 `auto`，completed 为 `default` |
+| `gpt-6.1-sol` + `default`（对照） | 200 / completed | created 为 `auto`，completed 为 `default` |
+| `gpt-6-sol` + `priority` | 200 / completed | created 为 `auto`，completed 为 `default` |
+| `gpt-6-luna` + `priority` | 200 / completed | created 为 `auto`，completed 为 `default` |
+| `gpt-5.6-sol` + `priority` | 200 / completed | created 为 `auto`，completed 为 `default` |
+| `gpt-6.1-sol` + `fast` | 400 | `detail: Unsupported service_tier: fast` |
+
+同时，模组授权的 `/v1/models` 中，`gpt-5.6-sol` 等模型的 `service_tiers` 明确包含 `{id: "priority", name: "Fast"}`；本地 Codex 模型目录中 6.1 Sol / 6 Sol / 6 Luna 的 Fast 也都映射为 `priority`。添加本应用的 originator / User-Agent 后，6.1 Sol 的完成响应仍为 `default`。这排除了模组参数别名写反和单个新模型特例，但没有证明原因必然是账号不支持 Fast，也没有证明具体是哪一层重置了请求档位。当前只能确认这条第三方订阅接入没有返回 Fast 成功证据；模组不会把结果显示为已加速，简短 OK 请求的耗时也不作为速度基准。
+
+可用 `scripts/smoke-chatgpt-fast.ps1 [-Model gpt-6.1-sol]` 验证当前账号，脚本只读取模组授权、发送简短请求并输出事件档位、请求 ID 和经过脱敏的错误信息；仅在服务端确认 Fast 且请求完成时返回成功。`-ServiceTier default` 用作普通处理对照，`-ServiceTier fast` 可单独测试新名称是否已被接口支持。模型目录是能力描述，不等同于某次请求的实际处理证明。
+
+参数及返回档位定义见 [OpenAI Docs：Fast mode](https://developers.openai.com/api/docs/guides/fast-mode)。[Codex 的速度说明](https://developers.openai.com/codex/speed)确认这些模型在可用时支持 Fast；[第三方订阅错误说明](https://developers.openai.com/siwc/token-sharing-open-source/errors-and-recovery#structured-responses-errors)则单独列出了不支持 service-tier override 的情况。公开文档没有说明本次“接受 priority 但完成为 default”的具体原因。
+
 ## 订阅联网搜索
 
 设置页的 **订阅联网：开/关** 控制 OpenAI 原生 `web_search`，默认开启，点击 **保存** 后用于后续请求。遇到新闻、当前价格、变化较快或不确定的信息，或者明确要求搜索时，模型可自行搜索、打开网页和查找页面内容。普通聊天不会强制搜索。

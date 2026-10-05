@@ -11,7 +11,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 class AIFunChatGPTActionMessageTest {
     @Test void savedReasoningPreferencesReachServerWithoutLosingExistingSettings() {
         var message = new AIFunChatGPTActionMessage(UUID.randomUUID(), AIFunChatGPTActionMessage.Action.SAVE, 1456,
-                true, "account", false, "xhigh", false);
+                true, "account", false, "xhigh", false, true);
         var buffer = new FriendlyByteBuf(Unpooled.buffer());
         try {
             AIFunChatGPTActionMessage.encode(message, buffer);

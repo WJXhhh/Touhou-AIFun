@@ -36,9 +36,7 @@ public final class DeepSeekNativeWebSearchProvider implements WebSearchProvider 
     static final String DEFAULT_MODEL = AnthropicShared.DEFAULT_MODEL;
     private static final String ANTHROPIC_VERSION = "2023-06-01";
     private static final String WEB_SEARCH_TYPE = "web_search_20250305";
-    private static final int MAX_TOKENS = 4096;
     private static final int MAX_USES = 5;
-    private static final Duration REQUEST_TIMEOUT = Duration.ofSeconds(60);
 
     @Override
     public String id() {
@@ -61,7 +59,7 @@ public final class DeepSeekNativeWebSearchProvider implements WebSearchProvider 
         JsonObject body = requestBody(query, resolveModel(site));
         HttpRequest.Builder builder = HttpRequest.newBuilder()
                 .uri(URI.create(messagesEndpoint(site.url())))
-                .timeout(REQUEST_TIMEOUT)
+                .timeout(com.wjx.touhou_aifun.config.LLMRuntimeBudget.timeout())
                 .header(HttpHeaders.CONTENT_TYPE, MediaType.JSON_UTF_8.toString())
                 .header(HttpHeaders.ACCEPT, MediaType.JSON_UTF_8.toString())
                 // Official DeepSeek expects x-api-key; compatible gateways commonly expect Bearer.
@@ -71,8 +69,9 @@ public final class DeepSeekNativeWebSearchProvider implements WebSearchProvider 
                 .POST(HttpRequest.BodyPublishers.ofString(GSON.toJson(body)));
         site.headers().forEach(builder::header);
 
-        return LLM_HTTP_CLIENT.sendAsync(builder.build(), HttpResponse.BodyHandlers.ofString())
-                .orTimeout(REQUEST_TIMEOUT.toSeconds() + 5, TimeUnit.SECONDS)
+        HttpRequest request = builder.build();
+        return LLM_HTTP_CLIENT.sendAsync(request, HttpResponse.BodyHandlers.ofString())
+                .orTimeout(request.timeout().orElseThrow().toSeconds() + 5, TimeUnit.SECONDS)
                 .thenApply(DeepSeekNativeWebSearchProvider::requireSuccessful)
                 .thenApply(DeepSeekNativeWebSearchProvider::mapResponse)
                 .thenApply(result -> bound(result, maxResults));
@@ -101,7 +100,7 @@ public final class DeepSeekNativeWebSearchProvider implements WebSearchProvider 
 
         JsonObject body = new JsonObject();
         body.addProperty("model", model);
-        body.addProperty("max_tokens", MAX_TOKENS);
+        body.addProperty("max_tokens", com.wjx.touhou_aifun.config.LLMRuntimeBudget.outputTokens());
         body.add("messages", messages);
         body.add("tools", tools);
         return body;
@@ -109,6 +108,7 @@ public final class DeepSeekNativeWebSearchProvider implements WebSearchProvider 
 
     static WebSearchResult mapResponse(String json) {
         JsonObject root = JsonParser.parseString(json).getAsJsonObject();
+        boolean truncated = "max_tokens".equals(string(root, "stop_reason"));
         JsonArray blocks = root.has("content") && root.get("content").isJsonArray()
                 ? root.getAsJsonArray("content") : new JsonArray();
 
@@ -138,10 +138,11 @@ public final class DeepSeekNativeWebSearchProvider implements WebSearchProvider 
             }
         }
         if (!sawResultBlock) {
+            if (truncated) throw new IllegalStateException("联网搜索的模型输出预算已耗尽（包含思考），请检查 llm.outputBudgetTokens。");
             throw new IllegalStateException(
                     "DeepSeek returned no web_search_tool_result blocks; native search may not have run");
         }
-        return new WebSearchResult(blankToNull(answer), new ArrayList<>(sources.values()), false);
+        return new WebSearchResult(blankToNull(answer), new ArrayList<>(sources.values()), truncated);
     }
 
     /**

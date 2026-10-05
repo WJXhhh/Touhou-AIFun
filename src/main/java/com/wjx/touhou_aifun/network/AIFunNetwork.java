@@ -35,12 +35,14 @@ import com.wjx.touhou_aifun.maid.management.MaidAIConfigSnapshot;
 import com.wjx.touhou_aifun.maid.management.MaidManagementService;
 import com.wjx.touhou_aifun.maid.PublicMaidAccess;
 
+import com.wjx.touhou_aifun.network.message.AIFunTaskStateMessage;
+import com.wjx.touhou_aifun.network.message.AIFunGuiPreviewMessage;
 import java.util.Optional;
 import java.util.UUID;
 
 public final class AIFunNetwork {
-    // Version 13 adds detached GUI requests, bounded client replies and owner preview control.
-    private static final String VERSION = "13";
+    // Version 15 adds owner task controls and task-state preview packets.
+    private static final String VERSION = "15";
     private static final SimpleChannel CHANNEL = NetworkRegistry.newSimpleChannel(
             new ResourceLocation(TouhouAIFun.MOD_ID, "network"),
             () -> VERSION, VERSION::equals, VERSION::equals);
@@ -49,6 +51,8 @@ public final class AIFunNetwork {
     }
 
     public static void init() {
+        CHANNEL.registerMessage(25, AIFunTaskStateMessage.class, AIFunTaskStateMessage::encode,
+                AIFunTaskStateMessage::decode, AIFunTaskStateMessage::handle, Optional.of(NetworkDirection.PLAY_TO_CLIENT));
         CHANNEL.registerMessage(22, com.wjx.touhou_aifun.network.message.AIFunGuiRequestMessage.class,
                 com.wjx.touhou_aifun.network.message.AIFunGuiRequestMessage::encode, com.wjx.touhou_aifun.network.message.AIFunGuiRequestMessage::decode,
                 com.wjx.touhou_aifun.network.message.AIFunGuiRequestMessage::handle, Optional.of(NetworkDirection.PLAY_TO_CLIENT));
@@ -144,6 +148,8 @@ public final class AIFunNetwork {
         CHANNEL.send(PacketDistributor.PLAYER.with(() -> player), message);
     }
     public static void sendGuiResult(com.wjx.touhou_aifun.network.message.AIFunGuiResultMessage message) { CHANNEL.sendToServer(message); }
+    public static void sendTaskState(ServerPlayer player, UUID maid, String json) { CHANNEL.send(PacketDistributor.PLAYER.with(() -> player), new AIFunTaskStateMessage(maid,json)); }
+    public static void requestTaskControl(UUID maid, String action) { CHANNEL.sendToServer(new AIFunGuiPreviewMessage(maid,action)); }
     public static void requestGuiPreview(UUID maid, boolean stop) { CHANNEL.sendToServer(new com.wjx.touhou_aifun.network.message.AIFunGuiPreviewMessage(maid, stop)); }
 
     /**

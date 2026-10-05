@@ -15,8 +15,17 @@ import java.nio.charset.StandardCharsets;
 /** Result envelope deliberately kept bounded before it is put in an LLM tool message. */
 public final class EnvironmentScanResult {
     private static final Gson GSON = new GsonBuilder().disableHtmlEscaping().create();
+    // Leave room for the bounded observation envelope, so it never has to drop the whole scan.
+    private static final int MAX_COMPACT_BYTES = 12 * 1024;
 
     private final long gameTick;
+    private int[] origin=new int[0];
+    public EnvironmentScanResult origin(int x,int y,int z) { origin=new int[]{x,y,z}; return this; }
+    private long completedTick;
+    private final String intent;
+    private final String detail;
+    public EnvironmentScanResult completedAt(long tick) { completedTick = tick; return this; }
+    public long completedTick() { return completedTick; }
     private final String dimension;
     private final String mode;
     private final String direction;
@@ -27,6 +36,8 @@ public final class EnvironmentScanResult {
     private final List<SurfaceBlockHit> surfaces;
     private final List<ImportantBlockHit> importantBlocks;
     private final List<ScannedEntity> entities;
+    private final List<ScannedSign> signTexts;
+    private final int omittedSignTexts;
     private final int omittedSurfaceGroups;
     private final int omittedImportantBlocks;
     private final int omittedEntities;
@@ -70,7 +81,28 @@ public final class EnvironmentScanResult {
                                  int[] surfaceBounds, Map<String, Integer> importantDirectionCounts,
                                  int[] importantBounds, Map<String, Integer> entityDirectionCounts,
                                  double[] entityBounds, boolean truncated, List<String> truncationReasons) {
+        this(gameTick, dimension, request, primaryRays, ddaVisits, importantSections, surfaces,
+                importantBlocks, entities, omittedSurfaceGroups, omittedImportantBlocks, omittedEntities,
+                omittedEntityGroups, surfaceHitSamples, surfaceRaysWithHits, surfaceDirectionSamples,
+                surfaceBounds, importantDirectionCounts, importantBounds, entityDirectionCounts, entityBounds,
+                truncated, truncationReasons, List.of(), 0);
+    }
+
+    public EnvironmentScanResult(long gameTick, String dimension, EnvironmentScanRequest request,
+                                 int primaryRays, int ddaVisits, int importantSections,
+                                 List<SurfaceBlockHit> surfaces, List<ImportantBlockHit> importantBlocks,
+                                 List<ScannedEntity> entities, int omittedSurfaceGroups,
+                                 int omittedImportantBlocks, int omittedEntities,
+                                 Map<String, Integer> omittedEntityGroups, int surfaceHitSamples,
+                                 int surfaceRaysWithHits, Map<String, Integer> surfaceDirectionSamples,
+                                 int[] surfaceBounds, Map<String, Integer> importantDirectionCounts,
+                                 int[] importantBounds, Map<String, Integer> entityDirectionCounts,
+                                 double[] entityBounds, boolean truncated, List<String> truncationReasons,
+                                 List<ScannedSign> signTexts, int omittedSignTexts) {
         this.gameTick = gameTick;
+        this.completedTick = gameTick;
+        this.intent = request.intent();
+        this.detail = request.detail();
         this.dimension = dimension;
         this.mode = request.mode().name().toLowerCase();
         this.direction = request.direction().name().toLowerCase();
@@ -93,14 +125,40 @@ public final class EnvironmentScanResult {
         this.importantBounds = importantBounds == null ? new int[0] : importantBounds.clone();
         this.entityDirectionCounts = Collections.unmodifiableMap(new LinkedHashMap<>(entityDirectionCounts));
         this.entityBounds = entityBounds == null ? new double[0] : entityBounds.clone();
-        this.truncated = truncated;
-        this.truncationReasons = truncationReasons == null ? List.of()
-                : List.copyOf(truncationReasons.stream().filter(reason -> reason != null && !reason.isBlank()).toList());
+        SignTextCollector signs = new SignTextCollector(request.focus());
+        if (request.mode().includesBlocks()) signTexts.forEach(signs::add);
+        SignTextCollector.Snapshot signSnapshot = signs.finish();
+        this.signTexts = signSnapshot.signs();
+        this.omittedSignTexts = request.mode().includesBlocks() ? omittedSignTexts + signSnapshot.omitted() : 0;
+        this.truncated = truncated || this.omittedSignTexts > 0 || !signSnapshot.truncationReasons().isEmpty();
+        List<String> reasons = new ArrayList<>();
+        if (truncationReasons != null) {
+            truncationReasons.stream().filter(reason -> reason != null && !reason.isBlank()).forEach(reasons::add);
+        }
+        reasons.addAll(signSnapshot.truncationReasons());
+        this.truncationReasons = reasons.stream().distinct().toList();
         this.focus = request.focus();
     }
 
     public List<SurfaceBlockHit> surfaces() {
         return surfaces;
+    }
+    /** Reorder already observed geometry without spending additional ray casts. */
+    public EnvironmentScanResult project(EnvironmentScanRequest request) {
+        if (focus.equals(request.focus()) && detail.equals(request.detail())) return this;
+        java.util.Comparator<String> order=java.util.Comparator.comparing(id -> !VisionFocusMatcher.matches(request.focus(),id));
+        var projectedSurfaces=new ArrayList<>(surfaces);
+        var projectedBlocks=new ArrayList<>(importantBlocks);
+        var projectedEntities=new ArrayList<>(entities);
+        projectedSurfaces.sort(java.util.Comparator.comparing(SurfaceBlockHit::registryId,order).thenComparingDouble(SurfaceBlockHit::nearestDistance));
+        projectedBlocks.sort(java.util.Comparator.comparing(ImportantBlockHit::registryId,order).thenComparingDouble(ImportantBlockHit::distance));
+        projectedEntities.sort(java.util.Comparator.comparing(ScannedEntity::registryId,order).thenComparingDouble(ScannedEntity::distance));
+        EnvironmentScanResult projected=new EnvironmentScanResult(gameTick,dimension,request,primaryRays,ddaVisits,importantSections,
+                projectedSurfaces,projectedBlocks,projectedEntities,omittedSurfaceGroups,omittedImportantBlocks,omittedEntities,
+                omittedEntityGroups,surfaceHitSamples,surfaceRaysWithHits,surfaceDirectionSamples,surfaceBounds,
+                importantDirectionCounts,importantBounds,entityDirectionCounts,entityBounds,truncated,truncationReasons,
+                signTexts,omittedSignTexts).completedAt(completedTick);
+        projected.origin=origin.clone(); return projected;
     }
 
     public long gameTick() {
@@ -115,6 +173,10 @@ public final class EnvironmentScanResult {
         return entities;
     }
 
+    public List<ScannedSign> signTexts() {
+        return signTexts;
+    }
+
     public boolean truncated() {
         return truncated;
     }
@@ -124,7 +186,11 @@ public final class EnvironmentScanResult {
         JsonObject root = new JsonObject();
         root.addProperty("status", "ok");
         root.addProperty("game_tick", gameTick);
+        root.addProperty("completed_tick", completedTick);
+        root.addProperty("intent", intent);
+        root.addProperty("coverage", intent.equals("overview") ? "panorama" : "visible_candidates_only");
         root.addProperty("dimension", dimension);
+        addOrigin(root);
         root.addProperty("mode", mode);
         root.addProperty("direction", direction);
         root.addProperty("max_distance", maxDistance);
@@ -225,6 +291,7 @@ public final class EnvironmentScanResult {
 
         root.addProperty("truncated", truncated);
         addReasons(root);
+        addSignTexts(root);
         if (omittedSurfaceGroups > 0 || omittedImportantBlocks > 0 || omittedEntities > 0) {
             JsonObject omitted = new JsonObject();
             omitted.addProperty("surface_groups", omittedSurfaceGroups);
@@ -238,6 +305,7 @@ public final class EnvironmentScanResult {
             root.add("omitted", omitted);
         }
 
+        if ("summary".equals(detail)) return toCompactJson();
         String json = GSON.toJson(root);
         // Defensive final bound. Keep a valid JSON envelope rather than chopping bytes mid-object.
         if (json.getBytes(StandardCharsets.UTF_8).length <= 16 * 1024) {
@@ -251,9 +319,28 @@ public final class EnvironmentScanResult {
         JsonObject compact = new JsonObject();
         compact.addProperty("status", "ok");
         compact.addProperty("truncated", true);
-        compact.addProperty("reason", "compact scan summary; detailed entries were omitted");
+        compact.addProperty("reason", "compact scan summary; non-sign detailed entries were omitted");
         compact.addProperty("game_tick", gameTick);
+        compact.addProperty("completed_tick", completedTick);
+        compact.addProperty("intent", intent);
+        compact.addProperty("coverage", "Omitted entries and unloaded or unobserved regions do not establish absence.");
         compact.addProperty("dimension", dimension);
+        addOrigin(compact);
+        JsonArray targets=new JsonArray();
+        for(var hit:importantBlocks.subList(0,Math.min(8,importantBlocks.size()))) {
+            JsonObject value=new JsonObject();value.addProperty("registry_id",hit.registryId());addPosition(value,hit.dx(),hit.dy(),hit.dz());
+            value.addProperty("distance",round(hit.distance()));value.add("state",GSON.toJsonTree(hit.properties()));targets.add(value);
+        }
+        while(GSON.toJson(targets).getBytes(StandardCharsets.UTF_8).length>4096 && !targets.isEmpty()) targets.remove(targets.size()-1);
+        compact.add("important_targets",targets);compact.addProperty("omitted_important_target_details",importantBlocks.size()+omittedImportantBlocks-targets.size());
+        JsonArray entityTargets=new JsonArray();
+        for(var entity:entities.subList(0,Math.min(6,entities.size()))) {
+            JsonObject value=new JsonObject();value.addProperty("registry_id",entity.registryId());value.addProperty("entity_id",entity.entityId());
+            JsonArray position=new JsonArray();position.add(round(entity.dx()));position.add(round(entity.dy()));position.add(round(entity.dz()));value.add("relative_position",position);
+            value.addProperty("distance",round(entity.distance()));value.addProperty("visibility",entity.visibility());entityTargets.add(value);
+        }
+        while(GSON.toJson(entityTargets).getBytes(StandardCharsets.UTF_8).length>2048 && !entityTargets.isEmpty()) entityTargets.remove(entityTargets.size()-1);
+        compact.add("entity_targets",entityTargets);compact.addProperty("omitted_entity_target_details",entities.size()+omittedEntities-entityTargets.size());
         int expectedRays = expectedPrimaryRays();
         compact.addProperty("primary_rays", primaryRays);
         compact.addProperty("expected_primary_rays", expectedRays);
@@ -277,27 +364,53 @@ public final class EnvironmentScanResult {
             omittedEntityGroups.forEach(groups::addProperty);
             compact.add("omitted_entity_groups", groups);
         }
+        addSignTexts(compact);
         String json = GSON.toJson(compact);
-        if (json.getBytes(StandardCharsets.UTF_8).length <= 16 * 1024) return json;
+        if (json.getBytes(StandardCharsets.UTF_8).length <= MAX_COMPACT_BYTES) return json;
 
         // Absolute boundary: even hostile/invalid resource identifiers or oversized aggregate-map
         // keys must not escape the tool result limit.
         JsonObject emergency = new JsonObject();
         emergency.addProperty("status", "ok");
         emergency.addProperty("truncated", true);
-        emergency.addProperty("reason", "scan summary exceeded 16 KiB; all variable text was omitted");
+        emergency.addProperty("reason", "scan summary exceeded 12 KiB; non-sign variable text was omitted");
         emergency.addProperty("game_tick", gameTick);
+        emergency.addProperty("completed_tick",completedTick);
+        String boundedDimension = dimension == null ? "" : dimension;
+        if (boundedDimension.codePointCount(0, boundedDimension.length()) > 128) {
+            boundedDimension = boundedDimension.substring(0, boundedDimension.offsetByCodePoints(0, 128));
+            emergency.addProperty("dimension_truncated", true);
+        }
+        emergency.addProperty("dimension",boundedDimension);
+        addOrigin(emergency);
         emergency.addProperty("primary_rays", primaryRays);
         emergency.addProperty("expected_primary_rays", expectedRays);
         emergency.addProperty("unprocessed_primary_rays", Math.max(0, expectedRays - primaryRays));
         emergency.addProperty("surface_groups", surfaces.size() + omittedSurfaceGroups);
         emergency.addProperty("important_blocks", importantBlocks.size() + omittedImportantBlocks);
         emergency.addProperty("entities", entities.size() + omittedEntities);
+        addSignTexts(emergency);
+        JsonArray signReasons = new JsonArray();
+        truncationReasons.stream().filter(reason -> List.of("sign_count_limit", "sign_line_limit",
+                "sign_text_byte_limit").contains(reason)).forEach(signReasons::add);
+        if (!signReasons.isEmpty()) emergency.add("truncation_reasons", signReasons);
         return GSON.toJson(emergency);
     }
 
+    private void addSignTexts(JsonObject root) {
+        JsonArray array = new JsonArray();
+        signTexts.forEach(sign -> array.add(sign.toJson()));
+        root.add("sign_texts", array);
+        root.addProperty("omitted_sign_texts", omittedSignTexts);
+    }
+    private void addOrigin(JsonObject root) {
+        root.addProperty("coordinate_space","relative_to_maid_block_at_scan_start");
+        if(origin.length==3) root.add("maid_position_at_scan_start",GSON.toJsonTree(origin));
+        root.addProperty("coordinate_notice","Use recorded origin for world coordinates; old offsets cannot be applied to a moved maid.");
+    }
+
     private int expectedPrimaryRays() {
-        if ("entities".equals(mode) || "none".equals(mode)) return 0;
+        if (!"overview".equals(intent) || "entities".equals(mode) || "none".equals(mode)) return 0;
         return "all".equals(direction) ? 6 * 40 * 40 : 40 * 40;
     }
 

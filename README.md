@@ -36,6 +36,23 @@ text-to-speech (TTS) and speech-to-text (STT) — and adds extra voice-customiza
 
 ## Building
 
+Long-running maid tasks use these defaults in `config/touhou-aifun.toml` under `[llm]`:
+
+| Setting | Default | Meaning |
+| --- | ---: | --- |
+| `outputBudgetTokens` | 65536 | Per-request generated tokens, including reasoning and answer |
+| `maxToolRounds` | 256 | Tool batches per user task; each batch may contain several tools |
+| `maxRepeatToolBatches` | 8 | Identical batches without changed results; timestamps alone do not count as progress |
+| `requestTimeoutSeconds` | 600 | Each model request, including its streamed body |
+| `contextInputBudgetTokens` | 98304 | Target input-context budget for the memory planner |
+
+Provider/model limits still apply. Set `outputBudgetTokens` lower for models that reject this maximum.
+ChatGPT subscription controls its own output limit; the tool, timeout and context settings still apply.
+Existing configuration values are preserved on upgrade: change `contextInputBudgetTokens` explicitly
+if your file still contains the old 24576 default. These budgets do not change the player's token quota,
+GUI processing-wait limit, thinking mode, or cancellation when a new user message arrives.
+Truncated responses report a budget error and do not dispatch partial tool calls.
+
 ```powershell
 .\gradlew.bat build          # output: build/libs/Touhou-AIFun-<version>.jar
 .\gradlew.bat runClient      # launch a dev client

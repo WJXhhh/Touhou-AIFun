@@ -17,7 +17,7 @@ public final class StreamChunk {
 
     @SerializedName("usage")
     @Nullable
-    private Usage usage;
+    private com.google.gson.JsonObject usage;
 
     @Nullable
     public StreamChoice getFirstChoice() {
@@ -29,6 +29,11 @@ public final class StreamChunk {
 
     @Nullable
     public Usage getUsage() {
+        return usage == null ? null : new com.google.gson.Gson().fromJson(usage, Usage.class);
+    }
+
+    @Nullable
+    public com.google.gson.JsonObject getRawUsage() {
         return usage;
     }
 

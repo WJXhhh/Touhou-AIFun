@@ -7,6 +7,7 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import com.wjx.touhou_aifun.chat.ChatFlowManager;
+import com.wjx.touhou_aifun.chat.agent.AgentTelemetry;
 import com.wjx.touhou_aifun.chat.context.AIFunMemoryManager;
 import com.wjx.touhou_aifun.chat.context.ContextBudgetPlanner;
 import com.wjx.touhou_aifun.chat.context.ContextTokenEstimator;
@@ -38,12 +39,13 @@ public final class ChatGPTResponsesClient extends ReasoningCompatOpenAIClient {
     public ChatGPTResponsesClient(HttpClient http, ChatGPTLLMSite site) { super(http, site); this.http = http; this.subscriptionSite = site; }
 
     @Override public void chat(LLMCallback callback) {
+        if (!com.wjx.touhou_aifun.chat.agent.AgentContext.prepare(callback)) return;
         var maid = callback.getMaid();
         if (stopped(callback)) return;
         String question = ChatGPTSearchSourceMemory.latestQuestion(callback.getMessages());
-        boolean sourcesRequested = callback.getClass() == LLMCallback.class && ChatGPTSearchSourceMemory.requested(question);
+        boolean sourcesRequested = com.wjx.touhou_aifun.chat.agent.AgentExecution.managed(callback) && ChatGPTSearchSourceMemory.requested(question);
         ToolCatalogSnapshot snapshot = ToolContextSelector.snapshot(maid, callback);
-        if (callback.getClass() == LLMCallback.class) {
+        if (com.wjx.touhou_aifun.chat.agent.AgentExecution.managed(callback)) {
             var planned = ContextBudgetPlanner.trim(callback.getMessages(), TouhouAIFunConfig.CONTEXT_INPUT_BUDGET_TOKENS.get(),
                     snapshot.schemaBudget(ChatFlowManager.requestedToolIds(maid.getUUID(), callback))
                             + com.wjx.touhou_aifun.vision.MultimodalTurnContext.inputReserve(callback),
@@ -52,7 +54,7 @@ public final class ChatGPTResponsesClient extends ReasoningCompatOpenAIClient {
             callback.getMessages().clear(); callback.getMessages().addAll(planned);
         }
         ArrayList<String> reminders = new ArrayList<>();
-        if (callback.getClass() == LLMCallback.class) {
+        if (com.wjx.touhou_aifun.chat.agent.AgentExecution.managed(callback)) {
             reminders.add(snapshot.directory());
             reminders.add(EmotionControlPrompts.changeNotice(maid));
             reminders.add(EmotionControlPrompts.turnReminder(maid));
@@ -68,42 +70,49 @@ public final class ChatGPTResponsesClient extends ReasoningCompatOpenAIClient {
             tool.addProperty("strict", false);
             functions.add(tool);
         }
+        boolean fastRequested = subscriptionSite.fastMode();
+        var preparation=AgentTelemetry.root(callback,"model_prepare");
         JsonObject body = ChatGPTResponsesCodec.request(maid.getAiChatManager().getLLMModel(), callback.getMessages(), reminders, functions,
-                subscriptionSite.reasoningSettings(), subscriptionSite.webSearch() && callback.needAddTools);
+                subscriptionSite.reasoningSettings(), subscriptionSite.webSearch() && callback.needAddTools, fastRequested);
         com.wjx.touhou_aifun.vision.MultimodalTurnContext.append(callback,
                 com.wjx.touhou_aifun.vision.UnifiedModelCatalog.VisualProtocol.SUBSCRIPTION, body.getAsJsonArray("input"));
         HttpRequest unauthed = HttpRequest.newBuilder(URI.create(ChatGPTLLMSite.ENDPOINT)).GET().build();
+        preparation.finish("ok",0);
+        var auth=AgentTelemetry.root(callback,"model_auth");
         // Token refresh can perform network I/O; never block the Minecraft server thread.
         CompletableFuture.supplyAsync(() -> {
             try { return ChatGPTSession.accessToken(); }
             catch (Exception e) { throw new java.util.concurrent.CompletionException(e); }
         }).whenComplete((token, failure) -> {
+            auth.finish(stopped(callback)?"cancelled":failure!=null?"error":"ok",0);
             if (stopped(callback)) return;
             if (failure != null) {
                 callback.onFailure(unauthed, new IllegalStateException(ChatGPTSession.safeError(failure)), ErrorCode.REQUEST_SENDING_ERROR);
                 return;
             }
-            HttpRequest request = HttpRequest.newBuilder(URI.create(ChatGPTLLMSite.ENDPOINT)).timeout(MAX_TIMEOUT)
+            HttpRequest request = HttpRequest.newBuilder(URI.create(ChatGPTLLMSite.ENDPOINT)).timeout(com.wjx.touhou_aifun.config.LLMRuntimeBudget.timeout())
                     .header("Content-Type", "application/json").header("Accept", "text/event-stream")
                     .header("Authorization", "Bearer " + token)
                     .POST(HttpRequest.BodyPublishers.ofString(GSON.toJson(body))).build();
+            var timing=AgentTelemetry.model(callback);
             var future = http.sendAsync(request, HttpResponse.BodyHandlers.ofLines());
-            ChatFlowManager.setInFlight(maid.getUUID(), callback, future);
-            future.orTimeout(MAX_TIMEOUT.toSeconds() + 5, TimeUnit.SECONDS)
-                    .whenCompleteAsync((response, error) -> consume(callback, request, response, error, question, sourcesRequested));
+            ChatFlowManager.setModelInFlight(maid.getUUID(), callback, future);
+            long deadline = System.nanoTime() + request.timeout().orElseThrow().toNanos();
+            future.orTimeout(request.timeout().orElseThrow().toSeconds() + 5, TimeUnit.SECONDS)
+                    .whenCompleteAsync((response, error) -> consume(callback, request, response, error, question, sourcesRequested, fastRequested, deadline,timing));
         });
     }
 
     private boolean stopped(LLMCallback callback) {
-        return shouldStopChat(callback.getMaid()) || (callback.getClass() == LLMCallback.class
+        return shouldStopChat(callback.getMaid()) || (com.wjx.touhou_aifun.chat.agent.AgentExecution.managed(callback)
                 && ChatFlowManager.isSuperseded(callback.getMaid().getUUID(), callback));
     }
 
     private void consume(LLMCallback callback, HttpRequest request, HttpResponse<Stream<String>> response, Throwable error,
-                         String question, boolean sourcesRequested) {
+                         String question, boolean sourcesRequested, boolean fastRequested, long deadline,AgentTelemetry.ModelSpan timing) {
+        timing.headers(error,true);
         if (error != null) { if (!stopped(callback)) callback.onFailure(request, error, ErrorCode.REQUEST_SENDING_ERROR); return; }
-        if (stopped(callback)) { response.body().close(); return; }
-        long deadline = System.nanoTime() + MAX_TIMEOUT.toNanos();
+        if (stopped(callback)) { timing.finish("cancelled");response.body().close(); return; }
         var watchdog = TIMEOUTS.scheduleAtFixedRate(() -> {
             if (stopped(callback) || System.nanoTime() > deadline) response.body().close();
         }, 100, 100, TimeUnit.MILLISECONDS);
@@ -124,7 +133,7 @@ public final class ChatGPTResponsesClient extends ReasoningCompatOpenAIClient {
             ChatGPTResponsesCodec.Events events = new ChatGPTResponsesCodec.Events();
             StreamingDisplay display = null;
             // The wire stream is mandatory even when the user disables progressive display.
-            if (callback.getClass() == LLMCallback.class && TouhouAIFunConfig.LLM_STREAMING.get()) {
+            if (com.wjx.touhou_aifun.chat.agent.AgentExecution.managed(callback) && TouhouAIFunConfig.LLM_STREAMING.get()) {
                 var maid = callback.getMaid();
                 boolean single = maid.getAiChatManager().getChatLanguage().equals(maid.getAiChatManager().getTTSLanguage());
                 boolean markers = !(TouhouAIFunConfig.TTS_EMOTION_CONTROL.get() && !TouhouAIFunConfig.TTS_EMOTION_IN_TEXT.get()
@@ -143,10 +152,11 @@ public final class ChatGPTResponsesClient extends ReasoningCompatOpenAIClient {
                     if (events.partial().currentContent().isBlank() && events.partial().currentReasoning().isBlank()
                             && com.wjx.touhou_aifun.vision.MultimodalTurnContext.tryFallback(callback, this, 200, data.toString())) return;
                     events.accept(JsonParser.parseString(data.toString()).getAsJsonObject());
+                    timing.output(events.partial().hasEffectiveOutput() || events.hasTools());
                     data.setLength(0);
                     if (events.isCompleted()) break;
                     if (events.isSearching() && !searchShown && events.partial().currentContent().isBlank()
-                            && callback.getClass() == LLMCallback.class) {
+                            && com.wjx.touhou_aifun.chat.agent.AgentExecution.managed(callback)) {
                         searchShown = true;
                         var progress = net.minecraft.network.chat.Component.translatable("gui.touhou_aifun.chatgpt.searching");
                         if (display != null) display.onActivity(progress);
@@ -166,22 +176,30 @@ public final class ChatGPTResponsesClient extends ReasoningCompatOpenAIClient {
                 }
             }
             if (!stopped(callback)) {
-                var completed = OpenAIResponsesCompatLLMClient.adaptResponse(GSON.toJson(events.completed()));
-                if (callback.getClass() == LLMCallback.class)
+                if (System.nanoTime() >= deadline) throw new IllegalStateException("模型请求超时，请检查 llm.requestTimeoutSeconds。");
+                JsonObject terminal = events.completed();
+                String actualTier = ChatGPTLLMSite.normalizeServiceTier(
+                        com.wjx.touhou_aifun.compat.ai.chatgpt.OpenAIIdentity.string(terminal, "service_tier"));
+                var completed = OpenAIResponsesCompatLLMClient.adaptResponse(GSON.toJson(terminal));
+                if (com.wjx.touhou_aifun.chat.agent.AgentExecution.managed(callback)) callback.runOnServerThread(() -> {
+                    if (!stopped(callback)) subscriptionSite.recordServiceTier(actualTier);
+                });
+                if (com.wjx.touhou_aifun.chat.agent.AgentExecution.managed(callback))
                     com.github.tartaricacid.touhoulittlemaid.TouhouLittleMaid.LOGGER.info(
-                            "ChatGPT subscription reply: native_web_search={}, sources={}, maid_tool_calls={}",
+                            "ChatGPT subscription reply: native_web_search={}, sources={}, maid_tool_calls={}, fast_requested={}, actual_service_tier={}",
                             events.hasSearch(), events.sources().size(), completed.getFirstChoice() != null
-                                    && completed.getFirstChoice().hasToolCall());
+                                    && completed.getFirstChoice().hasToolCall(), fastRequested, actualTier);
                 if (completed.getFirstChoice() != null && completed.getFirstChoice().hasToolCall() && tts != null) tts.abort();
-                if (callback.getClass() == LLMCallback.class && events.hasSearch()) {
+                if (com.wjx.touhou_aifun.chat.agent.AgentExecution.managed(callback) && events.hasSearch()) {
                     var sources = events.sources();
                     long turn = ChatFlowManager.currentTurnId(callback.getMaid().getUUID(), callback);
                     callback.runOnServerThread(() -> {
                         if (!stopped(callback)) SEARCH_SOURCES.remember(callback.getMaid(), turn, question, sources);
                     });
                 }
+                timing.finish("ok");
                 processChatResponse(callback, completed, request, tts);
-                if (callback.getClass() == LLMCallback.class && completed.getFirstChoice() != null
+                if (com.wjx.touhou_aifun.chat.agent.AgentExecution.managed(callback) && completed.getFirstChoice() != null
                         && !completed.getFirstChoice().hasToolCall() && sourcesRequested) {
                     callback.runOnServerThread(() -> {
                         var sources = SEARCH_SOURCES.sources(callback.getMaid());
@@ -195,9 +213,10 @@ public final class ChatGPTResponsesClient extends ReasoningCompatOpenAIClient {
         } catch (Exception e) {
             if (!stopped(callback)) callback.onFailure(request, new IllegalStateException(ChatGPTSession.safeError(e)), ErrorCode.REQUEST_RECEIVED_ERROR);
         } finally {
+            timing.finish(stopped(callback)?"cancelled":System.nanoTime()>=deadline?"timeout":accepted?"ok":"error");
             watchdog.cancel(false);
             if (!accepted && tts != null) tts.abort();
-            if (stopped(callback) && callback.getClass() == LLMCallback.class)
+            if (stopped(callback) && com.wjx.touhou_aifun.chat.agent.AgentExecution.managed(callback))
                 ChatFlowManager.finishRequest(callback.getMaid().getUUID(), callback);
         }
     }

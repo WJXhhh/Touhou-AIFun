@@ -28,7 +28,7 @@ public final class ReasoningOpenAIChatCompletionResponse {
     private String serviceTier;
 
     @SerializedName("usage")
-    private Usage usage;
+    private com.google.gson.JsonObject usage;
 
     @Nullable
     public ReasoningOpenAIMessage getFirstChoice() {
@@ -39,6 +39,16 @@ public final class ReasoningOpenAIChatCompletionResponse {
     }
 
     public Usage getUsage() {
-        return usage;
+        return usage == null ? null : new com.google.gson.Gson().fromJson(usage, Usage.class);
+    }
+
+    @Nullable
+    public TokenUsage getTokenUsage() {
+        return usage == null ? null : TokenUsage.read(usage);
+    }
+
+    @Nullable
+    public String getFinishReason() {
+        return choices != null && choices.length > 0 ? choices[0].getFinishReason() : null;
     }
 }

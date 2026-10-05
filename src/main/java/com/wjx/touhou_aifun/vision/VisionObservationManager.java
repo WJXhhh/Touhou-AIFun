@@ -181,6 +181,8 @@ public final class VisionObservationManager {
         notifyProgress(progress, ObservationStage.ANALYZING);
         LOGGER.debug("Independent vision inference for observation {} using {}", snapshot.id(), site.id());
         CompletableFuture<String> result;
+        long inferenceStarted=System.nanoTime();
+        var timing=com.wjx.touhou_aifun.chat.agent.AgentTelemetry.start(callback,"vision_inference");
         try {
             result = VisionClient.forSite(site).observe(snapshot.request(site, callback.getMaid(), focus))
                     .thenApply(observation -> {
@@ -191,6 +193,8 @@ public final class VisionObservationManager {
         } catch (RuntimeException error) {
             result = CompletableFuture.completedFuture(snapshotFailure(snapshot, "visual_request_failed"));
         }
+        result.whenComplete((value,error)->com.wjx.touhou_aifun.chat.agent.AgentTelemetry.stage("vision_inference",inferenceStarted,value==null?0:value.length()));
+        result.whenComplete((value,error)->timing.finish(error==null?"received":com.wjx.touhou_aifun.chat.agent.AgentTelemetry.failureStatus(error),value==null?0:value.length()));
         return VisionRequestLimiter.releaseWhenDone(result);
     }
 
@@ -373,6 +377,11 @@ public final class VisionObservationManager {
         double[] position = position(match.get("relative_position"));
         if (kind.isBlank() || registryId.isBlank() || position == null) return false;
         if ("block".equalsIgnoreCase(kind)) {
+            for (var sign : scan.signTexts()) {
+                if (registryId.equals(sign.registryId()) && near(position, sign.dx(), sign.dy(), sign.dz(), 0.01)) {
+                    return true;
+                }
+            }
             for (ImportantBlockHit block : scan.importantBlocks()) {
                 if (registryId.equals(block.registryId()) && near(position, block.dx(), block.dy(), block.dz(), 0.01)) {
                     return true;

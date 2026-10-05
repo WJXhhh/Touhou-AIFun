@@ -43,6 +43,7 @@ public abstract class MaidAIChatManagerMixin {
                                          LLMClient chatClient, CallbackInfo ci) {
         MaidAIChatManager manager = (MaidAIChatManager) (Object) this;
         this.touhouAIFun$currentSpeaker = ChatSpeakerContext.take(manager.getMaid(), message);
+        com.wjx.touhou_aifun.chat.agent.AgentRuntime.speaker(manager.getMaid(), this.touhouAIFun$currentSpeaker, message);
         AIFunMemoryManager.beginTurn(manager, message);
         List<LLMMessage> original = List.copyOf(messages);
         messages.clear();

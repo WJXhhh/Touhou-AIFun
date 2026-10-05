@@ -66,7 +66,7 @@ public final class AIFunMemoryManager {
 
     public static void completeCallback(Object callback, String responseText) {
         if (!(callback instanceof com.github.tartaricacid.touhoulittlemaid.ai.manager.entity.LLMCallback llm)) return;
-        if (llm.getClass() != com.github.tartaricacid.touhoulittlemaid.ai.manager.entity.LLMCallback.class) return;
+        if (!com.wjx.touhou_aifun.chat.agent.AgentExecution.foreground(llm)) return;
         if (ChatFlowManager.isSuperseded(llm.getMaid().getUUID(), callback)) return;
         long turnId = ChatFlowManager.currentTurnId(llm.getMaid().getUUID(), callback);
         if (turnId <= 0) return;
@@ -90,7 +90,7 @@ public final class AIFunMemoryManager {
 
     public static void interruptCallback(Object callback) {
         if (!(callback instanceof com.github.tartaricacid.touhoulittlemaid.ai.manager.entity.LLMCallback llm)) return;
-        if (llm.getClass() != com.github.tartaricacid.touhoulittlemaid.ai.manager.entity.LLMCallback.class) return;
+        if (!com.wjx.touhou_aifun.chat.agent.AgentExecution.foreground(llm)) return;
         long turnId = ChatFlowManager.currentTurnId(llm.getMaid().getUUID(), callback);
         if (turnId <= 0) return;
         MaidMemoryState memory = state(llm.getChatManager());
@@ -107,7 +107,7 @@ public final class AIFunMemoryManager {
 
     public static void addToolOutcome(com.github.tartaricacid.touhoulittlemaid.ai.manager.entity.LLMCallback callback,
                                       String result) {
-        if (callback.getClass() != com.github.tartaricacid.touhoulittlemaid.ai.manager.entity.LLMCallback.class) return;
+        if (!com.wjx.touhou_aifun.chat.agent.AgentExecution.foreground(callback)) return;
         if (ChatFlowManager.isSuperseded(callback.getMaid().getUUID(), callback)) return;
         long turnId = ChatFlowManager.currentTurnId(callback.getMaid().getUUID(), callback);
         MaidMemoryState memory = state(callback.getChatManager());

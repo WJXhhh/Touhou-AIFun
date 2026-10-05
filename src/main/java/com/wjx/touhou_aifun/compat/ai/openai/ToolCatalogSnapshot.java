@@ -42,17 +42,22 @@ public final class ToolCatalogSnapshot {
         this.directory = directory;
     }
 
-    public static ToolCatalogSnapshot capture(EntityMaid maid, ChatCompletion triggerContext) {
+    public static ToolCatalogSnapshot capture(EntityMaid maid, ChatCompletion triggerContext, Object callback) {
         Map<String, Entry> entries = new LinkedHashMap<>();
         List<String> optional = new ArrayList<>();
         StringBuilder directory = new StringBuilder("## Optional tool directory\n"
-                + "Core action tools are already available. For an extension tool, call load_tool_schema first.\n");
+                + "Tools already present in the request are loaded: invoke them directly. Load only missing optional tools; group:gui loads all GUI tools.\n");
 
-        ToolRegister.getAllTools().forEach((id, tool) -> {
+        new java.util.TreeMap<>(ToolRegister.getAllTools()).forEach((id, tool) -> {
             if (tool == null) return;
+            if (id.equals("update_task_plan") && !(callback instanceof com.wjx.touhou_aifun.chat.agent.TaskCallback)) return;
+            if (callback instanceof com.wjx.touhou_aifun.chat.agent.TaskCallback && id.equals("task_control")) return;
+            if (com.wjx.touhou_aifun.chat.agent.AgentRuntime.enabled(maid)
+                    && com.wjx.touhou_aifun.chat.agent.AgentExecution.foreground(callback)
+                    && !com.wjx.touhou_aifun.chat.agent.AgentExecution.foregroundTool(id)) return;
             try {
                 if (!tool.trigger(maid, triggerContext)) return;
-                String summary = compact(tool.summary(maid), 180);
+                String summary = tool.summary(maid);
                 ObjectParameter root = ObjectParameter.create();
                 Parameter parameter = tool.parameters(root, maid);
                 Tool openAI = FunctionTool.create().setName(id).setDescription(summary)
@@ -66,7 +71,7 @@ public final class ToolCatalogSnapshot {
                 entries.put(id, new Entry(id, tool, summary, openAI, anthropic, schemaTokens));
                 if (!ToolContextSelector.isCore(id)) {
                     optional.add(id);
-                    directory.append("- ").append(id).append(": ").append(summary).append('\n');
+                    directory.append("- ").append(id).append(": ").append(compact(summary, 180)).append('\n');
                 }
             } catch (RuntimeException e) {
                 TouhouLittleMaid.LOGGER.warn("Skipping broken tool schema '{}' for this AIFun turn: {}",

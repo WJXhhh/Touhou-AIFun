@@ -27,6 +27,7 @@ import com.wjx.touhou_aifun.compat.ai.openai.response.StreamAccumulator;
 import com.wjx.touhou_aifun.compat.ai.openai.response.StreamChunk;
 
 import com.wjx.touhou_aifun.chat.ChatFlowManager;
+import com.wjx.touhou_aifun.chat.agent.AgentTelemetry;
 import com.wjx.touhou_aifun.chat.context.AIFunMemoryManager;
 import com.wjx.touhou_aifun.chat.context.ContextBudgetPlanner;
 import com.wjx.touhou_aifun.compat.ai.EmotionControlPrompts;
@@ -50,8 +51,9 @@ public class ReasoningCompatOpenAIClient extends LLMOpenAIClient {
 
     @Override
     public void chat(LLMCallback callback) {
+        if (!com.wjx.touhou_aifun.chat.agent.AgentContext.prepare(callback)) return;
         EntityMaid maid = callback.getMaid();
-        if (callback.getClass() == LLMCallback.class
+        if (com.wjx.touhou_aifun.chat.agent.AgentExecution.managed(callback)
                 && ChatFlowManager.isSuperseded(maid.getUUID(), callback)) {
             return;
         }
@@ -59,10 +61,10 @@ public class ReasoningCompatOpenAIClient extends LLMOpenAIClient {
         String apiKey = this.site.secretKey();
         String model = maid.getAiChatManager().getLLMModel();
         boolean isReasoningModel = this.site.isReasoningModel(model);
-        ToolCatalogSnapshot toolSnapshot = callback.getClass() == LLMCallback.class
+        ToolCatalogSnapshot toolSnapshot = com.wjx.touhou_aifun.chat.agent.AgentExecution.managed(callback)
                 ? ToolContextSelector.snapshot(maid, callback) : null;
 
-        if (callback.getClass() == LLMCallback.class) {
+        if (com.wjx.touhou_aifun.chat.agent.AgentExecution.managed(callback)) {
             var planned = ContextBudgetPlanner.trim(callback.getMessages(),
                     TouhouAIFunConfig.CONTEXT_INPUT_BUDGET_TOKENS.get(),
                     toolSnapshot.schemaBudget(ChatFlowManager.requestedToolIds(maid.getUUID(), callback))
@@ -73,8 +75,10 @@ public class ReasoningCompatOpenAIClient extends LLMOpenAIClient {
             callback.getMessages().addAll(planned);
         }
 
+        var preparation=AgentTelemetry.root(callback,"model_prepare");
         ReasoningChatCompletion chatCompletion = ReasoningChatCompletion.create()
                 .model(model)
+                .outputBudget(com.wjx.touhou_aifun.config.LLMRuntimeBudget.outputTokens())
                 .setResponseFormat(ResponseFormat.text());
         chatCompletion = this.extraArgs(chatCompletion, model);
 
@@ -103,7 +107,7 @@ public class ReasoningCompatOpenAIClient extends LLMOpenAIClient {
         // Keep the strict format contract adjacent to the model's next response. Restrict this to
         // ordinary maid chat callbacks so setting generation, history summaries, and grounded
         // knowledge extraction retain their own output formats.
-        if (callback.getClass() == LLMCallback.class) {
+        if (com.wjx.touhou_aifun.chat.agent.AgentExecution.managed(callback)) {
             chatCompletion.systemChat(toolSnapshot.directory());
             // If the emotion setting changed since this maid's last reply, announce the switch once so
             // the model stops imitating the old-format replies still present in the conversation history.
@@ -150,15 +154,16 @@ public class ReasoningCompatOpenAIClient extends LLMOpenAIClient {
                 .header(HttpHeaders.CONTENT_TYPE, MediaType.JSON_UTF_8.toString())
                 .header(HttpHeaders.AUTHORIZATION, "Bearer " + apiKey)
                 .POST(HttpRequest.BodyPublishers.ofString(GSON.toJson(requestBody)))
-                .timeout(MAX_TIMEOUT)
+                .timeout(com.wjx.touhou_aifun.config.LLMRuntimeBudget.timeout())
                 .uri(url);
 
-        if (TouhouLittleMaid.DEBUG) {
+        if (TouhouLittleMaid.DEBUG && com.wjx.touhou_aifun.chat.agent.AgentExecution.context(callback).task()==null) {
             TouhouLittleMaid.LOGGER.info(GSON.toJson(com.wjx.touhou_aifun.vision.MultimodalContent.redacted(requestBody)));
         }
 
         this.site.headers().forEach(builder::header);
         HttpRequest httpRequest = builder.build();
+        preparation.finish("ok",0);
 
         if (streaming) {
             this.chatStreaming(callback, httpRequest);
@@ -167,11 +172,17 @@ public class ReasoningCompatOpenAIClient extends LLMOpenAIClient {
 
         // Keep the raw sendAsync future so a newer request can cancel it (cancelling this future
         // aborts the underlying HTTP exchange, stopping the model from generating further).
+        var timing=AgentTelemetry.model(callback);
         CompletableFuture<HttpResponse<String>> future =
                 this.httpClient.sendAsync(httpRequest, HttpResponse.BodyHandlers.ofString());
-        ChatFlowManager.setInFlight(maid.getUUID(), callback, future);
-        future.orTimeout(MAX_TIMEOUT.toSeconds() + 5, TimeUnit.SECONDS)
-                .whenComplete((response, throwable) -> complete(callback, response, throwable, httpRequest));
+        ChatFlowManager.setModelInFlight(maid.getUUID(), callback, future);
+        future.orTimeout(httpRequest.timeout().orElseThrow().toSeconds() + 5, TimeUnit.SECONDS)
+                .whenComplete((response, throwable) -> {
+                    timing.headers(throwable,false);
+                    try { complete(callback, response, throwable, httpRequest); }
+                    finally { timing.finish(ChatFlowManager.isSuperseded(maid.getUUID(),callback)?"cancelled"
+                            : throwable!=null || response==null || !isSuccessful(response)?"error":"body_received"); }
+                });
     }
 
     /**
@@ -192,7 +203,7 @@ public class ReasoningCompatOpenAIClient extends LLMOpenAIClient {
         // would type the result into the chat bubble instead of saving it as the setting.
         StreamingTtsReply ttsReply = null;
         StreamingDisplay display = null;
-        if (callback.getClass() == LLMCallback.class) {
+        if (com.wjx.touhou_aifun.chat.agent.AgentExecution.managed(callback)) {
             boolean singleSegment = this.singleSegmentMode(maid);
             boolean showMarkerInChat = !this.stripChatMarker(maid);
             // When emotion control is on for an emotion-aware provider, carry the leading (emotion)
@@ -205,31 +216,38 @@ public class ReasoningCompatOpenAIClient extends LLMOpenAIClient {
         // Effectively-final copies for the completion lambda.
         StreamingTtsReply ttsReplyRef = ttsReply;
         StreamingDisplay displayRef = display;
+        long deadline = System.nanoTime() + httpRequest.timeout().orElseThrow().toNanos();
 
         // The raw sendAsync future lets a newer request abort this one before the body is consumed;
         // once streaming starts, the consume loop additionally bails out as soon as it is superseded.
+        var timing=AgentTelemetry.model(callback);
         CompletableFuture<HttpResponse<Stream<String>>> future =
                 this.httpClient.sendAsync(httpRequest, HttpResponse.BodyHandlers.ofLines());
-        ChatFlowManager.setInFlight(maid.getUUID(), callback, future);
-        future.orTimeout(MAX_TIMEOUT.toSeconds() + 5, TimeUnit.SECONDS)
+        ChatFlowManager.setModelInFlight(maid.getUUID(), callback, future);
+        future.orTimeout(httpRequest.timeout().orElseThrow().toSeconds() + 5, TimeUnit.SECONDS)
                 .whenCompleteAsync((response, throwable) ->
-                        this.consumeStream(callback, response, throwable, httpRequest, accumulator, ttsReplyRef, displayRef));
+                        this.consumeStream(callback, response, throwable, httpRequest, accumulator, ttsReplyRef, displayRef, deadline, timing));
     }
 
     private void consumeStream(LLMCallback callback, HttpResponse<Stream<String>> response, Throwable throwable,
                                HttpRequest request, StreamAccumulator accumulator, @Nullable StreamingTtsReply ttsReply,
-                               @Nullable StreamingDisplay display) {
+                               @Nullable StreamingDisplay display, long deadline, AgentTelemetry.ModelSpan timing) {
+        timing.headers(throwable,true);
         EntityMaid maid = callback.getMaid();
         if (throwable != null) {
             callback.onFailure(request, throwable, ErrorCode.REQUEST_SENDING_ERROR);
             return;
         }
         if (this.shouldStopChat(maid)) {
+            timing.finish("cancelled");
             response.body().close();
-            if (callback.getClass() == LLMCallback.class) ChatFlowManager.finishRequest(maid.getUUID(), callback);
+            if (com.wjx.touhou_aifun.chat.agent.AgentExecution.managed(callback)) ChatFlowManager.finishRequest(maid.getUUID(), callback);
             return;
         }
-        try {
+        StreamReadGuard guard = new StreamReadGuard(response.body(), deadline,
+                () -> this.shouldStopChat(maid) || ChatFlowManager.isSuperseded(maid.getUUID(), callback));
+        boolean accepted = false;
+        try (guard) {
             if (!this.isSuccessful(response)) {
                 String body;
                 try (Stream<String> lines = response.body()) {
@@ -242,6 +260,7 @@ public class ReasoningCompatOpenAIClient extends LLMOpenAIClient {
             }
 
             UUID maidId = maid.getUUID();
+            boolean done = false;
             try (Stream<String> lines = response.body()) {
                 for (String line : (Iterable<String>) lines::iterator) {
                     if (this.shouldStopChat(maid) || ChatFlowManager.isSuperseded(maidId, callback)) {
@@ -251,6 +270,8 @@ public class ReasoningCompatOpenAIClient extends LLMOpenAIClient {
                             && line.startsWith("data:") && com.wjx.touhou_aifun.vision.MultimodalTurnContext.tryFallback(
                                     callback, this, 200, line.substring(5).trim())) return;
                     this.acceptStreamLine(line, accumulator, ttsReply, display);
+                    timing.output(accumulator.hasEffectiveOutput());
+                    if ("data: [DONE]".equals(line.strip())) { done = true; break; }
                 }
             }
 
@@ -258,14 +279,25 @@ public class ReasoningCompatOpenAIClient extends LLMOpenAIClient {
             // this reply just like a cancelled non-streaming request, so no tools run and nothing is
             // spoken on a partial answer.
             if (this.shouldStopChat(maid) || ChatFlowManager.isSuperseded(maidId, callback)) {
-                if (callback.getClass() == LLMCallback.class) ChatFlowManager.finishRequest(maidId, callback);
+                if (com.wjx.touhou_aifun.chat.agent.AgentExecution.managed(callback)) ChatFlowManager.finishRequest(maidId, callback);
                 return;
             }
 
+            guard.check();
+            if (!done && accumulator.buildResponse().getFinishReason() == null)
+                throw new IllegalStateException("模型响应流提前结束，未收到完成原因；未完成的工具调用没有执行。");
+            timing.finish("ok");
             this.processChatResponse(callback, accumulator.buildResponse(), request, ttsReply);
+            accepted = true;
         } catch (RuntimeException e) {
+            if (this.shouldStopChat(maid) || ChatFlowManager.isSuperseded(maid.getUUID(), callback)) return;
             TouhouLittleMaid.LOGGER.error("Failed to process streaming LLM response from {}", request.uri(), e);
-            callback.onFailure(request, e, ErrorCode.JSON_DECODE_ERROR);
+            callback.onFailure(request, guard.expired() ? new IllegalStateException("模型请求超时，请检查 llm.requestTimeoutSeconds。") : e,
+                    guard.expired() ? ErrorCode.REQUEST_SENDING_ERROR : ErrorCode.JSON_DECODE_ERROR);
+        } finally {
+            timing.finish(this.shouldStopChat(maid) || ChatFlowManager.isSuperseded(maid.getUUID(),callback)?"cancelled"
+                    : guard.expired()?"timeout":accepted?"ok":"error");
+            if (!accepted && ttsReply != null) ttsReply.abort();
         }
     }
 
@@ -339,7 +371,7 @@ public class ReasoningCompatOpenAIClient extends LLMOpenAIClient {
     protected void handle(LLMCallback callback, HttpResponse<String> response, Throwable throwable, HttpRequest request) {
         EntityMaid maid = callback.getMaid();
         if (this.shouldStopChat(maid)) {
-            if (callback.getClass() == LLMCallback.class) ChatFlowManager.finishRequest(maid.getUUID(), callback);
+            if (com.wjx.touhou_aifun.chat.agent.AgentExecution.managed(callback)) ChatFlowManager.finishRequest(maid.getUUID(), callback);
             return;
         }
 
@@ -359,13 +391,15 @@ public class ReasoningCompatOpenAIClient extends LLMOpenAIClient {
      */
     protected void processChatResponse(LLMCallback callback, ReasoningOpenAIChatCompletionResponse chat,
                                        HttpRequest request, @Nullable StreamingTtsReply ttsReply) {
-        if (TouhouLittleMaid.DEBUG) {
+        if (TouhouLittleMaid.DEBUG && com.wjx.touhou_aifun.chat.agent.AgentExecution.context(callback).task()==null) {
             TouhouLittleMaid.LOGGER.info(GSON.toJson(chat));
         }
 
         Usage usage = chat.getUsage();
         if (usage != null) {
-            if (usage.getPromptTokens() > 0 && callback.getClass() == LLMCallback.class
+            AgentTelemetry.usage(callback, this instanceof ChatGPTResponsesClient ? "chatgpt_responses"
+                    : this instanceof OpenAIResponsesCompatLLMClient ? "responses" : "chat_completions", chat.getTokenUsage());
+            if (usage.getPromptTokens() > 0 && com.wjx.touhou_aifun.chat.agent.AgentExecution.managed(callback)
                     && !com.wjx.touhou_aifun.vision.MultimodalTurnContext.hasImages(callback)) {
                 AIFunMemoryManager.recordPromptCalibration(callback.getChatManager(), usage.getPromptTokens(),
                         callback.getMessages(), ToolContextSelector.schemaBudget(callback.getMaid(), callback));
@@ -390,6 +424,13 @@ public class ReasoningCompatOpenAIClient extends LLMOpenAIClient {
         }
 
         ReasoningOpenAIMessage firstChoice = chat.getFirstChoice();
+        String failure = ResponseCompletionGuard.failure(chat.getFinishReason(), firstChoice != null
+                && (firstChoice.hasToolCall() || StringUtils.isNotBlank(firstChoice.getVisibleContent())));
+        if (failure != null) {
+            if (ttsReply != null) ttsReply.abort();
+            callback.onFailure(request, new IllegalStateException(failure), ErrorCode.REQUEST_RECEIVED_ERROR);
+            return;
+        }
         if (firstChoice == null) {
             String message = "No Choice Found";
             callback.onFailure(request, new Throwable(message), ErrorCode.CHAT_CHOICE_IS_EMPTY);
@@ -404,12 +445,14 @@ public class ReasoningCompatOpenAIClient extends LLMOpenAIClient {
 
     protected void onTextCall(LLMCallback callback, ReasoningOpenAIMessage firstChoice, @Nullable StreamingTtsReply ttsReply) {
         String content = firstChoice.getVisibleContent();
-        if (callback.getClass() != LLMCallback.class) {
+        if (!com.wjx.touhou_aifun.chat.agent.AgentExecution.foreground(callback)) {
             callback.onSuccess(new ResponseChat(content, content));
             return;
         }
         if (StringUtils.isBlank(content)) {
-            callback.onSuccess(new ReasoningOpenAIResponseChat(StringUtils.EMPTY, firstChoice.getReasoningContent()));
+            if (ttsReply != null) ttsReply.abort();
+            callback.onFailure(null, new IllegalStateException(ResponseCompletionGuard.failure("", false)),
+                    ErrorCode.REQUEST_RECEIVED_ERROR);
             return;
         }
         EntityMaid maid = callback.getMaid();

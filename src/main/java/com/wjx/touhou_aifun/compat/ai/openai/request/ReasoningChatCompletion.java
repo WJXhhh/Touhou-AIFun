@@ -15,6 +15,23 @@ public final class ReasoningChatCompletion {
     @SerializedName("model")
     private String model = "";
 
+    @SerializedName("max_tokens")
+    private Integer maxTokens;
+
+    @SerializedName("max_completion_tokens")
+    private Integer maxCompletionTokens;
+
+    public ReasoningChatCompletion outputBudget(int tokens) {
+        // OpenAI's newer reasoning models require max_completion_tokens. Other compatible
+        // providers (including DeepSeek) use max_tokens even when reasoning is enabled.
+        String normalized = model.toLowerCase(java.util.Locale.ROOT);
+        boolean completionTokens = normalized.matches("gpt-(?:[5-9]|[1-9][0-9]+).*")
+                || normalized.matches("o[1-9](?:-.*)?");
+        maxCompletionTokens = completionTokens ? tokens : null;
+        maxTokens = completionTokens ? null : tokens;
+        return this;
+    }
+
     @SerializedName("messages")
     private List<ReasoningChatMessage> messages = Lists.newArrayList();
 

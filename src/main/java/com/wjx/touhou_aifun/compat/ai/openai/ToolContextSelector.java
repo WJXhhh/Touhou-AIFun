@@ -30,27 +30,34 @@ public final class ToolContextSelector {
     private static final Gson GSON = new Gson();
     public static final String LOAD_SCHEMA_TOOL = "load_tool_schema";
     private static final List<String> CORE_TOOLS = List.of(
-            "use_skill", "query_minecraft_wiki", "query_game_context",
+            "task_control", "read_task_result", "update_task_plan", "use_skill", "query_minecraft_wiki", "query_game_context",
             "switch_follow_state", "switch_work_task", "switch_schedule", "switch_sit",
             EatFoodBlockTool.TOOL_ID,
             LOAD_SCHEMA_TOOL, WebSearchTool.TOOL_ID, WebFetchTool.TOOL_ID, CurrentDateTimeTool.TOOL_ID);
     private static final Set<String> CORE_TOOL_SET = Set.copyOf(CORE_TOOLS);
     private static final Map<Object, ToolCatalogSnapshot> SNAPSHOTS = new ConcurrentHashMap<>();
 
+    private record DefinitionVersion(Map<String,ITool<?>> tools, Object skills, String dependencies) { }
+    private static final Map<Object, DefinitionVersion> VERSIONS = new ConcurrentHashMap<>();
+
     private ToolContextSelector() {
     }
 
     public static ToolCatalogSnapshot snapshot(EntityMaid maid, Object callback) {
+        DefinitionVersion stamp = new DefinitionVersion(Map.copyOf(ToolRegister.getAllTools()),
+                Map.copyOf(com.github.tartaricacid.touhoulittlemaid.ai.agent.skill.SkillLoader.getAllSkills()), ToolSchemaDependencies.version(maid));
+        DefinitionVersion previous = VERSIONS.put(callback, stamp);
+        if (previous != null && !previous.equals(stamp)) SNAPSHOTS.remove(callback);
         return SNAPSHOTS.computeIfAbsent(callback,
-                ignored -> ToolCatalogSnapshot.capture(maid, triggerContext(maid, callback)));
+                ignored -> ToolCatalogSnapshot.capture(maid, triggerContext(maid, callback), callback));
     }
 
     public static void clearSnapshot(Object callback) {
-        if (callback != null) SNAPSHOTS.remove(callback);
+        if (callback != null) { SNAPSHOTS.remove(callback); VERSIONS.remove(callback); }
     }
 
     public static void clearAllSnapshots() {
-        SNAPSHOTS.clear();
+        SNAPSHOTS.clear(); VERSIONS.clear();
     }
 
     public static List<String> coreToolIds() {
@@ -70,7 +77,11 @@ public final class ToolContextSelector {
     }
 
     public static String compactDirectory(EntityMaid maid, Object callback) {
-        return snapshot(maid, callback).directory();
+        return loadedNotice(maid, callback) + "\n" + snapshot(maid, callback).directory();
+    }
+
+    public static String loadedNotice(EntityMaid maid, Object callback) {
+        return "Loaded optional tools: " + new java.util.TreeSet<>(ChatFlowManager.requestedToolIds(maid.getUUID(), callback));
     }
 
     public static boolean optionalAvailable(EntityMaid maid, Object callback, String id) {
@@ -114,7 +125,7 @@ public final class ToolContextSelector {
     }
 
     /** Build the non-null request context required by the base ITool.trigger contract. */
-    private static ChatCompletion triggerContext(EntityMaid maid, Object callback) {
+    public static ChatCompletion triggerContext(EntityMaid maid, Object callback) {
         ChatCompletion context = ChatCompletion.create().model(maid.getAiChatManager().getLLMModel());
         if (!(callback instanceof LLMCallback llm)) return context;
         for (LLMMessage message : llm.getMessages()) {

@@ -15,6 +15,8 @@ import java.util.*;
 
 public final class MaidGuiSession {
     public final UUID id = UUID.randomUUID();
+    public final GuiSnapshotProjection projection = new GuiSnapshotProjection();
+    public final GuiTransferLedger transferLedger = new GuiTransferLedger();
     public final EntityMaid maid;
     public final Object callback;
     public final UUID owner;
@@ -79,6 +81,7 @@ public final class MaidGuiSession {
     }
     public JsonObject snapshot(String status, boolean remember) {
         JsonObject result = new JsonObject();
+        result.addProperty("dimension", maid.level().dimension().location().toString());
         result.addProperty("status", status); result.addProperty("session_id", id.toString());
         result.addProperty("title", actor.title().getString());
         String menuName;
@@ -110,6 +113,14 @@ public final class MaidGuiSession {
             JsonObject value = stack(contents); value.addProperty("slot", i);
             value.addProperty("x", slot.x); value.addProperty("y", slot.y);
             value.addProperty("maid_inventory", slot.container == actor.getInventory());
+            if (slot.container == actor.getInventory()) {
+                int inventorySlot = slot.getContainerSlot();
+                value.addProperty("inventory_slot", inventorySlot);
+                value.addProperty("maid_storage", inventorySlot == 0 ? "main_hand" : inventorySlot == 40 ? "offhand"
+                        : inventorySlot > 0 && inventorySlot < 36 && MaidGuiInventoryBinding.enabled(actor.getInventory(), inventorySlot) ? "backpack" : "unavailable");
+                if (inventorySlot > 0 && inventorySlot < 36 && MaidGuiInventoryBinding.enabled(actor.getInventory(), inventorySlot))
+                    value.addProperty("backpack_slot", inventorySlot - 1);
+            }
             value.addProperty("enabled", !(slot.container instanceof Inventory inventory)
                     || MaidGuiInventoryBinding.enabled(inventory, slot.getContainerSlot()));
             value.addProperty("may_take", slot.mayPickup(actor));

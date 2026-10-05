@@ -26,13 +26,17 @@
 
 | 工具 | 参数与结果 |
 | --- | --- |
-| `open_gui` | `target` 方块名称/注册 ID，或 `x/y/z`，或 `entity_uuid`，或 `item_slot`；`wait_policy`；返回 `session_id` 和首次槽位观察。 |
+| `open_gui` | `target` 方块名称/注册 ID，或 `x/y/z`，或 `entity_uuid`，或 `item_slot`；`coordinate_space` 默认 `world`，可显式采用 `maid_relative`；`wait_policy`；返回 `session_id` 和首次槽位观察。 |
 | `inspect_gui` | `session_id`；可选 `visual=true`；返回槽位、背包引用、光标、控件和加工状态。图像观察另有 `frame_id`、`layout` 和逻辑 GUI 尺寸。 |
 | `gui_action` | `transfer`、`click_slot`、`quick_move`、`button`、`rename`、`trade`、`backpack_to_cursor`、`cursor_to_backpack`，以及视觉 `click/widget/type/key/scroll`。 |
 | `wait_gui` | `item`、本次目标总 `count`，可选 `output_slot`、`max_wait_seconds`。目标包含已经取回的数量；修复后重复等待不重置预算。`NO_WAIT` 只检查启动，不收集产物。 |
 | `close_gui` | 正常关闭并归还光标及临时输入。返回 `dropped_count` 表示背包满时在女仆位置掉落的数量。 |
 
 标准菜单的背包窗口索引 0 对应主手，1..35 对应可用背包 0..34，40 对应副手。未解锁槽位禁用，不默认使用盔甲或饰品。`backpack_slots` 和独立背包动作可以访问其余已解锁存储。打开背包里的终端时暂时换到主手，关闭后还原两处物品及 NBT。
+
+`open_gui` 的 `x/y/z` 默认是世界方块坐标，不能直接填入环境扫描的 `relative_position`。`coordinate_space=maid_relative` 表示相对于工具执行时女仆所在方块的整数偏移；女仆已经移动时应重新观察。三个坐标必须同时提供，缺失或小数坐标会被拒绝。只需打开最近箱子时可传 `target=minecraft:chest` 并省略坐标。
+
+同时提供 `target` 和坐标时，服务端先核对实际方块，错误目标返回 `target_block_mismatch`，不右键其他方块。打开失败会提供世界坐标 `target_position`、`maid_position`、`actual_block` 和手持物信息；方块交互后仍未建立菜单时，`no_server_menu` 还附带 `interaction_result`、`menu_provider_present`。原版箱子上方被挡住等正常开箱限制继续生效，不绕过限制直接打开菜单。
 
 菜单槽位 ID 与背包索引是不同的编号，必须使用观察结果。转移前复查源、目的槽位及光标，其他玩家改变物品后返回 `stale_slots_reinspect`。普通加工进度变化不会让整个槽位观察失效。工作台和交易等产物按完整配方批次取回；要求拆分不可插回的产物会返回 `indivisible_output_stack`，防止无声多取或遗失余量。熔炉产物支持精确数量，并保留原版取物、经验和 Forge 回调。
 
@@ -119,3 +123,5 @@ Copy-Item 'build/gui-qa-server/world/region' $destination -Recurse -Force
 默认 Forge 47.2.0 的 `build`、`reobfJar` 完成，发布产物为 `build/libs/Touhou-AIFun-0.3.jar`。检查确认 GUI Mixin 的 SRG 映射进入 `touhou_aifun.refmap.json`，配置显式引用该 refmap，熔炉配方类型访问转换包含在 jar 中。开发测试模组和测试机器未进入发布产物。
 
 验证日志为 `build/gui-qa-release-final.log` 与 `build/gui-qa-47420-final.log`。47.4.20 使用隔离环境；未提供实际整合包，因此不将这些结果视为具体第三方模组组合的兼容认证。
+
+箱子定位修复追加验证：默认 Forge 47.2.0 的全仓 232 项单元测试、23 项 GameTest 全部通过，`build` 和 `reobfJar` 完成，日志为 `build/gui-chest-target-fix.log`。新增验收覆盖相对坐标开箱、错误目标拦截和被挡住的箱子诊断。此追加验证未包含 Sol/Luna 的真实 API 对比。
