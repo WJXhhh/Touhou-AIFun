@@ -9,7 +9,9 @@ public final class AgentToolOutcome {
         if(result==null) return true;
         try {
             var value=JsonParser.parseString(result).getAsJsonObject();
-            return value.has("error") || value.has("completion_error") || value.has("status") && java.util.Set.of("failed","error","rejected","cancelled").contains(value.get("status").getAsString());
+            return value.has("error") || value.has("completion_error") || value.has("success") && value.get("success").isJsonPrimitive()
+                    && value.get("success").getAsJsonPrimitive().isBoolean() && !value.get("success").getAsBoolean()
+                    || value.has("status") && java.util.Set.of("failed","error","rejected","cancelled").contains(value.get("status").getAsString());
         } catch(RuntimeException ignored) {
             return java.util.List.of("tool_failed","invalid_","cancelled_","tool_unavailable","tool_returned_no_result",
                     "duplicate_tool_call_id:","goal_updated_before_dispatch:","fresh_world_observation_required:",

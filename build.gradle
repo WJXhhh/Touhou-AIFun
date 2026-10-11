@@ -168,6 +168,11 @@ if (project.hasProperty('guiQa')) {
     def guiQa = sourceSets.create('guiQa')
     def chestQaDirectory = project.hasProperty('cacheAgentQa') ? 'build/agent-cache-qa-server'
             : project.hasProperty('isolatedAgentQa') ? 'build/agent-tail-isolated-qa-server' : 'build/four-chest-qa-server'
+    if (project.hasProperty('agentQaRunId')) {
+        def runId = project.property('agentQaRunId').toString()
+        if (!(runId ==~ /[A-Za-z0-9_-]{1,64}/)) throw new GradleException('agentQaRunId must be a simple isolated-run name')
+        chestQaDirectory = "build/agent-qa-${runId}"
+    }
     guiQa.compileClasspath += sourceSets.main.output + sourceSets.main.compileClasspath
     guiQa.runtimeClasspath += sourceSets.main.output + sourceSets.main.runtimeClasspath
     minecraft.runs.configureEach {
@@ -211,6 +216,7 @@ level-name=world
     minecraft.runs.client {
         workingDirectory project.file('build/gui-qa-client')
         if (project.hasProperty('guiQaAuto')) property 'aifun.guiQa.autorun', 'true'
+        if (project.hasProperty('decisionUiQa')) property 'aifun.decisionUiQa.autorun', 'true'
     }
     if (project.hasProperty('guiQaAuto')) {
         tasks.register('verifyGuiQaClient') {

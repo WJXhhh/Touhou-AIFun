@@ -41,8 +41,8 @@ import java.util.Optional;
 import java.util.UUID;
 
 public final class AIFunNetwork {
-    // Version 15 adds owner task controls and task-state preview packets.
-    private static final String VERSION = "15";
+    // Version 17 adds native JEV/Perplexity decision settings without synchronizing secrets.
+    private static final String VERSION = "17";
     private static final SimpleChannel CHANNEL = NetworkRegistry.newSimpleChannel(
             new ResourceLocation(TouhouAIFun.MOD_ID, "network"),
             () -> VERSION, VERSION::equals, VERSION::equals);
@@ -51,6 +51,22 @@ public final class AIFunNetwork {
     }
 
     public static void init() {
+        CHANNEL.registerMessage(28, com.wjx.touhou_aifun.network.message.AIFunNativeDecisionSettingsMessage.class,
+                com.wjx.touhou_aifun.network.message.AIFunNativeDecisionSettingsMessage::encode,
+                com.wjx.touhou_aifun.network.message.AIFunNativeDecisionSettingsMessage::decode,
+                com.wjx.touhou_aifun.network.message.AIFunNativeDecisionSettingsMessage::handle, Optional.of(NetworkDirection.PLAY_TO_SERVER));
+        CHANNEL.registerMessage(29, com.wjx.touhou_aifun.network.message.AIFunNativeDecisionSettingsSyncMessage.class,
+                com.wjx.touhou_aifun.network.message.AIFunNativeDecisionSettingsSyncMessage::encode,
+                com.wjx.touhou_aifun.network.message.AIFunNativeDecisionSettingsSyncMessage::decode,
+                com.wjx.touhou_aifun.network.message.AIFunNativeDecisionSettingsSyncMessage::handle, Optional.of(NetworkDirection.PLAY_TO_CLIENT));
+        CHANNEL.registerMessage(26, com.wjx.touhou_aifun.network.message.AIFunDecisionSettingsMessage.class,
+                com.wjx.touhou_aifun.network.message.AIFunDecisionSettingsMessage::encode,
+                com.wjx.touhou_aifun.network.message.AIFunDecisionSettingsMessage::decode,
+                com.wjx.touhou_aifun.network.message.AIFunDecisionSettingsMessage::handle, Optional.of(NetworkDirection.PLAY_TO_SERVER));
+        CHANNEL.registerMessage(27, com.wjx.touhou_aifun.network.message.AIFunDecisionSettingsSyncMessage.class,
+                com.wjx.touhou_aifun.network.message.AIFunDecisionSettingsSyncMessage::encode,
+                com.wjx.touhou_aifun.network.message.AIFunDecisionSettingsSyncMessage::decode,
+                com.wjx.touhou_aifun.network.message.AIFunDecisionSettingsSyncMessage::handle, Optional.of(NetworkDirection.PLAY_TO_CLIENT));
         CHANNEL.registerMessage(25, AIFunTaskStateMessage.class, AIFunTaskStateMessage::encode,
                 AIFunTaskStateMessage::decode, AIFunTaskStateMessage::handle, Optional.of(NetworkDirection.PLAY_TO_CLIENT));
         CHANNEL.registerMessage(22, com.wjx.touhou_aifun.network.message.AIFunGuiRequestMessage.class,
@@ -286,6 +302,30 @@ public final class AIFunNetwork {
     public static void sendVisionSettingsToServer(boolean visionEnabled, boolean shallowScanEnabled,
                                                   String selectedSite) {
         CHANNEL.sendToServer(new AIFunVisionSettingsMessage(visionEnabled, shallowScanEnabled, selectedSite));
+    }
+
+    public static void requestDecisionSettings() {
+        CHANNEL.sendToServer(new com.wjx.touhou_aifun.network.message.AIFunDecisionSettingsMessage(false, ""));
+    }
+    public static void requestNativeDecisionSettings(String provider) {
+        CHANNEL.sendToServer(new com.wjx.touhou_aifun.network.message.AIFunNativeDecisionSettingsMessage(false,provider,false,"","","",false,3000,0.9));
+    }
+    public static void saveNativeDecisionSettings(com.wjx.touhou_aifun.network.message.AIFunNativeDecisionSettingsMessage value) {CHANNEL.sendToServer(value);}
+    public static void sendNativeDecisionSettings(ServerPlayer player,String provider,String status) {
+        var view=com.wjx.touhou_aifun.chat.agent.decision.DecisionServiceSettings.view(provider);
+        CHANNEL.send(PacketDistributor.PLAYER.with(()->player),new com.wjx.touhou_aifun.network.message.AIFunNativeDecisionSettingsSyncMessage(view,
+                !com.github.tartaricacid.touhoulittlemaid.util.GameModeUtil.canEditSite(player),status));
+    }
+    public static void saveDecisionSettings(String selection) {
+        CHANNEL.sendToServer(new com.wjx.touhou_aifun.network.message.AIFunDecisionSettingsMessage(true, selection));
+    }
+    public static void sendDecisionSettingsToPlayer(ServerPlayer player, String status) {
+        var models = com.wjx.touhou_aifun.chat.agent.AgentDecisionModels.options().stream().limit(1024)
+                .map(row -> new com.wjx.touhou_aifun.chat.agent.AgentDecisionModels.Option(row.id(),
+                        com.wjx.touhou_aifun.chat.agent.AgentTaskState.bounded(row.label(), 200), row.usable())).toList();
+        CHANNEL.send(PacketDistributor.PLAYER.with(() -> player),
+                new com.wjx.touhou_aifun.network.message.AIFunDecisionSettingsSyncMessage(TouhouAIFunConfig.AGENT_DECISION_MODEL.get(),
+                        models, !com.github.tartaricacid.touhoulittlemaid.util.GameModeUtil.canEditSite(player), status));
     }
 
     public static void sendVisionSitesToPlayer(ServerPlayer player) {

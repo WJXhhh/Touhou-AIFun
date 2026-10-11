@@ -152,7 +152,7 @@ public class AnthropicCompatLLMClient implements LLMClient {
      */
     protected JsonObject buildRequestBody(LLMCallback callback) {
         EntityMaid maid = callback.getMaid();
-        String model = maid.getAiChatManager().getLLMModel();
+        String model = com.wjx.touhou_aifun.chat.agent.AgentDecisionModels.model(callback);
 
         JsonObject body = new JsonObject();
         body.addProperty("model", model);

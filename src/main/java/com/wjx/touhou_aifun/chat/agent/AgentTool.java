@@ -22,7 +22,10 @@ public final class AgentTool implements ITool<JsonObject> {
             root.addProperties("action", StringParameter.create().addEnumValues("status", "enqueue", "amend", "replace", "stop", "pause", "clear", "resume"), true);
             root.addProperties("goal", StringParameter.create().setDescription("Complete user-authorized goal and constraints; retain quantities, targets and stop conditions.").setMaxLength(4096), false);
             root.addProperties("clear_queued",BoolParameter.create().setDescription("Only for replace, default false. Set true ONLY when the owner explicitly asks to clear the old queue AND switch to this new goal. Otherwise retain queued tasks."),false);
-            root.addProperties("completion",completionParameter(),false);
+            // Foreground only hands off the complete owner goal. The executor establishes the
+            // machine-verified contract from fresh observations via update_task_plan.
+            // Keep accepting explicit completion in control() for existing callers, but do not
+            // ask the chat model to plan quantities/coordinates merely to enqueue a task.
         } else {
             root.addProperties("result_ref", StringParameter.create(), true);
             root.addProperties("task_id",StringParameter.create().setDescription("Owner may read an archived task. Required with task_trace outside the active task callback."),false);
@@ -32,7 +35,7 @@ public final class AgentTool implements ITool<JsonObject> {
     }
     public static ObjectParameter completionParameter() {
             ObjectParameter completion = ObjectParameter.create();
-            completion.addProperties("kind", StringParameter.create().addEnumValues("transfer","position","inventory","all").setDescription("Defaults to transfer. Inventory requires FINAL backpack stock >= count; NEVER use it to describe an initial inventory/precondition. Putting items away uses outbound transfer, not final inventory of the same items. Reserve stock is valid only when enough items remain or an incoming supply is planned. Position verifies final arrival. Use all for final outcomes only."),false);
+            completion.addProperties("kind", StringParameter.create().addEnumValues("transfer","position","inventory","maid_state","eat_food","all").setDescription("Defaults to transfer. Inventory requires FINAL backpack stock >= count; NEVER use it to describe an initial inventory/precondition. Putting items away uses outbound transfer, not final inventory of the same items. Reserve stock is valid only when enough items remain or an incoming supply is planned. Position verifies final arrival. Use all for final outcomes only."),false);
             completion.addProperties("item", StringParameter.create().setDescription("Exact registry item ID; required for transfer/inventory"), false);
             completion.addProperties("count", IntegerParameter.create().setMinimum(1).setDescription("Required for transfer/inventory"), false);
             completion.addProperties("dimension", StringParameter.create().setDescription("Dimension registry ID; required except for all"), false);
@@ -40,13 +43,20 @@ public final class AgentTool implements ITool<JsonObject> {
             completion.addProperties("radius", IntegerParameter.create().setMinimum(0).setMaximum(8).setDescription("Arrival radius for position, default 2"),false);
             completion.addProperties("to_maid", BoolParameter.create().setDescription("Required for transfer"), false);
             ObjectParameter atomic=ObjectParameter.create();
-            atomic.addProperties("kind",StringParameter.create().addEnumValues("transfer","position","inventory").setDescription("Final outcomes only: inventory means leave at least count in the FINAL backpack, not initially possess count before putting items away."),false);
+            atomic.addProperties("kind",StringParameter.create().addEnumValues("transfer","position","inventory","maid_state","eat_food").setDescription("Final outcomes only: inventory means leave at least count in the FINAL backpack, not initially possess count before putting items away."),false);
             atomic.addProperties("dimension",StringParameter.create(),true);
             atomic.addProperties("item",StringParameter.create(),false); atomic.addProperties("count",IntegerParameter.create().setMinimum(1),false);
             atomic.addProperties("position",ArrayParameter.create().setItems(IntegerParameter.create()).setMinItems(3).setMaxItems(3).setDescription("Transfer requires the actual container position, not the sign position."),false);
             atomic.addProperties("radius",IntegerParameter.create().setMinimum(0).setMaximum(8),false); atomic.addProperties("to_maid",BoolParameter.create(),false);
+            addActionCompletion(completion);addActionCompletion(atomic);
             completion.addProperties("conditions",ArrayParameter.create().setItems(atomic).setMinItems(1).setMaxItems(16).setDescription("Required for kind=all. Every condition must pass; nesting all is unsupported."),false);
             return completion.setDescription("Machine-verified completion derived from the complete user goal, never a dummy condition. Transfer position is the source container when to_maid=true, destination otherwise. Use all for every required item/destination. Foreground may omit unknown facts; the executor defines the missing condition from fresh observations before moving items.");
+    }
+    private static void addActionCompletion(ObjectParameter root) {
+        root.addProperties("state",StringParameter.create().addEnumValues("follow","sit","schedule","work_task").setDescription("Required for maid_state."),false);
+        root.addProperties("value",StringParameter.create().setDescription("Required for maid_state: true/false for follow/sit, schedule name or work-task registry id."),false);
+        root.addProperties("food",StringParameter.create().setDescription("Required for eat_food: exact edible block registry id. Count means actually consumed servings."),false);
+        root.addProperties("finished",BoolParameter.create().setDescription("eat_food only: require the consumed target to have been finished, rather than one bite."),false);
     }
     @Override public Codec<JsonObject> codec() {
         return Codec.PASSTHROUGH.comapFlatMap(d -> {

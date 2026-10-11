@@ -23,7 +23,7 @@ public final class LoadToolSchemaTool implements ITool<String> {
 
     @Override
     public String summary(EntityMaid maid) {
-        return "Load one optional extension tool schema before using that tool.";
+        return "Load an exact missing tool schema for the next request. Invoke tools already present directly; task world/GUI schemas change automatically with the execution stage.";
     }
 
     /** Keep this addon-only meta tool out of TLM's native clients. */
@@ -60,14 +60,25 @@ public final class LoadToolSchemaTool implements ITool<String> {
                 && ("group:gui".equals(result) || !com.wjx.touhou_aifun.chat.agent.AgentExecution.foregroundTool(result)))
             return callback.addToolResult("foreground_action_boundary: GUI, scans and physical tools belong to the background executor. Use task_control once and return an acknowledgement; loading schemas here cannot grant execution permission.",toolId);
         if ("group:gui".equals(result)) {
+            if (callback instanceof com.wjx.touhou_aifun.chat.agent.TaskCallback task) {
+                task.task.loadedTools.addAll(java.util.Arrays.asList(com.wjx.touhou_aifun.compat.ai.action.GuiTool.IDS));
+                return callback.addToolResult("GUI schemas are selected automatically for the task stage. Invoke those present directly; do not load group:gui again.", toolId);
+            }
             for (String id : com.wjx.touhou_aifun.compat.ai.action.GuiTool.IDS)
                 if (ToolContextSelector.optionalAvailable(callback.getMaid(), callback, id)) ChatFlowManager.requestToolSchema(callback.getMaid().getUUID(), callback, id);
             return callback.addToolResult("GUI schemas loaded. Invoke directly; do not load again in this task.", toolId);
         }
-        if (ChatFlowManager.requestedToolIds(callback.getMaid().getUUID(), callback).contains(result))
+        if (callback instanceof com.wjx.touhou_aifun.chat.agent.TaskCallback task) {
+            if (ToolContextSelector.selected(callback.getMaid(), callback).stream().anyMatch(entry -> entry.id().equals(result)))
+                return callback.addToolResult("Already present: " + result + ". Invoke it directly.", toolId);
+            if (!com.wjx.touhou_aifun.chat.agent.TaskToolSelection.eligible(task.toolSelection(), result))
+                return callback.addToolResult("Tool deferred until fresh observation and a completion contract where required: " + result, toolId);
+        }
+        if (!(callback instanceof com.wjx.touhou_aifun.chat.agent.TaskCallback)
+                && ChatFlowManager.requestedToolIds(callback.getMaid().getUUID(), callback).contains(result))
             return callback.addToolResult("Already loaded: " + result + ". Invoke directly.", toolId);
         ITool<?> tool = ToolRegister.getTool(result);
-        if (tool == null || ToolContextSelector.isCore(result)
+        if (tool == null || (ToolContextSelector.isCore(result) && !(callback instanceof com.wjx.touhou_aifun.chat.agent.TaskCallback))
                 || !ToolContextSelector.optionalAvailable(callback.getMaid(), callback, result)) {
             return callback.addToolResult("Unknown optional extension tool: " + result, toolId);
         }

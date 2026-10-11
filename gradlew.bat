@@ -42,6 +42,9 @@ set "JAVA_TOOL_OPTIONS=%JAVA_TOOL_OPTIONS% -Djdk.net.unixdomain.tmpdir=NUL"
 set DEFAULT_JVM_OPTS="-Xmx64m" "-Xms64m"
 
 @rem Find java.exe
+@rem Optional machine-local JDK override, kept out of version control.
+@rem This also works in terminals that still inherit an old JAVA_HOME.
+if exist "%APP_HOME%\gradle\java-home.local" set /p "JAVA_HOME="<"%APP_HOME%\gradle\java-home.local"
 if defined JAVA_HOME goto findJavaFromJavaHome
 
 set JAVA_EXE=java.exe

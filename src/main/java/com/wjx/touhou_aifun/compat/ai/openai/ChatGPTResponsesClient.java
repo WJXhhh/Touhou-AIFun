@@ -72,7 +72,7 @@ public final class ChatGPTResponsesClient extends ReasoningCompatOpenAIClient {
         }
         boolean fastRequested = subscriptionSite.fastMode();
         var preparation=AgentTelemetry.root(callback,"model_prepare");
-        JsonObject body = ChatGPTResponsesCodec.request(maid.getAiChatManager().getLLMModel(), callback.getMessages(), reminders, functions,
+        JsonObject body = ChatGPTResponsesCodec.request(com.wjx.touhou_aifun.chat.agent.AgentDecisionModels.model(callback), callback.getMessages(), reminders, functions,
                 subscriptionSite.reasoningSettings(), subscriptionSite.webSearch() && callback.needAddTools, fastRequested);
         com.wjx.touhou_aifun.vision.MultimodalTurnContext.append(callback,
                 com.wjx.touhou_aifun.vision.UnifiedModelCatalog.VisualProtocol.SUBSCRIPTION, body.getAsJsonArray("input"));

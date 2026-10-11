@@ -98,7 +98,7 @@ public final class OpenAIResponsesCompatLLMClient extends ReasoningCompatOpenAIC
     private JsonObject buildRequest(LLMCallback callback, ToolCatalogSnapshot snapshot) {
         EntityMaid maid = callback.getMaid();
         JsonObject body = new JsonObject();
-        body.addProperty("model", maid.getAiChatManager().getLLMModel());
+        body.addProperty("model", com.wjx.touhou_aifun.chat.agent.AgentDecisionModels.model(callback));
         body.addProperty("max_output_tokens", com.wjx.touhou_aifun.config.LLMRuntimeBudget.outputTokens());
         body.addProperty("store", false);
         body.addProperty("stream", false);

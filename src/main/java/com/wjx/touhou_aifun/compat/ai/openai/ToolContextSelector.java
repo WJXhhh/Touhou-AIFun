@@ -81,11 +81,25 @@ public final class ToolContextSelector {
     }
 
     public static String loadedNotice(EntityMaid maid, Object callback) {
+        if (callback instanceof com.wjx.touhou_aifun.chat.agent.TaskCallback task)
+            return "Task tool stage: " + task.toolSelection().stage() + "; direct tools: "
+                    + selected(maid, callback).stream().map(ToolCatalogSnapshot.Entry::id).toList();
         return "Loaded optional tools: " + new java.util.TreeSet<>(ChatFlowManager.requestedToolIds(maid.getUUID(), callback));
     }
 
     public static boolean optionalAvailable(EntityMaid maid, Object callback, String id) {
         return snapshot(maid, callback).hasOptional(id);
+    }
+    public static boolean triggers(ITool<?> tool, EntityMaid maid, Object callback, ChatCompletion context) {
+        if (tool instanceof com.wjx.touhou_aifun.compat.ai.vision.ObserveSurroundingsTool && callback instanceof LLMCallback llm)
+            return visionAvailable(llm);
+        return tool.trigger(maid, context);
+    }
+    private static boolean visionAvailable(LLMCallback callback) {
+        return com.wjx.touhou_aifun.config.TouhouAIFunConfig.VISION_ENABLED.get()
+                && (com.wjx.touhou_aifun.vision.UnifiedModelCatalog.supportsImages(
+                    com.wjx.touhou_aifun.vision.MultimodalTurnContext.mainModel(callback))
+                    || com.wjx.touhou_aifun.vision.AvailableVisionSites.selected() != null);
     }
 
     /**
@@ -126,7 +140,8 @@ public final class ToolContextSelector {
 
     /** Build the non-null request context required by the base ITool.trigger contract. */
     public static ChatCompletion triggerContext(EntityMaid maid, Object callback) {
-        ChatCompletion context = ChatCompletion.create().model(maid.getAiChatManager().getLLMModel());
+        ChatCompletion context = ChatCompletion.create().model(callback instanceof LLMCallback llmModel
+                ? com.wjx.touhou_aifun.chat.agent.AgentDecisionModels.model(llmModel) : maid.getAiChatManager().getLLMModel());
         if (!(callback instanceof LLMCallback llm)) return context;
         for (LLMMessage message : llm.getMessages()) {
             if (message.role() == Role.USER) context.userChat(message.message());

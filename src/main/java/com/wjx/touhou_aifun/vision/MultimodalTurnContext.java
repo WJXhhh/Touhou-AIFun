@@ -19,8 +19,8 @@ public final class MultimodalTurnContext {
     private MultimodalTurnContext() { }
 
     public static ModelRef mainModel(LLMCallback callback) {
-        var manager = callback.getMaid().getAiChatManager();
-        return new ModelRef(manager.getLLMSite().id(), manager.getLLMModel());
+        return new ModelRef(com.wjx.touhou_aifun.chat.agent.AgentDecisionModels.site(callback).id(),
+                com.wjx.touhou_aifun.chat.agent.AgentDecisionModels.model(callback));
     }
 
     public static boolean canAttach(LLMCallback callback, LLMClient client) {

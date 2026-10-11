@@ -131,8 +131,14 @@ public final class ChatFlowManager {
     }
 
     public static void requestToolSchema(UUID maid, Object callback, String toolId) {
-        if (callback instanceof com.wjx.touhou_aifun.chat.agent.TaskCallback task) { if (java.util.Arrays.asList(com.wjx.touhou_aifun.compat.ai.action.GuiTool.IDS).contains(toolId)) task.task.loadedTools.addAll(java.util.Arrays.asList(com.wjx.touhou_aifun.compat.ai.action.GuiTool.IDS)); else task.task.loadedTools.add(toolId); return; }
         if (toolId == null || toolId.isBlank()) return;
+        if (callback instanceof com.wjx.touhou_aifun.chat.agent.TaskCallback task) {
+            if (java.util.Arrays.asList(com.wjx.touhou_aifun.compat.ai.action.GuiTool.IDS).contains(toolId))
+                task.task.loadedTools.addAll(java.util.Arrays.asList(com.wjx.touhou_aifun.compat.ai.action.GuiTool.IDS));
+            else task.task.loadedTools.add(toolId);
+            task.requestStageTool(toolId);
+            return;
+        }
         REQUESTED_TOOLS.computeIfAbsent(callback, ignored -> ConcurrentHashMap.newKeySet()).add(toolId);
     }
 

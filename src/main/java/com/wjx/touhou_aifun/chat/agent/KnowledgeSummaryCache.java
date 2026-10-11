@@ -35,8 +35,8 @@ public final class KnowledgeSummaryCache {
         if (parent instanceof TaskCallback task) query += new Gson().toJson(task.task.constraints);
         String language = parent.getChatManager().getChatLanguage();
         String key = digest(new Gson().toJson(List.of(source, content, query, language,
-                parent.getChatManager().getLLMSite().getApiType(), parent.getChatManager().getLLMSite().id(),
-                parent.getChatManager().getLLMModel(), maxTokens)));
+                AgentDecisionModels.site(parent).getApiType(), AgentDecisionModels.site(parent).id(),
+                AgentDecisionModels.model(parent), maxTokens)));
         Cached hit = CACHE.get(key);
         if (hit != null && System.nanoTime()-hit.time < TimeUnit.MINUTES.toNanos(5))
             return CompletableFuture.completedFuture(hit.text + "\nsource_result_ref=" + ref);

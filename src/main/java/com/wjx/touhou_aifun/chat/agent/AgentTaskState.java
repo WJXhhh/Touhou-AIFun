@@ -15,6 +15,10 @@ public final class AgentTaskState {
     public List<String> constraints = new ArrayList<>();
     public List<String> steps = new ArrayList<>();
     public int currentStep;
+    public com.google.gson.JsonArray actionSteps = new com.google.gson.JsonArray();
+    public int actionStep;
+    public int actionPlanGoalVersion;
+    public List<com.google.gson.JsonObject> actionFacts = new ArrayList<>();
     public List<String> failures=new ArrayList<>();
     public List<String> evidence = new ArrayList<>();
     public Set<String> loadedTools = new LinkedHashSet<>();
@@ -29,6 +33,15 @@ public final class AgentTaskState {
         catch (RuntimeException ignored) { }
     }
     private void recordObject(com.google.gson.JsonObject value) {
+        if(value.has("kind") && value.get("kind").getAsString().equals("eat_food") && value.has("success")
+                && value.get("success").getAsBoolean() && value.has("servings_consumed") && value.get("servings_consumed").getAsInt()>0) {
+            var previous=actionFacts.stream().filter(f->java.util.Objects.equals(f.get("dimension"),value.get("dimension"))
+                    && java.util.Objects.equals(f.get("block_id"),value.get("block_id")) && java.util.Objects.equals(f.get("position"),value.get("position"))).findFirst();
+            if(previous.isPresent()) {
+                var fact=previous.get();fact.addProperty("servings_consumed",fact.get("servings_consumed").getAsLong()+value.get("servings_consumed").getAsLong());
+                fact.addProperty("finished",fact.get("finished").getAsBoolean() || value.get("finished").getAsBoolean());
+            }else {actionFacts.add(value.deepCopy());while(actionFacts.size()>256) actionFacts.remove(0);}
+        }
         if (value.has("action_results")) {
             for (var item : value.getAsJsonArray("action_results")) {
                 var step = item.getAsJsonObject().deepCopy();
@@ -82,7 +95,22 @@ public final class AgentTaskState {
                 for(var value:conditions) { var child=value.getAsJsonObject(); if(completionKind(child).equals("all")) throw new IllegalArgumentException(); validateCompletion(child); }
                 return spec.deepCopy();
             }
-            if (!Set.of("transfer","position","inventory").contains(kind) || spec.get("dimension").getAsString().isBlank()) throw new IllegalArgumentException();
+            if (spec.get("dimension").getAsString().isBlank()) throw new IllegalArgumentException();
+            if(kind.equals("maid_state")) {
+                String state=spec.get("state").getAsString(),value=spec.get("value").getAsString();
+                if(!Set.of("follow","sit","schedule","work_task").contains(state) || value.isBlank() || value.length()>128
+                        || Set.of("follow","sit").contains(state) && !Set.of("true","false").contains(value)) throw new IllegalArgumentException();
+                return spec.deepCopy();
+            }
+            if(kind.equals("eat_food")) {
+                if(spec.get("food").getAsString().isBlank() || spec.get("count").getAsInt()<1 || spec.get("count").getAsInt()>4096
+                        || spec.get("count").getAsDouble()!=spec.get("count").getAsInt()
+                        || spec.has("finished") && !spec.get("finished").getAsJsonPrimitive().isBoolean()) throw new IllegalArgumentException();
+                if(spec.has("position")) {if(spec.getAsJsonArray("position").size()!=3) throw new IllegalArgumentException();
+                    spec.getAsJsonArray("position").forEach(v->{if(v.getAsDouble()!=v.getAsInt()) throw new IllegalArgumentException();});}
+                return spec.deepCopy();
+            }
+            if (!Set.of("transfer","position","inventory").contains(kind)) throw new IllegalArgumentException();
             if (!kind.equals("position") && (spec.get("item").getAsString().isBlank() || spec.get("count").getAsLong() <= 0
                     || spec.get("count").getAsDouble() != spec.get("count").getAsLong())) throw new IllegalArgumentException();
             if (!kind.equals("inventory")) {
@@ -113,9 +141,11 @@ public final class AgentTaskState {
     }
     public void applyAmendment() {
         if (!pendingAmendment.isBlank()) { constraints.add(pendingAmendment); pendingAmendment = ""; goalVersion++; completion = pendingCompletion; pendingCompletion = null;
+            clearActionPlan();
             verifiedCount = 0;
             if (completion != null) verifiedCount=transferProgress(completion); }
     }
+    public void clearActionPlan() { actionSteps=new com.google.gson.JsonArray();actionStep=0;actionPlanGoalVersion=0; }
     public static String bounded(String value, int max) {
         if (value == null) return "";
         int n = value.codePointCount(0, value.length());

@@ -67,6 +67,8 @@ public final class AgentCompletion {
                 var pos=condition.getAsJsonArray("position");double radius=condition.has("radius")?condition.get("radius").getAsDouble():2;
                 double distance=Math.sqrt(maid.distanceToSqr(pos.get(0).getAsInt()+.5,pos.get(1).getAsInt(),pos.get(2).getAsInt()+.5));
                 row.addProperty("actual_distance",distance);row.addProperty("required_radius",radius);row.addProperty("reason","arrival_outside_required_radius");satisfied=distance<=radius;
+            } else if(kind.equals("maid_state") || kind.equals("eat_food")) {
+                satisfied=additionalCondition(maid,task,condition);row.addProperty("reason",kind.equals("maid_state")?"maid_state_unmet":"consumption_evidence_unmet");
             }
             if(!satisfied) unmet.add(row);
         }
@@ -84,6 +86,8 @@ public final class AgentCompletion {
             var row=value.getAsJsonObject();String kind=AgentTaskState.completionKind(row);
             if(row.get("reason").getAsString().equals("dimension_mismatch")) {text.append("目标维度尚未满足。");continue;}
             if(kind.equals("position")) {text.append("尚未到达要求的位置 ").append(row.get("position")).append("。");continue;}
+            if(kind.equals("maid_state")) {text.append("女仆状态尚未达到要求。");continue;}
+            if(kind.equals("eat_food")) {text.append("实际食用记录尚未满足要求。");continue;}
             String item=row.get("item").getAsString();var registered=net.minecraftforge.registries.ForgeRegistries.ITEMS.getValue(new net.minecraft.resources.ResourceLocation(item));
             String name=registered==null?item:new net.minecraft.world.item.ItemStack(registered).getHoverName().getString();
             text.append(name).append(kind.equals("inventory")?"：要求最终背包保留 ":"：要求转移 ").append(row.get("count").getAsLong())
@@ -153,7 +157,42 @@ public final class AgentCompletion {
             }
             task.verifiedCount=count; evidence.addProperty("item",condition.get("item").getAsString()); evidence.addProperty("count",count);
             satisfied = count >= condition.get("count").getAsLong();
-        } else return false;
+        } else if(kind.equals("maid_state") || kind.equals("eat_food")) satisfied=additionalCondition(maid,task,condition);
+        else return false;
         evidence.addProperty("completion_verified",satisfied); task.checkpoint(evidence.toString()); return satisfied;
+    }
+    public static JsonObject maidState(EntityMaid maid) {
+        var state=new JsonObject();state.addProperty("follow",Boolean.toString(!maid.isHomeModeEnable()));
+        state.addProperty("sit",Boolean.toString(maid.isMaidInSittingPose()));
+        state.addProperty("schedule",maid.getSchedule().name().toLowerCase(java.util.Locale.ROOT));
+        state.addProperty("work_task",maid.getTask().getUid().toString());return state;
+    }
+    private static boolean additionalCondition(EntityMaid maid,AgentTaskState task,JsonObject condition) {
+        if(AgentTaskState.completionKind(condition).equals("maid_state")) {
+            var value=maidState(maid).get(condition.get("state").getAsString());
+            return value!=null && value.getAsString().equals(condition.get("value").getAsString());
+        }
+        long servings=0;boolean finished=false;
+        for(var fact:task.actionFacts) {
+            if(!condition.get("dimension").equals(fact.get("dimension")) || !condition.get("food").getAsString().equals(fact.get("block_id").getAsString())) continue;
+            if(condition.has("position")) {
+                var pos=condition.getAsJsonArray("position");var actual=fact.getAsJsonObject("position");
+                if(pos.get(0).getAsInt()!=actual.get("x").getAsInt() || pos.get(1).getAsInt()!=actual.get("y").getAsInt() || pos.get(2).getAsInt()!=actual.get("z").getAsInt()) continue;
+            }
+            servings+=fact.get("servings_consumed").getAsInt();
+            if(fact.get("finished").getAsBoolean()) {
+                var actual=fact.getAsJsonObject("position");
+                var pos=new net.minecraft.core.BlockPos(actual.get("x").getAsInt(),actual.get("y").getAsInt(),actual.get("z").getAsInt());
+                // A recorded finished target cannot stand in for a new food block placed at the same position.
+                finished|=maid.level().hasChunkAt(pos) && !condition.get("food").getAsString().equals(String.valueOf(net.minecraftforge.registries.ForgeRegistries.BLOCKS.getKey(maid.level().getBlockState(pos).getBlock())));
+            }
+        }
+        return servings>=condition.get("count").getAsInt() && (!condition.has("finished") || !condition.get("finished").getAsBoolean() || finished);
+    }
+    /** Used for typed step guards without changing the immutable task completion contract. */
+    public static boolean verifyPredicate(EntityMaid maid,AgentTaskState task,JsonObject predicate,boolean freshWorld) {
+        long previous=task.verifiedCount;
+        try {return freshWorld && task.pendingAmendment.isBlank() && predicate!=null && verifyCondition(maid,task,predicate);}
+        finally {task.verifiedCount=previous;}
     }
 }

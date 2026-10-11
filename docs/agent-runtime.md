@@ -6,13 +6,58 @@
 
 ## 开关与使用
 
-COMMON 配置 `[agentRuntimeV1]` 包含 `enabled=false` 和 `diagnostics=false`。运行时保持实验性、默认关闭：跨版本正确性回归与单项性能测试不能替代原计划要求的旧版/新版整体耗时验收。
+COMMON 配置 `[agentRuntimeV1]` 包含 `enabled=false`、`diagnostics=false` 和 `decisionModel=""`。运行时保持实验性、默认关闭：跨版本正确性回归与单项性能测试不能替代原计划要求的旧版/新版整体耗时验收。
 
 开启后，每位女仆最多同时执行一个行动任务，另外容纳四个排队任务。正常聊天和问进度独立执行；新行动要求默认排队，明确“改做……”才替换，补充条件在行动边界生效。含糊要求由前台模型澄清。明确停止和停止按钮直接取消当前任务并暂停队列，清空队列需要明确请求。控制入口验证实际主人权限。
 
 退出、主人离线、女仆卸载和关闭配置会暂停并保存检查点。重新进入后等待主人要求继续，先观察现场，再执行动作。不会恢复旧 GUI、旧 future、旧帧或旧观察作为动作凭据。GUI 操作预览显示当前任务、队列及暂停/继续/取消状态。
 
-仅 AIFun 的 Chat Completions、Responses、ChatGPT 订阅、Anthropic 客户端接入新运行时；原版 TLM 客户端保留兼容路径。网络协议版本为 15，服务端与客户端需使用相同版本的 AIFun。
+仅 AIFun 的 Chat Completions、Responses、ChatGPT 订阅、Anthropic 客户端接入新运行时；原版 TLM 客户端保留兼容路径。网络协议版本为 17，服务端与客户端需使用相同版本的 AIFun。
+
+### 独立决策服务：JEV / Perplexity Decider
+
+设置入口为 AI 设置 → **后台执行模型** → **独立决策服务**。原有 `decisionModel` 键仍表示后台执行 LLM，继续负责完整规划、自由文本和回退；已有选项无需迁移。新服务使用原生概率决策协议，不加入普通聊天站点，不生成聊天、SSE 或 TTS，也不改变首次前台意图判断。
+
+| 服务商 | 默认完整接口 | 默认模型 |
+| --- | --- | --- |
+| JEV / TypeSafe | `https://api.typesafe.ai/v1/systemone` | `jev-1.13.0` |
+| Perplexity | `https://api.perplexity.ai/v1/decisions` | `pplx-decider-v1.1-27b` |
+
+COMMON `[agentRuntimeV1.decisionService]` 默认 `enabled=false`、`provider="jev"`、`timeoutMs=3000`、`minConfidence=0.9`。各服务商的 `.jev` / `.perplexity` 子节分别保存 `endpoint`、`model`、`apiKey`，切换服务商不会覆盖另一家的凭据；修改在新执行代际生效。游戏界面复用站点编辑权限，服务端只回传 Key 是否已配置。空 Key 保留原凭据，清除必须点“清除 Key”；启用前必须有 Key。接口 URL 为完整路径，不自动拼接聊天后缀或尾斜杠。Key 保存在服务端 COMMON 配置中。
+
+后台先用代码派发本代必需的首次现场扫描，再尝试有限常见任务模板；不能完整表达的目标交回执行 LLM 定义覆盖全部要求的完成条件和计划。`update_task_plan.action_steps` 是可选的完整执行步骤数组，必须单独调用登记；不能在同批登记后再派发重复动作。每步含 `description`、`alternatives`（`tool`、`arguments_json`、`when`），以及可选服务器谓词 `precondition` / `until` / `skip_if`。`arguments_json` 是固定参数 JSON 对象字符串；一个完全确定的动作由代码直接执行，多个动作或未填的枚举／布尔参数编译成同一次 Choice／Noul 请求。Score 协议已解析并验证，当前动作路由不使用评分来代替完成证据。传统文本计划继续由执行 LLM 执行。
+
+模板可用 `$live.session_id`、`$live.revision` 绑定当前 GUI。对于第 N 个原子完成条件（0 起），`$live.remaining_N`、`$live.from_slot_N`、`$live.to_slot_N`、`$live.transfer_count_N` 由真实净转移、当前容器和合法库存槽位计算。重复搬运使用 `until` 核验实际数量，代码限制自动派发的转移不超过对应合同剩余量，批量参数还核对累计量。旧槽位、旧 session 和视觉坐标不能作为新动作依据。
+
+候选只来自当前符合触发条件的冻结工具目录，并由本步骤的明确意图裁剪；无需额外 `load_tool_schema` 模型轮次。普通枚举／布尔字段自动生成问题，必需自由文本由执行 LLM 先提供；缺少开放参数、绑定不可用、图片解读或未知协议返回执行 LLM。所有后台工具均可进入这个判断流程，不能闭合参数的工具保留执行 LLM 路径。首版视觉动作继续走已有视觉链路，未把 Perplexity 图片能力接入 GUI 自动点击。
+
+Choice 使用返回的 `confidence`（不等同于最大概率），Noul 默认 ≥0.9 为真、≤0.1 为假，中间值回退。每次最多 128 个问题、每个 Choice 最多 255 个候选，操作输入预算 8192 估算 token；超限整体回退，不丢掉必需问题或拼接生成自由文本。所有女仆共享本服务进程的 10 请求／秒门控，超限直接回退。HTTP 超时、429／服务错误、无候选、低置信度和无效结果不在决策路径排队重试；认证／协议错误停用本代的远程判断。不会自动从 JEV 切换付费调用另一家。
+
+决策服务持有原始 HTTP future，可随任务取消；超时先取消传输，再交回执行 LLM。响应回到服务器线程后重新检查代际、目标版本、主人、位置、库存、GUI，以及完成合同和固定动作引用的方块／实体；变化后的判断不派发动作。现场校验保留完整快照，模型输入合并具有相同权限的空槽并保留槽位映射，不重复发送旧菜单。无法表示的动作分支保留其选择含义，选中时回到执行 LLM。选定动作仍经过同一工具 codec、现场权限／槽位校验、有序结算、进度保护和档案记录。卸载／重启可能先保存物品修改、后保存步骤推进，因此恢复时保留实际事实并重新规划模板，避免重放一次性动作。
+
+完成条件新增 `maid_state`（`state=follow/sit/schedule/work_task`、字符串 `value`）和 `eat_food`（`food`、实际 `count` 份数、可选 `finished` / `position`）；食用事实在每次真正消耗的服务器边界登记，取消后仍可恢复已吃掉的份数。`finished` 还核对现场，不能拿旧完成记录代表同位置新放的食物已经吃完。所有结构化步骤、完整完成合同和 GUI 收尾都满足后可直接结束任务；高置信度或模型“成功”句子不能替代事实核验。
+
+诊断新增 `decision_request:jev/perplexity`、`decision_fallback:*` 和 `decision_dispatch:deterministic_*`；`scripts/agent-trace-report.py` 分开统计决策请求次数／占用时间、执行 LLM 耗时、直接步骤和回退原因，重叠跨度不累加成任务墙钟。原始使用量、请求／返回模型名和请求 ID 留在任务档案的决策元数据中；日志不输出 Key、对话或图片。前台聊天导致的完成通知等待仍单独统计。
+
+协议依据：[JEV 官方接口](https://docs.typesafe.ai/api)、[Perplexity Decisions API](https://docs.perplexity.ai/docs/decisions/quickstart)。本地兼容回归使用模拟 HTTP；没有实际决策服务凭据时，不把模拟耗时宣称为真实模型提速。
+
+2026-10-11 原生协议初次验证：318 项 JUnit、6 项 Python 报表测试通过；Forge 47.2.0 / 47.4.20 各 75 项服务器 GameTest 通过。新增服务器场景覆盖两家原生服务的动作派发、低置信度、补充目标、暂停取消、HTTP 超时、库存／位置变化、四箱精确搬运与收尾，以及零食柜蛋糕的七次实际食用；额外检查自动搬运的物品关联、单次／批量超量拦截和旧食用记录不能完成新蛋糕。四箱与蛋糕场景采用已登记模板，执行阶段不调用决策服务或执行 LLM，此结果不包含首次规划耗时。独立客户端检查通过执行模型列表、配置字段、Key 遮罩、只读限制和返回导航，并检查了 854×480 窗口下的中文布局。产物不包含 QA 模组。
+
+### 常见模板、目标绑定与失败恢复
+
+独立服务启用且凭据可用时，首次扫描后合并一次“模板选择 + 目标范围判断”请求。模板包含跟随、坐下／起立、工作时间、工作模式、从容器取物和向容器放物六类；切换工作模式不代表已完成种田、战斗等工作。完整覆盖判断或任一适用答案不确定时回到执行 LLM；额外子任务、模糊数量、无法辨别的目标组和本代主人补充条件保留完整规划路径。一次回退后，本代不会反复启动同一模板判断。已有完整合同可重建受支持的转移／状态步骤，原合同逐项保留。
+
+取放物品先只读检查选中的容器，确认完整菜单覆盖与当前数量一致，再用一次有限问题绑定实际物品、明确字面数量及“总共／每箱”范围。每种物品最多 8 个字面数量，物品候选最多 16 类，容器最多 8 个；条件和步骤仍受原上限约束。数量不是自由生成值；“两组鸡蛋”按实际物品堆叠上限 16 得到 32，存在同 ID 不同堆叠限制时不猜测。全部取物使用实际观察数量；不足库存、无法表达或多目标分配不成立时回退，不能扩大目标组凑数。开箱用 `skip_if` 跳过已完成转移的准备，实际搬运用 `until` 和当前 `$live` 剩余数量绑定。
+
+复杂计划可加 `target_binding={kind:block|container|entity,description:...}`，在参数中用 `$target.x/y/z/registry_id/entity_id/entity_uuid`。候选只来自实际扫描记录，方块坐标按扫描时原点换算；告示牌须实际附着到目标且文字未变化。运行时重新核对加载状态、活动范围、目标注册 ID、实体存活及 UUID，并比较响应前后现场指纹；内部容器库存证明不送给模型。单一候选仍需语义范围判断，不能仅凭附近只有一个目标就派发。
+
+失败恢复优先由代码处理已知过期菜单、丢失会话与失效现场：重新检查、重开同一授权目标或重新扫描。有多种合理恢复方式时，仅让决策服务选重新检查／重开／观察／暂停／交回执行 LLM；不提供盲目重试修改物品选项。每步最多两次恢复，只重建当前合法绑定和实际剩余量。已结算转移不清零，不重复搬运；交易、吃东西、持物交互等无法证明幂等的一次性动作仍回到执行 LLM。所有动作保留原 codec、现场校验、权限和完成核验。
+
+服务器 QA 可用 `-PguiQa -PfourChestQa -PisolatedAgentQa -PagentQaRunId=<简单名称>` 创建独立 `build/agent-qa-<名称>` 测试目录，避免重复测试积累的档案容量干扰；不清理玩家世界或旧测试记录。
+
+2026-10-11 扩展验证：335 项 JUnit、6 项 Python 测试通过，Forge 47.2.0 / 47.4.20 各 76 项必需 GameTest 通过。新增一项串行 GameTest 覆盖 18 个真实世界／菜单场景：六类模板、按箱和总量分配、未选箱与无关物品保留、两组鸡蛋实际 32 个、部分成功后恢复剩余量、两次恢复上限、实体 UUID 与方块坐标绑定、真实首次扫描、重建完整合同、低置信度／不明数量／标签改变回退。决策 HTTP 使用本地模拟服务，不代表真实 JEV/Decider 延迟或成功率。日志为 `build/decision-routing-server-final-47200.log`、`build/decision-routing-server-final-47420.log`，默认 Forge 发布构建为 `build/decision-routing-release-final.log`。
+
+后续可研究的有限决策点是从已登记技能目录选择条目，以及长知识结果中选择与任务有关的段落；这些尚未接入本次模板。`KnowledgeSummaryCache` 已对短文本直接返回、对同源同查询缓存结果，长文摘要和 `MemoryExtractionCallback` 的新事实文本仍需生成式 LLM。任务完成核验、权限、菜单槽位、缓存命中与本地记忆检索已有代码事实路径，不新增决策请求。前台首次意图判断继续保留原行为。
 
 ## 任务、事实和记录
 
@@ -34,7 +79,7 @@ GUI 原子动作首先登记真实净转移，再提交模型结果。游标拾�
 
 `read_task_result` 按引用分页，每次含头部约 2,048 token；引用有上下文随机前缀，持久化后仍指向原结果。缓存同时有字符数、条目数及归档上限。
 
-`load_tool_schema` 保留原入口，支持 `group:gui` 等工具组。Schema 在任务内持续加载，目录区分已加载/可发现工具，短目录与完整说明分开。注册表、技能定义和 `ToolSchemaDependencies` 声明的动态依赖变更会失效，执行前再次核对可用性。第三方可通过 AIFun 依赖声明接口提供版本，不需要改 TLM。
+`load_tool_schema` 保留原入口，支持 `group:gui` 等工具组。后台世界／GUI Schema 按阶段提供，普通流程自动加载；其他明确加载的 Schema 在任务内保留，目录区分当前直接可用／可发现工具，短目录与完整说明分开。注册表、技能定义和 `ToolSchemaDependencies` 声明的动态依赖变更会失效，执行前再次核对可用性。第三方可通过 AIFun 依赖声明接口提供版本，不需要改 TLM。
 
 ## 调度、扫描和工具成本
 
@@ -308,3 +353,47 @@ AGENT_DIAGNOSTICS 开启后新增 AIFun usage 数字日志，关联任务、代�
 证据：`build/agent-cache-retrieve-live.log`、`build/agent-cache-retrieve-token-report.json`、`build/agent-cache-retrieve-audit.json`、`build/agent-cache-retrieve-trace.json`。新增 `-PcacheAgentQa` 使用独立的 `build/agent-cache-qa-server`，`-PforegroundLiveTrials=1` 限制付费回放次数（默认仍为三轮）。原玩家世界未重放，无旧版缓存明细对照，不能证明总费用下降百分比或 p95 改善。
 
 Java 17：287 个单元测试通过（含 50 步检查点/约束回放、跨协议缓存用量、输出增量保留输入明细），四个 Python 报告测试通过；开发 Forge 47.2.0 和 Forge 47.4.20 均通过 68 个必需 GameTest，新增真实序列化测试验证 system/tools 稳定、tool_result 配对、最新约束及实际 Anthropic SSE 用量。47.4.20 此轮不额外调用真实 API。日志 `build/agent-cache-final-47420.log`；最终普通开发版打包日志 `build/agent-cache-final-release.log`。
+
+
+## 2026-10-11：队列接单减少一次模型往返与独立决策模型
+
+本次检查的是现有代码与仓库保留的实测记录。当前 `run/config/touhou-aifun.toml` 的运行时、诊断均关闭，10 月 7 日的开发日志没有 `AIFun trace`，因此没有把旧记录当成此次玩家现场实测。之前四箱测试中完整模型响应占后台时间约 81%～96%；队列由服务器每 tick 调度，现有最后 GUI 动作的 `complete_task=true` 在工具结算后直接核验并通知。排队等待前一任务、旧操作结算和前台聊天期间的通知延后仍属于真实等待，不能通过换模型消除。
+
+前台 `task_control` 的模型 Schema 只暴露 action/goal/clear_queued，完成条件由后台根据新观察登记，避免接单模型为排队提前规划完整数量与坐标。服务端仍接受既有调用者明确传入的 completion，执行前验证保持原样。成功应用一次主人指令后，下一次客户端请求会直接按权威回执调用 `onSuccess`，不再请求模型生成接单、暂停、继续或切换的确认。保留正常历史、气泡、TTS 和过期轮次保护；同一回执只回复一次。当前直接确认支持中英文聊天/朗读，其他语言保留模型翻译路径。确认明确给出目标、排队位置或暂停状态，不把排队说成已经开始；读取状态、控制失败和普通聊天仍走原链路。接单前第一次理解用户意图仍使用聊天模型，此次没有额外在所有聊天前串接分类模型。
+
+AI 设置主页新增“决策模型”。先在现有 LLM 站点中配置支持函数工具调用的快速模型，再在这里选择。COMMON `[agentRuntimeV1] decisionModel` 保存 `[siteId,modelId]` 的 JSON 字符串；空值跟随女仆聊天模型。它只用于启用独立运行时后的后台任务规划、工具选择和继承该任务的知识摘要。连接、密钥、协议与模型选项复用原 LLM 目录，不复制凭据。配置在新的任务执行代际解析并固定，不改女仆聊天模型；无效、停用、缺失凭据或不受支持的客户端暂停任务并提示修正，不自动切换服务商。功能可用性不等于模型工具调用质量的保证，选定模型仍需用实际任务验证。
+
+Chat Completions、Anthropic、Responses、ChatGPT 订阅以及 OpenCode Go 的协议路由都读取实际执行模型；Schema 触发上下文、主模型图片能力检查和知识摘要缓存键也跟随任务选择。普通聊天、人物设置生成和非任务摘要继续用原模型。模型的思考设置沿用站点本身；没有替用户选择具体模型或全局关闭推理。
+
+诊断新增 `task_control`、`task_queue_wait` 和 `foreground_handoff`。`agent-trace-report.py` 的 `latency_breakdown` 分开给出任务墙钟、模型时间区间占比（包含继承任务的辅助摘要请求）、工具时间、真实排队和通知等待；重叠区间取并集，不将父子阶段相加。未结束任务仍保留未结束 Span，不编造总耗时。
+
+验证使用 Java 17：Forge 47.2.0 与 47.4.20 的 `test build -PguiQa -PfourChestQa -PisolatedAgentQa runGameTestServer`（后者加 `-Pforge_version=47.4.20`）各通过 293 项单元测试及 71 项必需 GameTest；5 项 Python 报告测试通过。回归包括回执只回复一次、不再请求接单结论、不同消息正常排队、独立协议模型及图片能力检查不改聊天模型，以及失效模型在请求或动作前暂停。日志 `build/agent-decision-final.log`、`build/agent-decision-final-47420.log`。没有启用真实 API，因此这些测试不能证明具体小模型的任务成功率或端到端加速比例。
+
+最终开发包由默认 Forge 47.2.0 的 `build` 重新生成，日志 `build/agent-decision-release.log`。网络协议升至 16，客户端/服务端须同步更新。玩家配置、存档及旧队列没有改动，decisionModel 默认为空，未替用户选择具体模型。
+
+独立客户端检查 `-PguiQa -PdecisionUiQa runClient` 通过，日志 `build/agent-decision-ui-final.log`。实际渲染并检查模型列表、可用/禁用项、只读权限、滚动、失效选择和返回；截图在 `build/gui-qa-client/agent-decision-settings-qa.png`、`agent-decision-invalid-qa.png`。测试等待语言资源重载结束后再打开界面，不读取玩家世界、密钥或发送模型请求。未做真实联网保存后的付费模型回放。
+
+输出 token 上限与超时继续沿用 `[llm]` 的全局运行预算；选择小模型时仍须满足该模型的请求上限。此入口不是服务商模型能力探测器。
+
+## 2026-10-11：后台工具按阶段裁剪
+
+`TaskToolSelection` 根据当前执行代际的新观察、完成条件、实时条件核验和 GUI 是否打开，在服务器线程准备每轮工具集合。工具注册表及第三方 Schema 仍按定义版本冻结复用；阶段切换不重建全部定义，不增加分类模型请求。所有协议适配器、工具目录和上下文预算使用同一集合。普通聊天的工具选择保持原逻辑。
+
+| 后台阶段 | 常规完整 Schema 数量 | 用途 |
+| --- | ---: | --- |
+| 观察 | 4 | 环境扫描、游戏上下文、证据读取、按需加载 |
+| 规划 | 6（GUI 关闭）／9（GUI 打开） | 容器观察、登记完整条件，以及按序开始操作 |
+| 操作 | 5（GUI 关闭）／8（GUI 打开） | 开箱、操作、批量、等待、关闭、计划更新 |
+| 核验收尾 | 3（GUI 关闭）／5（GUI 打开） | 查看证据、检查／关闭菜单、显式申报完成 |
+
+这是常规集合，不是固定硬上限；不可用工具仍过滤，失败时补回环境扫描与证据读取，明确加载的扩展工具可以增加数量。联网、时间、技能和女仆状态切换等原核心工具不再常驻后台完整 Schema，只在简短目录中保留发现入口，需要时按精确 id 加载。已加载的非阶段工具在任务内保留；GUI 整组加载的历史状态不再导致所有 GUI Schema 常驻。
+
+普通箱子流程直接获得当前阶段所需的 Schema，省掉 `load_tool_schema(group:gui)` 往返。在已打开的规划菜单中保留动作 Schema，允许 `update_task_plan` 登记条件和首个 `gui_action/gui_batch/wait_gui` 放在同一有序批次中；执行器仍在动作开始前检查条件，先动作后登记不能移动物品。最终动作的 `complete_task=true`、同批关闭及继续打开下一个容器保持原语义。
+
+条件满足只缩小工具菜单，不自动完成或忽略主人额外要求。确有额外操作时，精确加载缺失的阶段工具会展开当前阶段，后续动作不必每轮重载；阶段改变后回到常规集合。主人补充要求后回到规划；库存／位置条件失效后回到操作；恢复执行仍先扫描本代际现场，旧 Schema 和旧观察不能跳过检查。每轮归档 `tool_selection` 元数据，包含阶段、完整 Schema 数量及预算估算，不记录密钥。
+
+同一工具定义的真实序列化夹具中，打开 GUI 的操作阶段 Schema 估算由 11,121 降至 6,407 token，减少约 42.4%。这仅比较完整工具参数，未计完整会话与可选目录，不能当作总 token、费用或耗时下降比例；没有调用真实小模型。
+
+Java 17、Forge 47.2.0 与 47.4.20 的 `test build -PguiQa -PfourChestQa -PisolatedAgentQa runGameTestServer` 各通过 300 项单元测试、74 项必需 GameTest（后者加 `-Pforge_version=47.4.20`），日志 `build/agent-tool-stage-final.log`、`build/agent-tool-stage-final-47420.log`。新增覆盖阶段选择、旧加载状态、新观察门槛、特殊需求按需展开、失败恢复、实时库存失效、主人补充，以及 Anthropic／Responses 实际请求的 Schema 和目录一致性。真实箱子测试验证“登记条件、搬两件物品、关闭、核验”同一批完成且不追加模型轮次；原 50 次转移回放也逐轮核对所需工具始终可用。
+
+最终包由默认 Forge 47.2.0 的普通 `build` 重新生成，日志 `build/agent-tool-stage-release.log`。运行时开关、玩家站点配置、决策模型选择、玩家世界及旧任务队列均未修改。

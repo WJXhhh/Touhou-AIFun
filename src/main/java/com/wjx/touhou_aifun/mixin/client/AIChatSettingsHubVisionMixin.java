@@ -32,6 +32,9 @@ public abstract class AIChatSettingsHubVisionMixin {
         screen.addRenderableWidget(new FlatColorButton(x, y, 95, 20,
                 Component.translatable("gui.touhou_aifun.vision"),
                 button -> screen.getMinecraft().setScreen(new VisionSettingsScreen(screen))));
+        screen.addRenderableWidget(new FlatColorButton(x, startY + 165, 95, 20,
+                Component.translatable("gui.touhou_aifun.decision"), button -> screen.getMinecraft().setScreen(
+                        new com.wjx.touhou_aifun.client.gui.AgentDecisionSettingsScreen(screen))));
     }
 
     /** Let hub pages opened from the management screen return there instead of closing to the game. */

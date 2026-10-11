@@ -393,6 +393,11 @@ public final class MaidEatFoodActionManager {
                     BlockState afterConsume = level.getBlockState(target.foodPos);
                     boolean targetFinished = !safeShouldMoveTo(
                             target.edible, maid, target.foodPos, afterConsume);
+                    if(callback instanceof com.wjx.touhou_aifun.chat.agent.TaskCallback task) {
+                        JsonObject fact=com.google.gson.JsonParser.parseString(Result.success(target.blockId,target.foodPos,1,targetFinished).toJson()).getAsJsonObject();
+                        fact.addProperty("kind","eat_food");fact.addProperty("dimension",level.dimension().location().toString());
+                        task.recordMutation(fact);
+                    }
                     if (!untilFinished || targetFinished) {
                         finish(Result.success(target.blockId, target.foodPos, servingsConsumed,
                                 targetFinished));

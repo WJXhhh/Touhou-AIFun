@@ -41,6 +41,11 @@
 
 ## 构建
 
+需要 **JDK 17**，首次构建需要联网下载 Forge、基模和 Minecraft 资源。
+将 `JAVA_HOME` 指向 JDK 17。Windows 下也可在 `gradle/java-home.local` 中写入一行 JDK 17
+的绝对路径（不加引号），`gradlew.bat` 会优先使用它；该文件仅用于本机，不提交到 Git。
+IntelliJ 导入项目后，将 **Gradle JVM** 设为 JDK 17。直接使用 Gradle Wrapper：
+
 ```powershell
 .\gradlew.bat build          # 产物: build/libs/Touhou-AIFun-<版本>.jar
 .\gradlew.bat runClient      # 启动开发客户端

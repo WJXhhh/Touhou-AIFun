@@ -23,7 +23,7 @@ public final class OpenCodeGoLLMClient implements LLMClient {
 
     @Override
     public void chat(LLMCallback callback) {
-        String model = callback.getMaid().getAiChatManager().getLLMModel();
+        String model = com.wjx.touhou_aifun.chat.agent.AgentDecisionModels.model(callback);
         if (OpenCodeGoShared.usesResponses(model)) {
             new OpenAIResponsesCompatLLMClient(this.httpClient, this.copyForResponses(callback)).chat(callback);
             return;

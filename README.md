@@ -53,6 +53,12 @@ if your file still contains the old 24576 default. These budgets do not change t
 GUI processing-wait limit, thinking mode, or cancellation when a new user message arrives.
 Truncated responses report a budget error and do not dispatch partial tool calls.
 
+Requires **JDK 17** and network access for the initial Forge, mod and Minecraft downloads.
+Point `JAVA_HOME` to JDK 17. On Windows, you can also put the absolute JDK 17 path
+on one line in `gradle/java-home.local` (without quotes). `gradlew.bat` prioritizes
+this machine-local file, which is excluded from Git. Set IntelliJ's **Gradle JVM**
+to JDK 17. Use the Gradle Wrapper directly:
+
 ```powershell
 .\gradlew.bat build          # output: build/libs/Touhou-AIFun-<version>.jar
 .\gradlew.bat runClient      # launch a dev client

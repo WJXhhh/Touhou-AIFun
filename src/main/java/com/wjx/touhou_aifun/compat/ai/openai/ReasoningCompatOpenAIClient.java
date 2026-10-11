@@ -59,7 +59,7 @@ public class ReasoningCompatOpenAIClient extends LLMOpenAIClient {
         }
         URI url = URI.create(this.site.url());
         String apiKey = this.site.secretKey();
-        String model = maid.getAiChatManager().getLLMModel();
+        String model = com.wjx.touhou_aifun.chat.agent.AgentDecisionModels.model(callback);
         boolean isReasoningModel = this.site.isReasoningModel(model);
         ToolCatalogSnapshot toolSnapshot = com.wjx.touhou_aifun.chat.agent.AgentExecution.managed(callback)
                 ? ToolContextSelector.snapshot(maid, callback) : null;

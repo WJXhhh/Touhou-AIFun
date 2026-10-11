@@ -50,6 +50,7 @@ public final class AgentContext {
     }
     public static boolean prepare(LLMCallback callback) {
         if (!AgentExecution.managed(callback)) return true;
+        if (AgentRuntime.finishForegroundHandoff(callback)) return false;
         AgentRuntime.prepareForeground(callback);
         int reserve = ToolContextSelector.schemaBudget(callback.getMaid(), callback)
                 + com.wjx.touhou_aifun.vision.MultimodalTurnContext.inputReserve(callback);

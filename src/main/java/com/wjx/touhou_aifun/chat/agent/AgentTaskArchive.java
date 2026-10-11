@@ -15,6 +15,7 @@ public final class AgentTaskArchive {
     public TaskResultStore.State results;
     public long mutationVersion;
     public Map<String,Long> verifiedTransfers = new LinkedHashMap<>();
+    public List<com.google.gson.JsonObject> verifiedActionFacts = new ArrayList<>();
     private transient int recordBytes;
 
     public AgentTaskArchive() { }
@@ -22,16 +23,18 @@ public final class AgentTaskArchive {
     public void validateSize() {
         if(mutationVersion<0 || verifiedTransfers==null || verifiedTransfers.size()>512 || verifiedTransfers.values().stream().anyMatch(Objects::isNull))
             throw new IllegalArgumentException("invalid_task_mutation_checkpoint");
+        if(verifiedActionFacts==null || verifiedActionFacts.size()>256 || verifiedActionFacts.stream().anyMatch(Objects::isNull))
+            throw new IllegalArgumentException("invalid_task_action_checkpoint");
         recordBytes = new com.google.gson.Gson().toJson(records).getBytes(java.nio.charset.StandardCharsets.UTF_8).length;
         if (recordBytes > 4 * 1024 * 1024) throw new IllegalArgumentException("task_execution_archive_over_budget");
     }
     public boolean hasCapacity() { return records.size() < 8192 && recordBytes < 3584 * 1024; }
     public void commitFacts(AgentTaskState task) {
-        verifiedTransfers=new LinkedHashMap<>(task.transfers);task.appliedMutationVersion=++mutationVersion;
+        verifiedTransfers=new LinkedHashMap<>(task.transfers);verifiedActionFacts=task.actionFacts.stream().map(com.google.gson.JsonObject::deepCopy).collect(java.util.stream.Collectors.toCollection(ArrayList::new));task.appliedMutationVersion=++mutationVersion;
     }
     public void reconcile(AgentTaskState task) {
         if(mutationVersion>task.appliedMutationVersion) {
-            task.transfers=new LinkedHashMap<>(verifiedTransfers);task.appliedMutationVersion=mutationVersion;task.refreshTransferProgress();
+            task.transfers=new LinkedHashMap<>(verifiedTransfers);task.actionFacts=verifiedActionFacts.stream().map(com.google.gson.JsonObject::deepCopy).collect(java.util.stream.Collectors.toCollection(ArrayList::new));task.appliedMutationVersion=mutationVersion;task.refreshTransferProgress();
         }
     }
     public boolean canRecord() { return records.size() < 8192 && recordBytes < 4 * 1024 * 1024; }

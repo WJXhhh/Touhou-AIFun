@@ -24,7 +24,7 @@ public final class GuiTool implements ITool<JsonObject> {
         return !id.equals("inspect_containers") || com.wjx.touhou_aifun.chat.agent.AgentRuntime.enabled(maid);
     }
     @Override public String summary(EntityMaid maid) {
-        return switch (id) {
+        String summary = switch (id) {
             case "inspect_containers" -> "Inspect up to eight exact chest targets in one ordered call using normal GUI access. Returns item counts for planning, keeps the final menu open with its current snapshot. Use when collecting all items with unknown quantities; never inspect each chest in separate model rounds. Counts from closed menus do not authorize slot actions.";
             case "gui_batch" -> "Execute at most 16 observed semantic GUI actions in order. Requires expected_revision. Stops at first failure; earlier changes remain committed. Use close_after=true when done with this menu; complete_task=true on the final batch closes and requests verified completion without another model turn.";
             case "open_gui" -> "Walk to and open a block/entity GUI, or use a maid-held item. Uses the maid's own inventory. "
@@ -37,6 +37,10 @@ public final class GuiTool implements ITool<JsonObject> {
                     + "A completed result means the products were actually delivered to the maid, not just started.";
             default -> "Close the maid's GUI and return cursor/temporary crafting items. Does not cancel processing in the machine.";
         };
+        if (com.wjx.touhou_aifun.chat.agent.AgentRuntime.enabled(maid)
+                && java.util.Set.of("gui_action", "gui_batch", "wait_gui").contains(id))
+            summary += " Task item operations require a completion contract; define it using update_task_plan BEFORE this operation, optionally in the SAME ordered tool batch.";
+        return summary;
     }
     @Override public Parameter parameters(ObjectParameter root, EntityMaid maid) {
         if (!id.equals("open_gui") && !id.equals("inspect_containers")) text(root, "session_id", "Session id from open_gui.", true);

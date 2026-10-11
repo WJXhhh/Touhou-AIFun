@@ -28,6 +28,10 @@ public final class AgentTelemetry {
         var parent=TASKS.get(callback);
         return parent==null?TIMING.start(identity(callback,null),stage):parent.child(stage);
     }
+    public static AgentTiming.Span queued(com.github.tartaricacid.touhoulittlemaid.entity.passive.EntityMaid maid, AgentTaskState task) {
+        return TIMING.start(new AgentTiming.Identity(task.id, maid.getUUID().toString(), task.id,
+                task.generation + 1, 0, AgentExecution.Purpose.TASK_EXECUTION.name(), null), "task_queue_wait");
+    }
     public static void bindTask(Object callback,AgentTiming.Span span) { TASKS.put(callback,span); }
     public static AgentTiming.Span tool(Object callback,String callId,String stage) {
         var parent=MODELS.get(callback);var context=identity(callback,callId);
