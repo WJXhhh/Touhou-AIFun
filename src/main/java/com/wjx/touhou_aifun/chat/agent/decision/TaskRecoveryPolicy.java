@@ -42,6 +42,6 @@ public final class TaskRecoveryPolicy {
     public static Boolean booleanAnswer(JsonObject answers,String question,double minimum) {
         var a=answers.getAsJsonObject(question);if(a==null) return null;
         double p=DecisionProtocol.probability(a.get("noul"));
-        return p>=minimum?true:p<=1-minimum?false:null;
+        return p>=minimum?Boolean.TRUE:p<=1-minimum+1e-12?Boolean.FALSE:null;
     }
 }

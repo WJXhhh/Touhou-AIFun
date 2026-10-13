@@ -8,12 +8,15 @@ public final class DecisionStateProjection {
     private DecisionStateProjection() { }
     public static JsonObject modelView(JsonObject live) {
         var out=live.deepCopy();
+        out.remove("binding_proof");
+        out.remove("skill_catalog");
         var position=new JsonArray();
         for(String axis:List.of("x","y","z")) if(out.has(axis)) position.add(out.remove(axis).getAsDouble()/4);
         if(position.size()==3) out.add("position_rounded_to_quarter_block",position);
         for(String key:List.of("targets","action_targets")) if(out.has(key)) for(var value:out.getAsJsonArray(key)) {
                 var target=value.getAsJsonObject();
-                if(target.has("items")) target.add("items",compactSlots(target.getAsJsonArray("items"),"slot"));
+                // Closed-container/server NBT is freshness evidence, not an observed menu.
+                target.remove("items");target.remove("sign");
             }
         if(out.has("gui")) {
             var gui=out.getAsJsonObject("gui");

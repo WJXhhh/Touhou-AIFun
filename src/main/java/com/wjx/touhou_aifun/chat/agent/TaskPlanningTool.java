@@ -15,26 +15,28 @@ public final class TaskPlanningTool implements ITool<JsonObject> {
     @Override public boolean trigger(EntityMaid maid,ChatCompletion request) { return AgentRuntime.enabled(maid); }
     @Override public String summary(EntityMaid maid) { return "Record a short task plan/current step. Define missing completion from fresh observations BEFORE transfers, covering every user requirement. When all steps and requirements are finished, set complete=true with current_step at the last step; the runtime verifies live facts and closes the task without another model request. Can follow close_gui in the same ordered batch. Existing conditions cannot be weakened."; }
     @Override public Parameter parameters(ObjectParameter root,EntityMaid maid) {
-        return parameters(root,maid,com.wjx.touhou_aifun.config.TouhouAIFunConfig.SPEC.isLoaded() && com.wjx.touhou_aifun.config.TouhouAIFunConfig.DECISION_SERVICE_ENABLED.get());
+        return parameters(root,maid,false);
     }
     public Parameter parameters(ObjectParameter root,EntityMaid maid,boolean decisionEnabled) {
         root.addProperties("steps",ArrayParameter.create().setItems(StringParameter.create().setMaxLength(256)).setMinItems(1).setMaxItems(32),true);
         root.addProperties("current_step",IntegerParameter.create().setMinimum(0).setMaximum(31),true);
         root.addProperties("completion",AgentTool.completionParameter(),false);
-        ObjectParameter action=ObjectParameter.create();
-        action.addProperties("tool",StringParameter.create().setDescription("Exact eligible tool id; queue management and nested planning are excluded."),true);
-        action.addProperties("arguments_json",StringParameter.create().setMaxLength(8192).setDescription("JSON object of fixed arguments. Omit enum/boolean fields to let the decision service choose. Required free-text fields must be supplied by the planner. Use live bindings, never predict session/slot ids."),false);
-        action.addProperties("when",StringParameter.create().setMaxLength(512).setDescription("When this alternative is suitable for the current step."),false);
-        ObjectParameter step=ObjectParameter.create();step.addProperties("description",StringParameter.create().setMaxLength(512),true);
-        step.addProperties("alternatives",ArrayParameter.create().setItems(action).setRange(1,32),true);
-        step.addProperties("precondition",AgentTool.completionParameter().setDescription("Optional live predicate which MUST hold before dispatch; otherwise re-plan."),false);
-        step.addProperties("until",AgentTool.completionParameter().setDescription("Optional verified outcome. Repeat this step only until this live predicate is satisfied; counts are calculated by code."),false);
-        step.addProperties("skip_if",AgentTool.completionParameter().setDescription("Skip an already unnecessary step when this server predicate is verified. Otherwise execute once; unlike until, this does not repeat the step."),false);
-        ObjectParameter targetBinding=ObjectParameter.create();targetBinding.addProperties("kind",StringParameter.create().addEnumValues("block","container","entity"),true);
-        targetBinding.addProperties("description",StringParameter.create().setMaxLength(256).setDescription("Owner-authorized target description; choose only from this generation's observed candidates, never broaden scope."),true);
-        step.addProperties("target_binding",targetBinding.setDescription("Optional finite target binding. Use $target.x/$target.y/$target.z/$target.registry_id or $target.entity_id/$target.entity_uuid in arguments. Coordinates and identities are supplied by code."),false);
-        if(decisionEnabled)
-            root.addProperties("action_steps",ArrayParameter.create().setItems(step).setRange(1,32).setDescription("Optional full executable plan covering ALL requirements. One fully specified alternative runs directly; finite enum/boolean alternatives use JEV/Decider. $live.session_id, $live.revision, $live.remaining_N, $live.from_slot_N, $live.to_slot_N, $live.transfer_count_N refer to the Nth atomic completion condition, indexed from 0. Arguments involving images, unknown bindings or required free text return to the execution LLM. Existing text plans remain supported."),false);
+        if (decisionEnabled) {
+            ObjectParameter action=ObjectParameter.create();
+            action.addProperties("tool",StringParameter.create().setDescription("Exact eligible tool id; queue management and nested planning are excluded."),true);
+            action.addProperties("arguments_json",StringParameter.create().setMaxLength(8192).setDescription("JSON object of fixed arguments. Omit enum/boolean fields to let the decision service choose. Required free-text fields must be supplied by the planner. Use live bindings, never predict session/slot ids."),false);
+            action.addProperties("when",StringParameter.create().setMaxLength(512).setDescription("When this alternative is suitable for the current step."),false);
+            ObjectParameter step=ObjectParameter.create();step.addProperties("description",StringParameter.create().setMaxLength(512),true);
+            step.addProperties("alternatives",ArrayParameter.create().setItems(action).setRange(1,32),true);
+            step.addProperties("precondition",AgentTool.completionPredicateParameter().setDescription("Optional live predicate which MUST hold before dispatch; otherwise re-plan."),false);
+            step.addProperties("until",AgentTool.completionPredicateParameter().setDescription("Optional verified outcome. Repeat this step only until this live predicate is satisfied; counts are calculated by code."),false);
+            step.addProperties("skip_if",AgentTool.completionPredicateParameter().setDescription("Skip an already unnecessary step when this server predicate is verified. Otherwise execute once; unlike until, this does not repeat the step."),false);
+            ObjectParameter targetBinding=ObjectParameter.create();targetBinding.addProperties("kind",StringParameter.create().addEnumValues("block","container","entity"),true);
+            targetBinding.addProperties("description",StringParameter.create().setMaxLength(256).setDescription("Owner-authorized target description; choose only from this generation's observed candidates, never broaden scope."),true);
+            targetBinding.addProperties("scope",StringParameter.create().setMaxLength(64).setDescription("Optional subtask ID. Identical scoped target queries reuse one semantic selection while identity and labels remain current. Use a different scope for an independent target choice, especially after movement. Bindings expire on owner amendment or a new execution generation."),false);
+            step.addProperties("target_binding",targetBinding.setDescription("Optional finite target binding. Use $target.x/$target.y/$target.z/$target.registry_id or $target.entity_id/$target.entity_uuid in arguments. Coordinates and identities are supplied by code."),false);
+            root.addProperties("action_steps",ArrayParameter.create().setItems(step).setRange(1,32).setDescription("Optional next executable segment; the completion contract still covers ALL owner requirements. One fully specified alternative runs directly; finite enum/boolean alternatives use JEV/Decider. $live.session_id, $live.revision, $live.remaining_N, $live.from_slot_N, $live.to_slot_N, $live.transfer_count_N refer to the Nth atomic completion condition, indexed from 0. Arguments involving images, unknown bindings or required free text return to the execution LLM. Existing text plans remain supported."),false);
+        }
         root.addProperties("complete",BoolParameter.create().setDescription("Default false. Declare all user requirements and steps finished; current_step must be the final index, GUI must be closed. Runtime verifies settled live facts before sending the completion notification. Not an automatic success override."),false);
         return root;
     }

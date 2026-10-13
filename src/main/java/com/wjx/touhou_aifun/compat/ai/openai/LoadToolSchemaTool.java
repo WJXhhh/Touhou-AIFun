@@ -45,7 +45,7 @@ public final class LoadToolSchemaTool implements ITool<String> {
         StringParameter value = StringParameter.create();
         // The immutable per-turn directory is authoritative. Avoid rebuilding every third-party
         // trigger/schema here merely to duplicate a potentially huge enum in the meta-tool schema.
-        value.setDescription("Exact missing extension tool id, or group:gui to load the GUI family together.");
+        value.setDescription("Exact missing extension tool id, group:gui for GUI tools, or group:task_actions for optional executor action-plan syntax.");
         root.addProperties("tool_name", value);
         return root;
     }
@@ -55,6 +55,17 @@ public final class LoadToolSchemaTool implements ITool<String> {
 
     @Override
     public LLMCallback onCall(String toolId, String result, LLMCallback callback) {
+        if ("group:task_actions".equals(result)) {
+            if (!(callback instanceof com.wjx.touhou_aifun.chat.agent.TaskCallback task) || !task.decisionServiceEnabled())
+                return callback.addToolResult("task_action_decisions_unavailable", toolId);
+            if (task.task.loadedTools.add(result)) {
+                int policyIndex=0;
+                while(policyIndex<callback.getMessages().size() && callback.getMessages().get(policyIndex).role()==com.github.tartaricacid.touhoulittlemaid.ai.service.llm.Role.SYSTEM)policyIndex++;
+                callback.getMessages().add(policyIndex,com.github.tartaricacid.touhoulittlemaid.ai.service.llm.LLMMessage.systemChat(callback.getMaid(),com.wjx.touhou_aifun.chat.agent.AgentTaskInstructions.DECISION_POLICY));
+                ToolContextSelector.clearSnapshot(callback);
+            }
+            return callback.addToolResult("Optional action_steps syntax loaded. Plan only the next useful executable segment; normal tool calls remain available. Never rewrite the full task just to use decisions.", toolId);
+        }
         if(com.wjx.touhou_aifun.chat.agent.AgentRuntime.enabled(callback.getMaid())
                 && com.wjx.touhou_aifun.chat.agent.AgentExecution.foreground(callback)
                 && ("group:gui".equals(result) || !com.wjx.touhou_aifun.chat.agent.AgentExecution.foregroundTool(result)))

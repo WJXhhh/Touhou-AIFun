@@ -16,21 +16,23 @@ public final class TaskTargetBindings {
         public JsonArray modelTargets() {var out=new JsonArray();for(var target:targets){var row=target.data().deepCopy();row.addProperty("id",target.id());row.addProperty("kind",target.kind());out.add(row);}return out;}
     }
     private TaskTargetBindings() { }
-    public static Capture capture(TaskCallback callback) {
+    public static Capture capture(TaskCallback callback) {return capture(callback,true);}
+    public static Capture capture(TaskCallback callback,boolean includeInventory) {
         var maid=callback.getMaid();var scan=callback.decisionObservation("scan_surroundings");
         var out=new ArrayList<ObservedTargetCatalog.Target>();var proof=new JsonObject();var targets=new JsonArray();proof.add("observed_targets",targets);
         if(scan==null || !scan.has("dimension") || !maid.level().dimension().location().toString().equals(scan.get("dimension").getAsString()))return new Capture(List.of(),proof);
         proof.add("scan",scan.deepCopy());
         for(var observed:ObservedTargetCatalog.fromScan(scan)) {
-            var data=observed.data().deepCopy();var binding=observed.binding().deepCopy();var identity=new JsonObject();identity.addProperty("id",observed.id());String kind=observed.kind();
+            var data=observed.data().deepCopy();var binding=observed.binding().deepCopy();var identity=new JsonObject();identity.addProperty("id",observed.id());if(data.has("dimension"))identity.add("dimension",data.get("dimension"));String kind=observed.kind();
             if(kind.equals("block")) {
                 var xyz=data.getAsJsonArray("position");var pos=new BlockPos(xyz.get(0).getAsInt(),xyz.get(1).getAsInt(),xyz.get(2).getAsInt());
+                identity.add("position",xyz.deepCopy());
                 if(!maid.level().hasChunkAt(pos) || !maid.isWithinRestriction(pos))continue;
                 var state=maid.level().getBlockState(pos);if(!BuiltInRegistries.BLOCK.getKey(state.getBlock()).toString().equals(data.get("registry_id").getAsString()))continue;
                 var entity=maid.level().getBlockEntity(pos);if(entity instanceof Container && state.getMenuProvider(maid.level(),pos)!=null)kind="container";
-                identity.addProperty("state",state.toString());if(entity!=null)identity.addProperty("block_entity",entity.saveWithoutMetadata().toString());
+                identity.addProperty("state",state.toString());if(includeInventory && entity!=null)identity.addProperty("block_entity",entity.saveWithoutMetadata().toString());
                 var container=state.getBlock() instanceof ChestBlock?ChestBlock.getContainer((ChestBlock)state.getBlock(),state,maid.level(),pos,true):entity instanceof Container c?c:null;
-                if(container!=null) {var stacks=new JsonArray();for(int n=0;n<container.getContainerSize();n++)stacks.add(com.wjx.touhou_aifun.maid.gui.MaidGuiSession.stack(container.getItem(n)));identity.add("container_inventory",stacks);}
+                if(includeInventory && container!=null) {var stacks=new JsonArray();for(int n=0;n<container.getContainerSize();n++)stacks.add(com.wjx.touhou_aifun.maid.gui.MaidGuiSession.stack(container.getItem(n)));identity.add("container_inventory",stacks);}
                 if(data.has("labels")) {
                     var signs=new JsonArray();
                     // Compare the actual sign text to the scan, rather than reusing a stale label.

@@ -60,11 +60,15 @@ public final class ToolCatalogSnapshot {
                     && !com.wjx.touhou_aifun.chat.agent.AgentExecution.foregroundTool(id)) return;
             try {
                 if (!ToolContextSelector.triggers(tool, maid, callback, triggerContext)) return;
-                String summary = tool.summary(maid);
+                boolean taskExecutor = callback instanceof com.wjx.touhou_aifun.chat.agent.TaskCallback;
+                String summary = tool instanceof com.wjx.touhou_aifun.compat.ai.action.GuiTool gui
+                        ? gui.summary(maid, taskExecutor) : tool.summary(maid);
                 ObjectParameter root = ObjectParameter.create();
                 Parameter parameter = tool instanceof com.wjx.touhou_aifun.chat.agent.TaskPlanningTool planner
                         && callback instanceof com.wjx.touhou_aifun.chat.agent.TaskCallback executor
-                        ? planner.parameters(root,maid,executor.decisionServiceEnabled()) : tool.parameters(root, maid);
+                        ? planner.parameters(root,maid,executor.decisionServiceEnabled() && executor.task.loadedTools.contains("group:task_actions"))
+                        : tool instanceof com.wjx.touhou_aifun.compat.ai.action.GuiTool gui
+                            ? gui.parameters(root, maid, taskExecutor) : tool.parameters(root, maid);
                 Tool openAI = FunctionTool.create().setName(id).setDescription(summary)
                         .setParameters(parameter).build();
                 JsonObject anthropic = new JsonObject();

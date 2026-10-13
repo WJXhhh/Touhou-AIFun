@@ -55,4 +55,33 @@ class TaskTemplatePlannerTest {
         var plan=TaskTemplatePlanner.fromCompletion(completion);assertNotNull(plan);assertEquals(completion,plan.completion());assertEquals(4,plan.steps().size());assertTrue(plan.steps().toString().contains("switch_sit"));
         assertNull(TaskTemplatePlanner.fromCompletion(json("{\"kind\":\"position\",\"dimension\":\"minecraft:overworld\",\"position\":[1,64,0]}")));
     }
+    @Test void multipleItemsShareOneOpeningPerContainerWithoutLosingConditionsOrBindingIndices(){
+        var conditions=new JsonArray();for(String item:List.of("minecraft:iron_ingot","minecraft:gold_ingot"))for(int x:List.of(1,2))conditions.add(json("{\"kind\":\"transfer\",\"dimension\":\"minecraft:overworld\",\"position\":["+x+",64,0],\"item\":\""+item+"\",\"count\":5,\"to_maid\":true}"));
+        var full=json("{\"kind\":\"all\"}");full.add("conditions",conditions);var plan=TaskTemplatePlanner.fromCompletion(full);
+        assertEquals(full,plan.completion());assertEquals(8,plan.steps().size());
+        assertEquals("$live.from_slot_2",plan.steps().get(2).getAsJsonObject().getAsJsonArray("alternatives").get(0).getAsJsonObject().getAsJsonObject("arguments").get("slot").getAsString());
+        assertEquals(2,ActionPlan.parse(plan.steps().get(0).getAsJsonObject()).skipIf().getAsJsonArray("conditions").size());
+        assertEquals(1,ActionPlan.parse(plan.steps().get(4).getAsJsonObject()).alternatives().size());
+    }
+    @Test void groupingNeverMovesTransfersAcrossAnExplicitStateBoundary(){
+        var first=json("{\"kind\":\"transfer\",\"dimension\":\"d\",\"position\":[1,64,0],\"item\":\"minecraft:iron_ingot\",\"count\":5,\"to_maid\":true}");var full=json("{\"kind\":\"all\"}");var conditions=new JsonArray();conditions.add(first);conditions.add(json("{\"kind\":\"maid_state\",\"dimension\":\"d\",\"state\":\"follow\",\"value\":\"true\"}"));conditions.add(first.deepCopy());full.add("conditions",conditions);
+        assertEquals(7,TaskTemplatePlanner.fromCompletion(full).steps().size());
+    }
+    @Test void explicitEachQuantitiesBuildAFullContractWithoutAssumingUnobservedStocks(){
+        var selected=new TaskTemplatePlanner.Selection("receive",null,List.of(target(1),target(2)));var plan=TaskTemplatePlanner.explicitTransfers(selected,List.of("minecraft:gold_ingot"),answers("per_target","n_5"),Map.of(),"每箱取5个金锭",.9,Map.of("minecraft:gold_ingot",64));
+        assertNotNull(plan);assertEquals(2,plan.completion().getAsJsonArray("conditions").size());
+        assertNull(TaskTemplatePlanner.explicitTransfers(selected,List.of("minecraft:gold_ingot"),answers("total","n_5"),Map.of(),"总共取5个金锭",.9,Map.of("minecraft:gold_ingot",64)),"Collective allocation still needs actual source quantities");
+        assertNull(TaskTemplatePlanner.explicitTransfers(selected,List.of("minecraft:gold_ingot"),answers("per_target","all"),Map.of(),"全部金锭",.9,Map.of("minecraft:gold_ingot",64)));
+    }
+    @Test void explicitDepositUsesOnlyActualBackpackSupply(){
+        var selected=new TaskTemplatePlanner.Selection("deliver",null,List.of(target(1),target(2)));var items=List.of("minecraft:gold_ingot");
+        assertNotNull(TaskTemplatePlanner.explicitTransfers(selected,items,answers("per_target","n_4"),Map.of("minecraft:gold_ingot",8L),"每箱放4个金锭",.9,Map.of("minecraft:gold_ingot",64)));
+        assertNull(TaskTemplatePlanner.explicitTransfers(selected,items,answers("per_target","n_4"),Map.of("minecraft:gold_ingot",7L),"每箱放4个金锭",.9,Map.of("minecraft:gold_ingot",64)));
+    }
+    @Test void orderedTransferAndFinalStateCombinationPreservesBothGoals(){
+        var schemas=Map.of("switch_sit",json("{\"properties\":{\"sit\":{\"type\":\"boolean\"}}}"),"inspect_containers",new JsonObject(),"open_gui",new JsonObject(),"gui_action",new JsonObject(),"close_gui",new JsonObject());var start=TaskTemplatePlanner.start(schemas,List.of(target(1)));assertTrue(start.questions().getAsJsonObject("template").getAsJsonObject("criteria").has("receive_then_sit"));
+        var a=json("{\"coverage\":{\"noul\":0.99},\"template\":{\"choice\":\"receive_then_sit\",\"confidence\":0.99},\"sit_value\":{\"choice\":\"true\",\"confidence\":0.99},\"target_b1\":{\"noul\":0.99}}");var selection=TaskTemplatePlanner.select(start,a,"minecraft:overworld",.9);assertNotNull(selection);
+        var plan=TaskTemplatePlanner.explicitTransfers(selection,List.of("minecraft:gold_ingot"),answers("total","n_5"),Map.of(),"取5个金锭后坐下",.9,Map.of("minecraft:gold_ingot",64));assertNotNull(plan);assertEquals(2,plan.completion().getAsJsonArray("conditions").size());assertEquals("switch_sit",ActionPlan.parse(plan.steps().get(plan.steps().size()-1).getAsJsonObject()).alternatives().get(0).tool());
+        a.getAsJsonObject("coverage").addProperty("noul",.1);assertNull(TaskTemplatePlanner.select(start,a,"minecraft:overworld",.9));
+    }
 }

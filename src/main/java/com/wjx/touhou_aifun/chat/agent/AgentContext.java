@@ -70,7 +70,6 @@ public final class AgentContext {
     }
     public static List<LLMMessage> compact(List<LLMMessage> source, int budget, TaskResultStore store) {
         List<LLMMessage> out = new ArrayList<>(source);
-        if (ContextTokenEstimator.estimate(out) <= budget * .8) return out;
         // Several serial actions can return full snapshots in one closed batch. Preserve the
         // latest structure and current delta; earlier snapshots remain paired as referenced facts.
         Set<Integer> closedResults = new HashSet<>();
@@ -91,6 +90,7 @@ public final class AgentContext {
                 out.set(i, new LLMMessage(m.role(), ToolResultProjection.domainSummary(value.toString()), m.gameTime(), m.toolCalls(), m.toolCallId()));
             } catch (RuntimeException ignored) { }
         }
+        if (ContextTokenEstimator.estimate(out) <= budget * .8) return List.copyOf(out);
         // First reduce large results without breaking the protocol envelope.
         for (int i = 0; i < out.size(); i++) {
             LLMMessage m = out.get(i);

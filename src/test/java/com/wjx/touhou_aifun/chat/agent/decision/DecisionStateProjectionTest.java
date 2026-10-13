@@ -28,4 +28,7 @@ class DecisionStateProjectionTest {
         var historical=DecisionStateProjection.observations(Map.of("scan_surroundings",json("{\"sign_texts\":[\"iron\"]}"),"inspect_gui",json("{\"session_id\":\"old\"}")));
         assertEquals(1,historical.size());assertTrue(historical.get(0).getAsJsonObject().getAsJsonObject("result").has("sign_texts"));
     }
+    @Test void privateClosedContainerEvidenceNeverBecomesAnObservedModelInventory(){
+        var live=json("{\"binding_proof\":{\"secret\":true},\"targets\":[{\"position\":[1,2,3],\"items\":[{\"item\":\"minecraft:diamond\",\"count\":64}]}],\"action_targets\":[{\"position\":[1,2,3],\"sign\":\"private NBT\"}]}");var projected=DecisionStateProjection.modelView(live);assertFalse(projected.has("binding_proof"));assertFalse(projected.toString().contains("diamond"));assertFalse(projected.toString().contains("private NBT"));assertTrue(live.toString().contains("diamond"));
+    }
 }

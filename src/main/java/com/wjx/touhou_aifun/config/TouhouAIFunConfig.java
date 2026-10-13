@@ -7,6 +7,8 @@ public final class TouhouAIFunConfig {
     public static final ForgeConfigSpec.BooleanValue AGENT_RUNTIME;
     public static final ForgeConfigSpec.BooleanValue AGENT_DIAGNOSTICS;
     public static final ForgeConfigSpec.ConfigValue<String> AGENT_DECISION_MODEL;
+    public static final ForgeConfigSpec.ConfigValue<String> AGENT_DEEPSEEK_EFFORT;
+    public static final ForgeConfigSpec.BooleanValue DECISION_STARTUP_TEMPLATES;
     public static final ForgeConfigSpec.BooleanValue DECISION_SERVICE_ENABLED;
     public static final ForgeConfigSpec.ConfigValue<String> DECISION_SERVICE_PROVIDER;
     public static final ForgeConfigSpec.ConfigValue<String> DECISION_JEV_URL, DECISION_JEV_MODEL, DECISION_JEV_KEY;
@@ -36,12 +38,15 @@ public final class TouhouAIFunConfig {
         builder.push("agentRuntimeV1");
         AGENT_RUNTIME = builder.comment("Experimental independent task runtime. Resume saved tasks explicitly after reload.").define("enabled", false);
         AGENT_DIAGNOSTICS = builder.comment("Log stage timings and sizes, never arguments or dialogue.").define("diagnostics", false);
+        AGENT_DEEPSEEK_EFFORT = builder.comment("DeepSeek official endpoint background execution effort: low/high/max, or provider to keep the provider default. Ordinary chat is unchanged.")
+                .define("deepseekExecutionEffort", "low", v -> v instanceof String s && java.util.Set.of("low","high","max","provider").contains(s));
         AGENT_DECISION_MODEL = builder.comment("Background EXECUTION LLM as [siteId,modelId]; legacy key kept for compatibility. This is not the typed decision service.",
                 "Empty uses the maid's chat model. Uses existing LLM connections; requires function calling.",
                 "Invalid selections pause the task instead of silently switching providers. Applies to new execution generations.")
                 .define("decisionModel", "", value -> value instanceof String text && text.length() <= 1024);
         builder.push("decisionService");
         DECISION_SERVICE_ENABLED=builder.comment("Use a native typed decision service for grounded finite choices; uncertainty falls back to the execution LLM.").define("enabled",false);
+        DECISION_STARTUP_TEMPLATES=builder.comment("Optional speculative startup template/skill lookup. Disabled by default so arbitrary tasks go directly to the execution LLM without a serial decision probe. Explicit action plans still use native decisions.").define("startupTemplates",false);
         DECISION_SERVICE_PROVIDER=builder.define("provider","jev",v->v instanceof String s && java.util.Set.of("jev","perplexity").contains(s));
         DECISION_TIMEOUT_MS=builder.defineInRange("timeoutMs",3000,100,30000);
         DECISION_MIN_CONFIDENCE=builder.defineInRange("minConfidence",0.9,0.51,1.0);

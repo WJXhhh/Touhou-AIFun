@@ -148,6 +148,8 @@ public class ReasoningCompatOpenAIClient extends LLMOpenAIClient {
         }
 
         com.google.gson.JsonObject requestBody = GSON.toJsonTree(chatCompletion).getAsJsonObject();
+        com.wjx.touhou_aifun.chat.agent.DeepSeekTaskRequestPolicy.apply(requestBody, site.url(), model,
+                callback instanceof com.wjx.touhou_aifun.chat.agent.TaskCallback, false, TouhouAIFunConfig.AGENT_DEEPSEEK_EFFORT.get());
         com.wjx.touhou_aifun.vision.MultimodalTurnContext.append(callback,
                 com.wjx.touhou_aifun.vision.UnifiedModelCatalog.VisualProtocol.CHAT_COMPLETIONS, requestBody.getAsJsonArray("messages"));
         HttpRequest.Builder builder = HttpRequest.newBuilder()

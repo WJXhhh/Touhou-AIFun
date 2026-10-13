@@ -21,7 +21,7 @@ public final class DecisionQuestionCompiler {
                 if(field.values().isEmpty()) {
                     double p=DecisionProtocol.probability(answer.get("noul"));
                     if(p>=threshold) args.addProperty(field.name(),true);
-                    else if(p<=1-threshold) args.addProperty(field.name(),false);else return null;
+                    else if(p<=1-threshold+1e-12) args.addProperty(field.name(),false);else return null;
                 } else {
                     if(DecisionProtocol.probability(answer.get("confidence"))<threshold) return null;
                     int index=Integer.parseInt(answer.get("choice").getAsString().substring(1));

@@ -12,18 +12,23 @@ import java.util.function.*;
 public final class TaskDecisionRouter {
     private final TaskCallback callback;
     private final DecisionServiceSettings.Snapshot settings;
+    private final boolean startupTemplates;
     private boolean disabled,pending,initialScan;
     private int executingStep=-1;
     private int templateAttemptVersion;
     private boolean templateDelegated;
     private TaskTemplatePlanner.Selection inspecting;
     private JsonObject inspectionRequest;
+    private List<String> explicitItems;
+    private JsonObject explicitAnswers;
     private ActionPlan.Step failedStep;
     private DecisionQuestionCompiler.Selection dispatched,failedSelection;
     private String failureReason;
     private boolean recoveryPrepared;
     private final Map<Integer,Integer> recoveries=new HashMap<>();
-    public TaskDecisionRouter(TaskCallback callback) { this.callback=callback;settings=DecisionServiceSettings.snapshot(); }
+    private final TargetBindingCache targetBindings=new TargetBindingCache();
+    private int bindingVersion;
+    public TaskDecisionRouter(TaskCallback callback) { this.callback=callback;settings=DecisionServiceSettings.snapshot();startupTemplates=com.wjx.touhou_aifun.config.TouhouAIFunConfig.DECISION_STARTUP_TEMPLATES.get(); }
     public boolean enabled() { return settings.view().enabled(); }
     public boolean permitsCompletion() {
         var task=callback.task;
@@ -32,6 +37,7 @@ public final class TaskDecisionRouter {
     public boolean route(LLMClient client,JsonObject checkpoint,ToolCatalogSnapshot catalog,boolean freshWorld,boolean recovering) {
         if(!enabled()) return false;
         if(pending) return true;
+        if(bindingVersion!=callback.task.goalVersion){bindingVersion=callback.task.goalVersion;targetBindings.clear();templateDelegated=false;templateAttemptVersion=0;failedStep=null;recoveryPrepared=false;inspecting=null;inspectionRequest=null;explicitItems=null;explicitAnswers=null;recoveries.clear();}
         if(recovering || failedStep!=null) {
             if(routeRecovery(client,recovering)) return true;
             if(recovering) return fallback("recovery_requires_planner");
@@ -48,16 +54,21 @@ public final class TaskDecisionRouter {
                 var originalStep=ActionPlan.parse(task.actionSteps.get(task.actionStep).getAsJsonObject());
                 if(originalStep.skipIf()!=null && AgentCompletion.verifyPredicate(callback.getMaid(),task,originalStep.skipIf(),true)) {task.actionStep++;continue;}
                 if(originalStep.until()!=null && AgentCompletion.verifyPredicate(callback.getMaid(),task,originalStep.until(),true)) {task.actionStep++;continue;}
-                var capture=originalStep.targetBinding()==null?null:TaskTargetBindings.capture(callback);
-                var step=ObservedTargetCatalog.expand(originalStep,capture==null?List.of():capture.targets());
+                var capture=originalStep.targetBinding()==null?null:TaskTargetBindings.capture(callback,false);
+                var reused=capture==null?null:targetBindings.reuse(originalStep,capture);
+                var step=reused!=null?reused:ObservedTargetCatalog.expand(originalStep,capture==null?List.of():capture.targets());
+                if(reused!=null)callback.decisionTrace("decision_binding_reused","step="+task.actionStep);
                 if(step.until()!=null && AgentCompletion.verifyPredicate(callback.getMaid(),task,step.until(),true)) {task.actionStep++;continue;}
                 if(step.precondition()!=null && !AgentCompletion.verifyPredicate(callback.getMaid(),task,step.precondition(),true)) return fallback("precondition_unmet");
                 if(step.alternatives().size()==1 && step.alternatives().get(0).tool().equals("close_gui") && MaidGuiSessionManager.session(callback.getMaid().getUUID())==null) {task.actionStep++;continue;}
+                if(reuseOpenMenu(step)){callback.decisionTrace("decision_menu_reused","step="+task.actionStep);task.actionStep++;AgentRuntime.save(callback.getMaid());continue;}
                 var preparation=callback.executionTiming.child("decision_prepare");
                 var live=callback.decisionLiveState(step);
                 if(capture!=null)live.add("binding_proof",capture.fingerprint());
                 var tools=new LinkedHashMap<String,DecisionQuestionCompiler.Tool>();
                 for(var e:catalog.decisionEntries()) tools.put(e.id(),new DecisionQuestionCompiler.Tool(e.id(),e.summary(),e.anthropicTool().getAsJsonObject("input_schema")));
+                var skills=step.alternatives().stream().anyMatch(a->a.tool().equals("use_skill"))?skillCatalog(catalog):null;
+                if(skills!=null)live.add("skill_catalog",skills.fingerprint());
                 var provider=settings.client();
                 var compiled=DecisionQuestionCompiler.compile(step,tools,live.getAsJsonObject("bindings"),provider.capabilities());
                 preparation.finish(compiled==null?"fallback":"ok",compiled==null?0:compiled.questions().toString().length());
@@ -69,14 +80,15 @@ public final class TaskDecisionRouter {
                 if(!DecisionRequestGate.acquire(settings.view().provider(),System.nanoTime())) return fallback("rate_limit");
                 JsonObject state=new JsonObject();state.addProperty("goal",task.goal);state.addProperty("planned_step",step.description());
                 state.add("constraints",new Gson().toJsonTree(task.constraints));state.add("live",DecisionStateProjection.modelView(live));
+                if(skills!=null)state.add("skill_candidates",skills.modelView());
                 if(checkpoint.has("recent_failures")) state.add("recent_failures",checkpoint.get("recent_failures").deepCopy());
                 state.add("observations",callback.decisionObservations());
-                state.getAsJsonObject("live").remove("binding_proof");if(capture!=null)state.add("target_candidates",capture.modelTargets());
+                state.getAsJsonObject("live").remove("targets");if(capture!=null)state.add("target_candidates",capture.modelTargets());
                 int index=task.actionStep;
                 return evaluate(client,"action",state,compiled.questions(),live,()->{
-                    var current=callback.decisionLiveState(step);if(capture!=null)current.add("binding_proof",TaskTargetBindings.capture(callback).fingerprint());return current;
+                    var current=callback.decisionLiveState(step);if(capture!=null)current.add("binding_proof",TaskTargetBindings.capture(callback,false).fingerprint());if(skills!=null)current.add("skill_catalog",currentSkills().fingerprint());return current;
                 },answers->{var selected=compiled.select(answers,settings.view().minConfidence());
-                    if(selected==null){fallback("uncertain_or_none");callback.next(client);}else dispatch(selected,client,index,"decision_selected");});
+                    if(selected==null){fallback("uncertain_or_none");callback.next(client);}else {if(capture!=null)targetBindings.remember(originalStep,capture,selected,live.getAsJsonObject("bindings"));dispatch(selected,client,index,"decision_selected");}});
             }
             if(AgentCompletion.verify(callback.getMaid(),task,true)) {
                 if(MaidGuiSessionManager.session(callback.getMaid().getUUID())!=null) {
@@ -102,8 +114,7 @@ public final class TaskDecisionRouter {
                 try {
                     var now=current.get();
                     var previous=live.deepCopy();
-                    // A posture/schedule decision does not depend on unrelated containers or their labels.
-                    if(purpose.equals("template") && result!=null && error==null && Set.of("follow","sit","schedule","work_task").contains(result.answers().getAsJsonObject("template").get("choice").getAsString())) {previous.remove("binding_proof");now.remove("binding_proof");}
+                    if(result!=null && error==null){previous=DecisionFreshness.project(previous,purpose,state,result.answers());now=DecisionFreshness.project(now,purpose,state,result.answers());}
                     if(task.generation!=generation || task.goalVersion!=version || task.actionStep!=index || !task.pendingAmendment.isBlank() || !previous.equals(now)) {
                         timing.finish("stale",0);callback.decisionTrace("decision_stale_fields",staleFields(previous,now));fallback("stale_observation");callback.next(client);return;
                     }
@@ -120,7 +131,8 @@ public final class TaskDecisionRouter {
             }));return true;
         }catch(RuntimeException invalid){pending=false;timing.finish("fallback",0);return fallback("request_invalid");}
     }
-    private JsonObject fingerprint() {var state=callback.decisionLiveState();state.add("binding_proof",TaskTargetBindings.capture(callback).fingerprint());return state;}
+    private JsonObject fingerprint() {return fingerprint(true);}
+    private JsonObject fingerprint(boolean inventory) {var state=callback.decisionLiveState();state.add("binding_proof",TaskTargetBindings.capture(callback,inventory).fingerprint());return state;}
     private static String staleFields(JsonObject old,JsonObject current) {
         var changed=new ArrayList<String>();for(String key:old.keySet())if(!Objects.equals(old.get(key),current.get(key)))changed.add(key);
         if(changed.contains("binding_proof")) {
@@ -135,9 +147,10 @@ public final class TaskDecisionRouter {
         var candidates=new JsonArray();for(var target:capture.targets())if(target.kind().equals("container")){var row=target.data().deepCopy();row.addProperty("id",target.id());row.addProperty("kind",target.kind());candidates.add(row);}state.add("target_candidates",candidates);return state;
     }
     private boolean bootstrap(LLMClient client,ToolCatalogSnapshot catalog) {
+        if (!startupTemplates) return false;
         var task=callback.task;
         if(templateDelegated || disabled || settings.apiKey().isBlank())return false;
-        if(!task.constraints.isEmpty())return false;
+        if(!task.constraints.isEmpty() && inspecting==null)return amend(client,catalog);
         if(inspecting!=null) {
             if(inspectionRequest!=null) {var request=inspectionRequest;inspectionRequest=null;dispatch(new DecisionQuestionCompiler.Selection("inspect_containers",request),client,-1,"template_inspection");return true;}
             return finishInspection(client);
@@ -146,9 +159,11 @@ public final class TaskDecisionRouter {
         templateAttemptVersion=task.goalVersion;
         // Missing contracts after already committed operations need the owner's complete amended scope.
         if(task.completion==null && (!task.transfers.isEmpty() || task.appliedMutationVersion>0))return false;
-        var capture=TaskTargetBindings.capture(callback);var schemas=new LinkedHashMap<String,JsonObject>();
+        var capture=TaskTargetBindings.capture(callback,false);var schemas=new LinkedHashMap<String,JsonObject>();
         for(var entry:catalog.planningEntries())schemas.put(entry.id(),entry.anthropicTool().getAsJsonObject("input_schema"));
-        var start=TaskTemplatePlanner.start(schemas,capture.targets());if(start==null)return false;
+        var start=TaskTemplatePlanner.start(schemas,capture.targets());
+        var skills=skillCatalog(catalog);
+        if(start==null){if(skills.entries().isEmpty())return false;var questions=new JsonObject();questions.add("template",DecisionProtocol.choice("No supported full template is available; choose the full planner. The skill question may select guidance to read first.",Map.of("llm","Full planning required.")));questions.add("coverage",DecisionProtocol.noul("Is an offered complete executable template available? No: this catalogue offers only full planning with optional skill guidance."));start=new TaskTemplatePlanner.Start(questions,List.of(),Map.copyOf(schemas));}
         var existing=TaskTemplatePlanner.fromCompletion(task.completion);
         if(existing!=null) {
             start.questions().getAsJsonObject("template").getAsJsonObject("criteria").addProperty("contract","Rebuild all steps from the existing immutable FULL completion contract, including already settled quantities; never drop requirements.");
@@ -156,17 +171,83 @@ public final class TaskDecisionRouter {
         }
         var state=templateState("template_and_target_binding",capture);var observation=callback.decisionObservation("scan_surroundings");var coverage=new JsonObject();
         if(observation!=null)for(String key:List.of("truncated","omitted","omitted_important_target_details","omitted_sign_texts","coverage"))if(observation.has(key))coverage.add(key,observation.get(key));state.add("observation_coverage",coverage);
-        var live=fingerprint();return evaluate(client,"template",state,start.questions(),live,this::fingerprint,answers->{
+        var questions=start.questions().deepCopy();var skillQuestion=skills.question(settings.client().capabilities());
+        if(skillQuestion!=null){var expanded=questions.deepCopy();expanded.add("skill",skillQuestion);var proposed=state.deepCopy();proposed.add("skill_candidates",skills.modelView());if(StartupItemBatch.fits(settings.view().model(),proposed,expanded,settings.client().capabilities())){questions=expanded;state=proposed;}}
+        String goal=task.goal+"\n"+String.join("\n",task.constraints);var sizes=new TreeMap<String,Integer>();var counts=backpack(sizes);
+        var batch=StartupItemBatch.prepare(goal,ExplicitItemCatalog.named(goal),sizes,questions.getAsJsonObject("template"));
+        var mergedQuestions=batch.append(questions);var mergedState=state.deepCopy();batch.describe(mergedState);mergedState.add("backpack_counts",new Gson().toJsonTree(counts));
+        if(!batch.branches().isEmpty() && StartupItemBatch.fits(settings.view().model(),mergedState,mergedQuestions,settings.client().capabilities())){questions=mergedQuestions;state=mergedState;}else batch=new StartupItemBatch.Batch(Map.of());
+        var selectedStart=start;var selectedBatch=batch;boolean offersSkill=questions.has("skill");
+        var live=fingerprint(false);if(offersSkill)live.add("skill_catalog",skills.fingerprint());
+        return evaluate(client,"template",state,questions,live,()->{var current=fingerprint(false);if(offersSkill)current.add("skill_catalog",currentSkills().fingerprint());return current;},answers->{
             if(existing!=null && TaskRecoveryPolicy.confident(answers,"template",settings.view().minConfidence()) && answers.getAsJsonObject("template").get("choice").getAsString().equals("contract")
                     && Boolean.TRUE.equals(TaskRecoveryPolicy.booleanAnswer(answers,"coverage",settings.view().minConfidence()))) {install(existing,client,"contract");return;}
-            var selected=TaskTemplatePlanner.select(start,answers,callback.getMaid().level().dimension().location().toString(),settings.view().minConfidence());
-            if(selected==null){fallback("template_uncertain_or_unsupported");callback.next(client);return;}
+            var selected=TaskTemplatePlanner.select(selectedStart,answers,callback.getMaid().level().dimension().location().toString(),settings.view().minConfidence());
+            if(selected==null){
+                String skill=offersSkill && TaskRecoveryPolicy.confident(answers,"template",settings.view().minConfidence()) && answers.getAsJsonObject("template").get("choice").getAsString().equals("llm")?skills.select(answers,settings.view().minConfidence()):null;
+                if(skill!=null){templateDelegated=true;task.loadedTools.add("use_skill");var args=new JsonObject();args.addProperty("name",skill);callback.decisionTrace("decision_skill_selected","name="+skill+"; full_planning_required=true");dispatch(new DecisionQuestionCompiler.Selection("use_skill",args),client,-1,"skill_guidance");return;}
+                fallback("template_uncertain_or_unsupported");callback.next(client);return;
+            }
             if(selected.completion()!=null){install(TaskTemplatePlanner.fromCompletion(selected.completion()),client,selected.template());return;}
-            inspecting=selected;var request=new JsonObject();var targets=new JsonArray();request.add("targets",targets);
-            for(var target:selected.targets()){var row=new JsonObject();var xyz=target.data().getAsJsonArray("position");for(int n=0;n<3;n++)row.add(List.of("x","y","z").get(n),xyz.get(n));row.add("target",target.data().get("registry_id"));targets.add(row);}
-            if(MaidGuiSessionManager.session(callback.getMaid().getUUID())!=null){inspectionRequest=request;dispatch(new DecisionQuestionCompiler.Selection("close_gui",sessionArgs()),client,-1,"template_cleanup");return;}
-            dispatch(new DecisionQuestionCompiler.Selection("inspect_containers",request),client,-1,"template_inspection");
+            inspecting=selected;
+            var branch=selectedBatch.branches().get(selected.transferKind());
+            if(branch!=null){callback.decisionTrace("decision_startup_merged","template_target_items_quantity=true");acceptExplicitItems(branch.items(),branch.sizes(),selectedBatch.answers(selected.transferKind(),answers),counts,goal,client);}
+            else if(!bindExplicitItems(client))inspectSelected(client);
         });
+    }
+    private static DecisionSkillCatalog.Catalog skillCatalog(ToolCatalogSnapshot catalog) {
+        var entry=catalog.planningEntries().stream().filter(e->e.id().equals("use_skill")).findFirst();
+        return DecisionSkillCatalog.capture(entry.map(e->e.anthropicTool().getAsJsonObject("input_schema")).orElse(null));
+    }
+    private DecisionSkillCatalog.Catalog currentSkills(){return skillCatalog(com.wjx.touhou_aifun.compat.ai.openai.ToolContextSelector.snapshot(callback.getMaid(),callback));}
+    private boolean amend(LLMClient client,ToolCatalogSnapshot catalog) {
+        var task=callback.task;if(templateAttemptVersion==task.goalVersion)return false;templateAttemptVersion=task.goalVersion;
+        if(task.amendmentBaseCompletion==null || task.amendmentBaseVersion!=task.goalVersion-1)return false;
+        var schemas=new LinkedHashMap<String,JsonObject>();for(var entry:catalog.planningEntries())schemas.put(entry.id(),entry.anthropicTool().getAsJsonObject("input_schema"));
+        var sizes=new TreeMap<String,Integer>();backpack(sizes);var capture=TaskTargetBindings.capture(callback,false);
+        var start=TaskAmendmentPlanner.start(task.amendmentBaseCompletion,task.amendmentBaseText,capture.targets(),schemas,sizes);if(start==null)return false;
+        var state=templateState("owner_amendment",capture);state.add("prior_full_contract",task.amendmentBaseCompletion.deepCopy());state.addProperty("owner_amendment",task.amendmentBaseText);state.add("settled_transfers",new Gson().toJsonTree(task.transfers));
+        return evaluate(client,"amendment",state,start.questions(),fingerprint(false),()->fingerprint(false),answers->{
+            var plan=TaskAmendmentPlanner.select(start,answers,task.transfers,settings.view().minConfidence());
+            if(plan==null){fallback("amendment_unverified_or_unsupported");callback.next(client);return;}
+            install(plan,client,"owner_amendment");
+        });
+    }
+    private boolean bindExplicitItems(LLMClient client) {
+        String goal=callback.task.goal+"\n"+String.join("\n",callback.task.constraints);boolean receive=inspecting.transferKind().equals("receive");
+        var sizes=new TreeMap<String,Integer>();var backpack=backpack(sizes);
+        if(receive){sizes.clear();sizes.putAll(ExplicitItemCatalog.named(goal));if(goal.matches("(?is).*?(组|stacks?\\b).*"))return false;}
+        var items=List.copyOf(sizes.keySet());if(items.isEmpty() || items.size()>16)return false;
+        JsonObject questions;try{questions=TaskTemplatePlanner.itemQuestions(goal,items,sizes);}catch(RuntimeException unsupported){return false;}
+        var capture=TaskTargetBindings.capture(callback,false);var state=templateState("explicit_item_and_quantity_binding",capture);state.addProperty("template",inspecting.template());state.addProperty("source_stock_observed",false);state.add("backpack_counts",new Gson().toJsonTree(backpack));state.add("item_candidates",new Gson().toJsonTree(items));var ids=new JsonArray();inspecting.targets().forEach(t->ids.add(t.id()));state.add("selected_targets",ids);
+        return evaluate(client,"explicit_items",state,questions,fingerprint(false),()->fingerprint(false),answers->acceptExplicitItems(items,sizes,answers,backpack,goal,client));
+    }
+    private void acceptExplicitItems(List<String> items,Map<String,Integer> sizes,JsonObject answers,Map<String,Long> backpack,String goal,LLMClient client) {
+        if(!Boolean.TRUE.equals(TaskRecoveryPolicy.booleanAnswer(answers,"coverage",settings.view().minConfidence()))){fallback("explicit_quantity_unverified");callback.next(client);return;}
+        for(int i=0;i<items.size();i++)if(!TaskRecoveryPolicy.confident(answers,"item_"+i,settings.view().minConfidence()) || answers.getAsJsonObject("item_"+i).get("choice").getAsString().equals("unknown")){fallback("explicit_quantity_unverified");callback.next(client);return;}
+        var plan=TaskTemplatePlanner.explicitTransfers(inspecting,items,answers,backpack,goal,settings.view().minConfidence(),sizes);
+        if(plan!=null){callback.decisionTrace("decision_inspection_skipped","explicit_quantities=true");install(plan,client,inspecting.template());return;}
+        explicitItems=items;explicitAnswers=answers.deepCopy();inspectSelected(client);
+    }
+    private Map<String,Long> backpack(Map<String,Integer> sizes) {
+        var out=new TreeMap<String,Long>();var inventory=callback.getMaid().getAvailableBackpackInv();for(int i=0;i<inventory.getSlots();i++){var stack=inventory.getStackInSlot(i);if(!stack.isEmpty()){out.merge(com.wjx.touhou_aifun.maid.gui.MaidGuiSession.itemId(stack),(long)stack.getCount(),Long::sum);TaskTargetBindings.recordStackSize(sizes,stack);}}return out;
+    }
+    private void inspectSelected(LLMClient client) {
+        var request=new JsonObject();var targets=new JsonArray();request.add("targets",targets);
+        // End on the first execution target, so its live menu can be used directly.
+        for(int i=inspecting.targets().size()-1;i>=0;i--){var target=inspecting.targets().get(i);var row=new JsonObject();var xyz=target.data().getAsJsonArray("position");for(int n=0;n<3;n++)row.add(List.of("x","y","z").get(n),xyz.get(n));row.add("target",target.data().get("registry_id"));targets.add(row);}
+        if(MaidGuiSessionManager.session(callback.getMaid().getUUID())!=null){inspectionRequest=request;dispatch(new DecisionQuestionCompiler.Selection("close_gui",sessionArgs()),client,-1,"template_cleanup");return;}
+        dispatch(new DecisionQuestionCompiler.Selection("inspect_containers",request),client,-1,"template_inspection");
+    }
+    private boolean reuseOpenMenu(ActionPlan.Step step) {
+        if(step.skipIf()==null || com.wjx.touhou_aifun.chat.agent.AgentCompletionRules.leaves(step.skipIf()).stream().anyMatch(c->!AgentTaskState.completionKind(c).equals("transfer")) || step.alternatives().size()!=1 || !step.alternatives().get(0).tool().equals("open_gui"))return false;var args=step.alternatives().get(0).arguments();
+        if(args.has("item_slot") || !args.has("x") || !args.has("y") || !args.has("z") || step.targetBinding()!=null)return false;
+        if(!Set.of("x","y","z","target","coordinate_space","wait_policy","max_distance").containsAll(args.keySet()) || !args.has("coordinate_space") || !args.get("coordinate_space").getAsString().equals("world"))return false;
+        var session=MaidGuiSessionManager.session(callback.getMaid().getUUID());if(session==null || !(session.callback instanceof TaskCallback task) || task.task!=callback.task || task.stopped() || session.targetPosition==null || !session.menu().stillValid(session.actor))return false;
+        var pos=com.wjx.touhou_aifun.maid.gui.GuiBlockTarget.coordinates(args,callback.getMaid().blockPosition());var level=callback.getMaid().level();
+        int radius=args.has("max_distance")?args.get("max_distance").getAsInt():12;if(radius<1 || radius>16 || callback.getMaid().distanceToSqr(pos.getX()+.5,pos.getY()+.5,pos.getZ()+.5)>radius*radius)return false;
+        return pos.equals(session.targetPosition) && callback.getMaid().isWithinRestriction(pos) && level.hasChunkAt(pos)
+                && (!args.has("target") || args.get("target").getAsString().equals(net.minecraft.core.registries.BuiltInRegistries.BLOCK.getKey(level.getBlockState(pos).getBlock()).toString()));
     }
     private boolean finishInspection(LLMClient client) {
         var result=callback.decisionObservation("inspect_containers");
@@ -177,11 +258,12 @@ public final class TaskDecisionRouter {
             if(found==null || !"complete_opened_chest_menu".equals(found.get("coverage").getAsString()))return fallback("template_inspection_incomplete");
             var counts=new TreeMap<String,Long>();for(var value:found.getAsJsonArray("items")){var row=value.getAsJsonObject();counts.put(row.get("item").getAsString(),row.get("count").getAsLong());}
             if(!counts.equals(TaskTargetBindings.containerCounts(callback,target)))return fallback("template_inspection_stale");
-            stocks.add(counts);if(inspecting.template().equals("receive")){items.addAll(counts.keySet());TaskTargetBindings.containerStackSizes(callback,target,stackSizes);}
+            stocks.add(counts);if(inspecting.transferKind().equals("receive")){items.addAll(counts.keySet());TaskTargetBindings.containerStackSizes(callback,target,stackSizes);}
         }
         var backpack=new TreeMap<String,Long>();var inventory=callback.getMaid().getAvailableBackpackInv();for(int i=0;i<inventory.getSlots();i++){var stack=inventory.getStackInSlot(i);if(!stack.isEmpty())backpack.merge(com.wjx.touhou_aifun.maid.gui.MaidGuiSession.itemId(stack),(long)stack.getCount(),Long::sum);}
-        if(inspecting.template().equals("deliver"))items.addAll(backpack.keySet());
-        if(inspecting.template().equals("deliver"))for(int i=0;i<inventory.getSlots();i++)TaskTargetBindings.recordStackSize(stackSizes,inventory.getStackInSlot(i));
+        if(inspecting.transferKind().equals("deliver"))items.addAll(backpack.keySet());
+        if(inspecting.transferKind().equals("deliver"))for(int i=0;i<inventory.getSlots();i++)TaskTargetBindings.recordStackSize(stackSizes,inventory.getStackInSlot(i));
+        if(explicitAnswers!=null){var plan=TaskTemplatePlanner.transfers(inspecting,explicitItems,explicitAnswers,stocks,backpack,callback.task.goal+"\n"+String.join("\n",callback.task.constraints),settings.view().minConfidence(),stackSizes);explicitAnswers=null;explicitItems=null;if(plan==null)return fallback("template_quantity_or_scope_unverified");install(plan,client,inspecting.template());return true;}
         var ordered=List.copyOf(items);String goal=callback.task.goal+"\n"+String.join("\n",callback.task.constraints);
         JsonObject questions;try{questions=TaskTemplatePlanner.itemQuestions(goal,ordered,stackSizes);}catch(RuntimeException unsupported){return fallback("template_items_or_quantity_limit");}
         var state=templateState("item_and_quantity_binding",TaskTargetBindings.capture(callback));state.addProperty("template",inspecting.template());var targetIds=new JsonArray();inspecting.targets().forEach(t->targetIds.add(t.id()));state.add("selected_targets",targetIds);
@@ -210,7 +292,7 @@ public final class TaskDecisionRouter {
             var args=action.getAsJsonObject("arguments");var entry=com.wjx.touhou_aifun.compat.ai.openai.ToolContextSelector.snapshot(callback.getMaid(),callback).planningEntries().stream().filter(e->e.id().equals("switch_schedule")).findFirst();
             if(entry.isPresent()){var schema=entry.get().anthropicTool().getAsJsonObject("input_schema");var property=schema.getAsJsonObject("properties").getAsJsonObject("schedule");if(property.has("enum"))for(var candidate:property.getAsJsonArray("enum"))if(candidate.getAsString().equalsIgnoreCase(args.get("schedule").getAsString()))args.add("schedule",candidate);}
         }
-        task.steps=plan.steps().asList().stream().map(v->v.getAsJsonObject().get("description").getAsString()).toList();task.currentStep=0;inspecting=null;
+        task.steps=plan.steps().asList().stream().map(v->v.getAsJsonObject().get("description").getAsString()).toList();task.currentStep=0;inspecting=null;explicitItems=null;explicitAnswers=null;
         AgentRuntime.save(callback.getMaid());callback.decisionTrace("decision_template","template="+template+"; steps="+task.actionSteps.size()+"; full_contract_preserved=true");callback.next(client);
     }
     private JsonObject sessionArgs(){var args=new JsonObject();var session=MaidGuiSessionManager.session(callback.getMaid().getUUID());if(session!=null)args.addProperty("session_id",session.id.toString());return args;}
@@ -268,7 +350,7 @@ public final class TaskDecisionRouter {
     }
     private boolean fallback(String reason) {
         callback.executionTiming.child("decision_fallback:"+reason).finish("fallback",0);
-        templateDelegated=true;templateAttemptVersion=callback.task.goalVersion;inspecting=null;inspectionRequest=null;failedStep=null;recoveryPrepared=false;
+        templateDelegated=true;templateAttemptVersion=callback.task.goalVersion;inspecting=null;inspectionRequest=null;explicitItems=null;explicitAnswers=null;failedStep=null;recoveryPrepared=false;targetBindings.clear();
         callback.task.clearActionPlan();callback.decisionTrace("decision_fallback",reason);return false;
     }
     public void settled(boolean failed,boolean freshWorld) {

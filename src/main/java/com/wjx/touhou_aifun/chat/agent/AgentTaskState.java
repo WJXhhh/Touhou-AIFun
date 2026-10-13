@@ -25,9 +25,31 @@ public final class AgentTaskState {
     public String pendingAmendment = "";
     public com.google.gson.JsonObject pendingCompletion;
     public com.google.gson.JsonObject completion;
+    public com.google.gson.JsonObject amendmentBaseCompletion;
+    public int amendmentBaseVersion;
+    public String amendmentBaseText="";
     public long verifiedCount;
     public long appliedMutationVersion;
     public Map<String, Long> transfers = new LinkedHashMap<>();
+    public int completionStage;
+    public Map<String,Long> completionTransferBase = new LinkedHashMap<>();
+    public Map<String,String> initialContainerSnapshots = new LinkedHashMap<>();
+    public void validatePhaseCheckpoint() {
+        int stages=completion!=null && completionKind(completion).equals("sequence")?completion.getAsJsonArray("phases").size():1;
+        if(completionStage<0 || completionStage>=stages || completionTransferBase==null || completionTransferBase.size()>512
+                || completionTransferBase.values().stream().anyMatch(Objects::isNull) || initialContainerSnapshots==null || initialContainerSnapshots.size()>128
+                || initialContainerSnapshots.values().stream().anyMatch(v->v==null || !v.matches("[0-9a-f]{64}")))
+            throw new IllegalArgumentException("invalid_task_phase_checkpoint");
+    }
+    public com.google.gson.JsonObject activeCompletion() {
+        return completion!=null && completionKind(completion).equals("sequence")
+                ? completion.getAsJsonArray("phases").get(completionStage).getAsJsonObject() : completion;
+    }
+    public Map<String,Long> activeTransfers() {
+        if(completion==null || !completionKind(completion).equals("sequence")) return transfers;
+        Map<String,Long> relative=new LinkedHashMap<>(transfers);
+        completionTransferBase.forEach((key,value)->relative.merge(key,-value,Long::sum));return relative;
+    }
     public void recordResult(String raw) {
         try { recordObject(com.google.gson.JsonParser.parseString(raw).getAsJsonObject()); }
         catch (RuntimeException ignored) { }
@@ -55,15 +77,17 @@ public final class AgentTaskState {
         String target = value.get("dimension").getAsString() + ":" + value.get("target_position") + ":" + value.get("moved_item").getAsString();
         long signed = (value.get("to_maid").getAsBoolean() ? 1 : -1) * (long) Math.max(0, value.get("moved_count").getAsInt());
         transfers.merge(target, signed, Long::sum);
-        if (completion != null) verifiedCount=transferProgress(completion);
+        if (completion != null) refreshTransferProgress();
     }
     public boolean completionSatisfied() {
-        return completion != null && pendingAmendment.isBlank() && transferSatisfied(completion);
+        return completion != null && pendingAmendment.isBlank()
+                && (!completionKind(completion).equals("sequence") || completionStage==completion.getAsJsonArray("phases").size()-1)
+                && transferSatisfied(activeCompletion());
     }
     public boolean requiresCompletionReview() {
         return completion == null && pendingAmendment.isBlank() && (!transfers.isEmpty() || appliedMutationVersion > 0);
     }
-    public void refreshTransferProgress() { verifiedCount=completion==null?0:transferProgress(completion); }
+    public void refreshTransferProgress() { verifiedCount=completion==null?0:transferProgress(activeCompletion()); }
     public void defineCompletion(com.google.gson.JsonObject spec) {
         var validated=validateCompletion(spec);
         if(validated==null) throw new IllegalArgumentException("completion_required");
@@ -73,13 +97,13 @@ public final class AgentTaskState {
         }
         if(goalVersion==1 && (!transfers.isEmpty() || appliedMutationVersion>0))
             throw new IllegalArgumentException("completion_must_precede_transfers_owner_review_required");
-        completion=validated;refreshTransferProgress();
+        completion=validated;completionStage=0;completionTransferBase=new LinkedHashMap<>(transfers);initialContainerSnapshots.clear();refreshTransferProgress();
     }
     private long transferProgress(com.google.gson.JsonObject condition) {
         if(completionKind(condition).equals("all")) return condition.getAsJsonArray("conditions").asList().stream().mapToLong(c->transferProgress(c.getAsJsonObject())).sum();
         if(!completionKind(condition).equals("transfer")) return 0;
         String key=condition.get("dimension").getAsString()+":"+condition.get("position")+":"+condition.get("item").getAsString();
-        return transfers.getOrDefault(key,0L)*(condition.get("to_maid").getAsBoolean()?1:-1);
+        return activeTransfers().getOrDefault(key,0L)*(condition.get("to_maid").getAsBoolean()?1:-1);
     }
     private boolean transferSatisfied(com.google.gson.JsonObject condition) {
         if(completionKind(condition).equals("all")) return condition.getAsJsonArray("conditions").asList().stream().allMatch(c->transferSatisfied(c.getAsJsonObject()));
@@ -89,13 +113,28 @@ public final class AgentTaskState {
         if (spec == null) return null;
         try {
             String kind=completionKind(spec);
+            if(kind.equals("sequence")) {
+                var phases=spec.getAsJsonArray("phases");
+                if(phases==null || phases.size()<2 || phases.size()>8) throw new IllegalArgumentException();
+                for(var phase:phases) {
+                    var child=phase.getAsJsonObject();if(completionKind(child).equals("sequence"))throw new IllegalArgumentException();validateCompletion(child);
+                    // Consumption facts currently have lifetime scope, so they cannot prove repeated ordered phases.
+                    if(AgentCompletionRules.leaves(child).stream().anyMatch(c->completionKind(c).equals("eat_food")))throw new IllegalArgumentException();
+                }
+                return spec.deepCopy();
+            }
             if(kind.equals("all")) {
                 var conditions=spec.getAsJsonArray("conditions");
                 if(conditions==null || conditions.isEmpty() || conditions.size()>16) throw new IllegalArgumentException();
-                for(var value:conditions) { var child=value.getAsJsonObject(); if(completionKind(child).equals("all")) throw new IllegalArgumentException(); validateCompletion(child); }
+                for(var value:conditions) { var child=value.getAsJsonObject(); if(Set.of("all","sequence").contains(completionKind(child))) throw new IllegalArgumentException(); validateCompletion(child); }
                 return spec.deepCopy();
             }
             if (spec.get("dimension").getAsString().isBlank()) throw new IllegalArgumentException();
+            if(kind.equals("backpack_empty")) return spec.deepCopy();
+            if(kind.equals("container_unchanged")) {
+                if(spec.getAsJsonArray("position").size()!=3)throw new IllegalArgumentException();
+                spec.getAsJsonArray("position").forEach(v->{if(v.getAsDouble()!=v.getAsInt())throw new IllegalArgumentException();});return spec.deepCopy();
+            }
             if(kind.equals("maid_state")) {
                 String state=spec.get("state").getAsString(),value=spec.get("value").getAsString();
                 if(!Set.of("follow","sit","schedule","work_task").contains(state) || value.isBlank() || value.length()>128
@@ -111,8 +150,9 @@ public final class AgentTaskState {
                 return spec.deepCopy();
             }
             if (!Set.of("transfer","position","inventory").contains(kind)) throw new IllegalArgumentException();
-            if (!kind.equals("position") && (spec.get("item").getAsString().isBlank() || spec.get("count").getAsLong() <= 0
+            if (!kind.equals("position") && (spec.get("item").getAsString().isBlank() || spec.get("count").getAsLong() < (kind.equals("inventory") && spec.has("match") && spec.get("match").getAsString().equals("exact")?0:1)
                     || spec.get("count").getAsDouble() != spec.get("count").getAsLong())) throw new IllegalArgumentException();
+            if(kind.equals("inventory") && spec.has("match") && !Set.of("exact","at_least").contains(spec.get("match").getAsString()))throw new IllegalArgumentException();
             if (!kind.equals("inventory")) {
                 if(spec.getAsJsonArray("position").size()!=3) throw new IllegalArgumentException();
                 spec.getAsJsonArray("position").forEach(v -> { if(v.getAsDouble()!=v.getAsInt()) throw new IllegalArgumentException(); });
@@ -140,10 +180,11 @@ public final class AgentTaskState {
         pendingAmendment = combined; pendingCompletion = validated;
     }
     public void applyAmendment() {
-        if (!pendingAmendment.isBlank()) { constraints.add(pendingAmendment); pendingAmendment = ""; goalVersion++; completion = pendingCompletion; pendingCompletion = null;
+        if (!pendingAmendment.isBlank()) { amendmentBaseCompletion=completion==null?null:completion.deepCopy();amendmentBaseVersion=goalVersion;amendmentBaseText=pendingAmendment;
+            constraints.add(pendingAmendment); pendingAmendment = ""; goalVersion++; completion = pendingCompletion; pendingCompletion = null;
             clearActionPlan();
-            verifiedCount = 0;
-            if (completion != null) verifiedCount=transferProgress(completion); }
+            completionStage=0;completionTransferBase=new LinkedHashMap<>(transfers);initialContainerSnapshots.clear();
+            refreshTransferProgress(); }
     }
     public void clearActionPlan() { actionSteps=new com.google.gson.JsonArray();actionStep=0;actionPlanGoalVersion=0; }
     public static String bounded(String value, int max) {

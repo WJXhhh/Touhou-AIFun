@@ -24,25 +24,33 @@ public final class GuiTool implements ITool<JsonObject> {
         return !id.equals("inspect_containers") || com.wjx.touhou_aifun.chat.agent.AgentRuntime.enabled(maid);
     }
     @Override public String summary(EntityMaid maid) {
+        return summary(maid, false);
+    }
+    /** Completion belongs to a TaskCallback, never to an ordinary chat or native client. */
+    public String summary(EntityMaid maid, boolean taskExecutor) {
         String summary = switch (id) {
             case "inspect_containers" -> "Inspect up to eight exact chest targets in one ordered call using normal GUI access. Returns item counts for planning, keeps the final menu open with its current snapshot. Use when collecting all items with unknown quantities; never inspect each chest in separate model rounds. Counts from closed menus do not authorize slot actions.";
-            case "gui_batch" -> "Execute at most 16 observed semantic GUI actions in order. Requires expected_revision. Stops at first failure; earlier changes remain committed. Use close_after=true when done with this menu; complete_task=true on the final batch closes and requests verified completion without another model turn.";
+            case "gui_batch" -> "Execute at most 16 observed semantic GUI actions in order. Requires expected_revision. Stops at first failure; earlier changes remain committed. Use close_after=true when done with this menu.";
             case "open_gui" -> "Walk to and open a block/entity GUI, or use a maid-held item. Uses the maid's own inventory. "
                     + "Choose NO_WAIT when told not to wait; AUTO otherwise; UNTIL_GOAL when told to finish and bring products back.";
             case "inspect_gui" -> "Inspect current menu slots, controls, process state and inventory. visual=true captures the actual mod GUI in the background.";
             case "gui_action" -> "Operate an observed GUI: transfer, click_slot, quick_move, button, rename, trade, backpack_to_cursor, "
-                    + "cursor_to_backpack, click, widget, type, key or scroll. Use close_after=true when done with this menu, complete_task=true for the final action. Visual input requires the latest frame_id and layout. Unknown mod protocols require an adapter.";
+                    + "cursor_to_backpack, click, widget, type, key or scroll. Use close_after=true when done with this menu. Visual input requires the latest frame_id and layout. Unknown mod protocols require an adapter.";
             case "wait_gui" -> "Wait for and collect a specified output item/count using server process state. AUTO waits only short jobs, "
                     + "NO_WAIT leaves immediately, UNTIL_GOAL has a cumulative budget. blocked_* permits repair and another wait without resetting budget. "
                     + "A completed result means the products were actually delivered to the maid, not just started.";
             default -> "Close the maid's GUI and return cursor/temporary crafting items. Does not cancel processing in the machine.";
         };
-        if (com.wjx.touhou_aifun.chat.agent.AgentRuntime.enabled(maid)
-                && java.util.Set.of("gui_action", "gui_batch", "wait_gui").contains(id))
+        if (taskExecutor && java.util.Set.of("gui_action", "gui_batch").contains(id))
+            summary += " Use complete_task=true on the final action/batch to close and request verified task completion without another model turn.";
+        if (taskExecutor && java.util.Set.of("gui_action", "gui_batch", "wait_gui").contains(id))
             summary += " Task item operations require a completion contract; define it using update_task_plan BEFORE this operation, optionally in the SAME ordered tool batch.";
         return summary;
     }
     @Override public Parameter parameters(ObjectParameter root, EntityMaid maid) {
+        return parameters(root, maid, false);
+    }
+    public Parameter parameters(ObjectParameter root, EntityMaid maid, boolean taskExecutor) {
         if (!id.equals("open_gui") && !id.equals("inspect_containers")) text(root, "session_id", "Session id from open_gui.", true);
         text(root, "detail", "summary (default for mutations) or full snapshot.", false);
         switch (id) {
@@ -91,7 +99,7 @@ public final class GuiTool implements ITool<JsonObject> {
         }
         if(id.equals("gui_action") || id.equals("gui_batch")) {
             root.addProperties("close_after",BoolParameter.create().setDescription("Close and settle the GUI after successful actions in this call; omit for further operations in the same menu. Failure leaves it open for inspection."),false);
-            root.addProperties("complete_task",BoolParameter.create().setDescription("Action-task executor only. Explicitly declare these are the FINAL actions covering ALL owner requirements. Implies close_after. Runtime verifies the complete registered contract after actual actions, cleanup and ordered result settlement; unmet conditions keep progress and do not complete. Use on the last transfer instead of waiting another model round to close and report."),false);
+            if (taskExecutor) root.addProperties("complete_task",BoolParameter.create().setDescription("Action-task executor only. Explicitly declare these are the FINAL actions covering ALL owner requirements. Implies close_after. Runtime verifies the complete registered contract after actual actions, cleanup and ordered result settlement; unmet conditions keep progress and do not complete. Use on the last transfer instead of waiting another model round to close and report."),false);
         }
         return root;
     }
@@ -131,6 +139,15 @@ public final class GuiTool implements ITool<JsonObject> {
         if(complete && !(callback instanceof com.wjx.touhou_aifun.chat.agent.TaskCallback))
             return CompletableFuture.completedFuture(MaidGuiSessionManager.error("task_execution_only"));
         return MaidGuiSessionManager.call(callback,id,callId,request).thenCompose(value -> {
+            // Opening already provides an authoritative observation. Expose its follow-up tools
+            // in this callback's next request, without a separate schema-loading model round.
+            if (id.equals("open_gui") && !value.has("error")
+                    && !(callback instanceof com.wjx.touhou_aifun.chat.agent.TaskCallback)
+                    && MaidGuiSessionManager.session(callback.getMaid().getUUID()) != null) {
+                for (String tool : new String[]{"inspect_gui", "gui_action", "gui_batch", "wait_gui", "close_gui"})
+                    if (com.wjx.touhou_aifun.compat.ai.openai.ToolContextSelector.optionalAvailable(callback.getMaid(), callback, tool))
+                        ChatFlowManager.requestToolSchema(callback.getMaid().getUUID(), callback, tool);
+            }
             if(!close || value.has("error")) return CompletableFuture.completedFuture(value);
             JsonObject closing=new JsonObject();closing.add("session_id",request.get("session_id"));
             return MaidGuiSessionManager.call(callback,"close_gui",callId+":cleanup",closing).thenApply(cleanup -> {

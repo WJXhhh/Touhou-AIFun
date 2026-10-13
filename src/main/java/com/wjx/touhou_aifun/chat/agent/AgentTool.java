@@ -33,24 +33,31 @@ public final class AgentTool implements ITool<JsonObject> {
         }
         return root;
     }
+    public static ObjectParameter completionPredicateParameter() { return completionParameter(false); }
     public static ObjectParameter completionParameter() {
-            ObjectParameter completion = ObjectParameter.create();
-            completion.addProperties("kind", StringParameter.create().addEnumValues("transfer","position","inventory","maid_state","eat_food","all").setDescription("Defaults to transfer. Inventory requires FINAL backpack stock >= count; NEVER use it to describe an initial inventory/precondition. Putting items away uses outbound transfer, not final inventory of the same items. Reserve stock is valid only when enough items remain or an incoming supply is planned. Position verifies final arrival. Use all for final outcomes only."),false);
-            completion.addProperties("item", StringParameter.create().setDescription("Exact registry item ID; required for transfer/inventory"), false);
-            completion.addProperties("count", IntegerParameter.create().setMinimum(1).setDescription("Required for transfer/inventory"), false);
-            completion.addProperties("dimension", StringParameter.create().setDescription("Dimension registry ID; required except for all"), false);
-            completion.addProperties("position", ArrayParameter.create().setItems(IntegerParameter.create()).setMinItems(3).setMaxItems(3).setDescription("Required for transfer/position; exact x,y,z. For transfer use the container block, never the attached sign/label position."), false);
-            completion.addProperties("radius", IntegerParameter.create().setMinimum(0).setMaximum(8).setDescription("Arrival radius for position, default 2"),false);
-            completion.addProperties("to_maid", BoolParameter.create().setDescription("Required for transfer"), false);
-            ObjectParameter atomic=ObjectParameter.create();
-            atomic.addProperties("kind",StringParameter.create().addEnumValues("transfer","position","inventory","maid_state","eat_food").setDescription("Final outcomes only: inventory means leave at least count in the FINAL backpack, not initially possess count before putting items away."),false);
-            atomic.addProperties("dimension",StringParameter.create(),true);
-            atomic.addProperties("item",StringParameter.create(),false); atomic.addProperties("count",IntegerParameter.create().setMinimum(1),false);
-            atomic.addProperties("position",ArrayParameter.create().setItems(IntegerParameter.create()).setMinItems(3).setMaxItems(3).setDescription("Transfer requires the actual container position, not the sign position."),false);
-            atomic.addProperties("radius",IntegerParameter.create().setMinimum(0).setMaximum(8),false); atomic.addProperties("to_maid",BoolParameter.create(),false);
-            addActionCompletion(completion);addActionCompletion(atomic);
-            completion.addProperties("conditions",ArrayParameter.create().setItems(atomic).setMinItems(1).setMaxItems(16).setDescription("Required for kind=all. Every condition must pass; nesting all is unsupported."),false);
-            return completion.setDescription("Machine-verified completion derived from the complete user goal, never a dummy condition. Transfer position is the source container when to_maid=true, destination otherwise. Use all for every required item/destination. Foreground may omit unknown facts; the executor defines the missing condition from fresh observations before moving items.");
+        return completionParameter(true);
+    }
+    private static ObjectParameter completionParameter(boolean sequence) {
+        ObjectParameter completion=atomicCompletion(false,sequence
+                ?new String[]{"transfer","position","inventory","maid_state","eat_food","container_unchanged","backpack_empty","all","sequence"}
+                :new String[]{"transfer","position","inventory","maid_state","eat_food","container_unchanged","backpack_empty","all"});
+        completion.addProperties("conditions",ArrayParameter.create().setItems(atomicCompletion(true,"transfer","position","inventory","maid_state","eat_food","container_unchanged","backpack_empty")).setRange(1,16)
+                .setDescription("kind=all: every atomic requirement must hold."),false);
+        if(sequence)completion.addProperties("phases",ArrayParameter.create().setItems(completionParameter(false)).setRange(2,8)
+                .setDescription("kind=sequence: ordered verified phases, excluding eat_food. Transfer counts are NET WITHIN EACH PHASE. Use for take-then-return or intermediate states; never encode a round trip as a final outbound net transfer. Final phase remains live-verified."),false);
+        return completion.setDescription("Full user requirements, verified from actual server facts. all combines simultaneous outcomes; sequence records ordered phases. No dummy conditions.");
+    }
+    private static ObjectParameter atomicCompletion(boolean requiredDimension,String... kinds) {
+        ObjectParameter root=ObjectParameter.create();
+        root.addProperties("kind",StringParameter.create().addEnumValues(kinds).setDescription("Defaults to transfer. inventory is FINAL backpack stock, never a precondition."),false);
+        root.addProperties("dimension",StringParameter.create(),requiredDimension);
+        root.addProperties("item",StringParameter.create().setDescription("Exact item id for transfer/inventory."),false);
+        root.addProperties("count",IntegerParameter.create().setMinimum(0).setDescription("Transfer >=1; inventory >=1, or 0 with match=exact."),false);
+        root.addProperties("match",StringParameter.create().addEnumValues("at_least","exact").setDescription("inventory only; default at_least."),false);
+        root.addProperties("position",ArrayParameter.create().setItems(IntegerParameter.create()).setRange(3,3).setDescription("Actual container/arrival x,y,z, never the sign position. container_unchanged captures original slot/count/NBT from an open single container before actions."),false);
+        root.addProperties("radius",IntegerParameter.create().setMinimum(0).setMaximum(8),false);
+        root.addProperties("to_maid",BoolParameter.create().setDescription("transfer: true from container to maid, false from maid to container. Counts are net, not total actions."),false);
+        addActionCompletion(root);return root;
     }
     private static void addActionCompletion(ObjectParameter root) {
         root.addProperties("state",StringParameter.create().addEnumValues("follow","sit","schedule","work_task").setDescription("Required for maid_state."),false);

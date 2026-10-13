@@ -11,6 +11,8 @@ public final class AgentCompletionRules {
     }
     public static List<JsonObject> leaves(JsonObject condition) {
         if(condition==null) return List.of();
+        if(AgentTaskState.completionKind(condition).equals("sequence")) return condition.getAsJsonArray("phases").asList().stream()
+                .flatMap(p->leaves(p.getAsJsonObject()).stream()).toList();
         if(!AgentTaskState.completionKind(condition).equals("all")) return List.of(condition);
         return condition.getAsJsonArray("conditions").asList().stream().map(JsonElement::getAsJsonObject).toList();
     }

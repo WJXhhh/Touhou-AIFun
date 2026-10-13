@@ -300,11 +300,10 @@ public class AnthropicCompatLLMClient implements LLMClient {
             body.addProperty("stream", true);
         }
 
-        // Thinking mode is intentionally NOT controlled here: the Anthropic protocol defaults to
-        // non-thinking, and an explicit {"type":"disabled"} is not a valid value per the Anthropic
-        // spec (only "enabled" is), so it could be rejected by strict providers. Leaving the field
-        // out lets the provider's default behaviour show through — whether the maid thinks or not
-        // is then visible in the reply (thinking bubble / latency) instead of being force-set.
+        // DeepSeek defaults to high-effort thinking. Limit only background task execution;
+        // never send a provider-specific thinking toggle to generic Anthropic endpoints.
+        com.wjx.touhou_aifun.chat.agent.DeepSeekTaskRequestPolicy.apply(body, site==null?"":site.url(), model,
+                callback instanceof com.wjx.touhou_aifun.chat.agent.TaskCallback, true, TouhouAIFunConfig.AGENT_DEEPSEEK_EFFORT.get());
         return body;
     }
 

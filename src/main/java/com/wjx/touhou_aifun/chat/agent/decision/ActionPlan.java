@@ -37,11 +37,14 @@ public final class ActionPlan {
             binding=row.getAsJsonObject("target_binding");
             if(!Set.of("block","container","entity").contains(binding.get("kind").getAsString())
                     || binding.get("description").getAsString().isBlank() || binding.get("description").getAsString().length()>256) throw new IllegalArgumentException("invalid_target_binding");
+            if(binding.has("scope") && (!binding.get("scope").getAsJsonPrimitive().isString() || binding.get("scope").getAsString().isBlank() || binding.get("scope").getAsString().length()>64))throw new IllegalArgumentException("invalid_target_binding_scope");
             binding=binding.deepCopy();
         }
         return new Step(description,List.copyOf(actions),condition(row,"precondition"),condition(row,"until"),binding,condition(row,"skip_if"));
     }
     private static JsonObject condition(JsonObject row,String key) {
-        return row.has(key)?AgentTaskState.validateCompletion(row.getAsJsonObject(key)):null;
+        var condition=row.has(key)?AgentTaskState.validateCompletion(row.getAsJsonObject(key)):null;
+        if(condition!=null && AgentTaskState.completionKind(condition).equals("sequence"))throw new IllegalArgumentException("ordered_phases_are_task_completion_only");
+        return condition;
     }
 }

@@ -69,11 +69,13 @@ public final class TaskCallback extends LLMCallback {
         archive = archiveData.task(maid.getUUID(), task.id);
         // Unload can settle cursor contents after the entity checkpoint was serialized.
         archive.reconcile(task);
+        task.validatePhaseCheckpoint();
         // A crash/unload can persist a mutation before advancing a step. Re-plan from reconciled
         // facts instead of replaying an old one-shot template in a new callback generation.
         task.clearActionPlan();
         decisionRouter=new TaskDecisionRouter(this);
-        if(decisionRouter.enabled()) this.messages.add(policyIndex+1,LLMMessage.systemChat(maid,AgentTaskInstructions.DECISION_POLICY));
+        if(decisionRouter.enabled()) this.messages.add(policyIndex+1,LLMMessage.systemChat(maid,AgentTaskInstructions.DECISION_HINT));
+        if(decisionRouter.enabled() && task.loadedTools.contains("group:task_actions")) this.messages.add(policyIndex+2,LLMMessage.systemChat(maid,AgentTaskInstructions.DECISION_POLICY));
         task.loadedTools.add("scan_surroundings");
         startedTick = maid.level().getGameTime();
         com.wjx.touhou_aifun.vision.scan.VisionScanCache.invalidate(maid);
@@ -139,6 +141,10 @@ public final class TaskCallback extends LLMCallback {
         if (task.completion != null) checkpoint.add("completion_conditions", task.completion.deepCopy());
         else checkpoint.addProperty("next_required_completion","Define the full completion contract before mutations; follow the execution rules.");
         checkpoint.add("completed_net_transfers",new Gson().toJsonTree(task.transfers));
+        if(task.completion!=null && AgentTaskState.completionKind(task.completion).equals("sequence")) {
+            checkpoint.addProperty("completion_stage",task.completionStage);
+            checkpoint.add("active_stage_completion",task.activeCompletion().deepCopy());checkpoint.add("active_stage_net_transfers",new Gson().toJsonTree(task.activeTransfers()));
+        }
         var completionStatus = AgentCompletion.snapshot(maid,task,freshWorld);
         var nextSelection = new TaskToolSelection.Context(freshWorld, task.completion != null,
                 completionStatus.get("conditions_verified").getAsBoolean(), completionStatus.get("gui_open").getAsBoolean(),
@@ -341,6 +347,8 @@ public final class TaskCallback extends LLMCallback {
         state.addProperty("dimension", maid.level().dimension().location().toString());
         state.addProperty("x", Math.floor(maid.getX() * 4)); state.addProperty("y", Math.floor(maid.getY() * 4)); state.addProperty("z", Math.floor(maid.getZ() * 4));
         state.add("transfers",new Gson().toJsonTree(new TreeMap<>(task.transfers)));
+        state.addProperty("completion_stage",task.completionStage);
+        state.add("active_transfers",new Gson().toJsonTree(new TreeMap<>(task.activeTransfers())));
         JsonArray inventory = new JsonArray();
         var handler = maid.getAvailableBackpackInv();
         for (int i = 0; i < handler.getSlots(); i++) {
@@ -356,7 +364,7 @@ public final class TaskCallback extends LLMCallback {
             tailTiming=executionTiming.child("last_mutation_to_finish");
         }
         trace("world_mutation", null, task.phase, null, results.put(fact.toString()), fact.toString());
-        task.recordResult(fact.toString()); archive.commitFacts(task);task.checkpoint(fact.toString()); AgentRuntime.save(maid);
+        task.recordResult(fact.toString());AgentCompletion.advanceSequence(maid,task,freshWorld); archive.commitFacts(task);task.checkpoint(fact.toString()); AgentRuntime.save(maid);
     }
     public boolean standalonePlanCall() { return currentBatchSize<=1; }
     public boolean decisionServiceEnabled() {return decisionRouter.enabled();}
@@ -366,7 +374,7 @@ public final class TaskCallback extends LLMCallback {
     /** Container quantities are checked against the immutable contract before automatic dispatch. */
     public boolean validateDecisionAction(String tool,JsonObject arguments) {
         if(!Set.of("gui_action","gui_batch").contains(tool)) return true;
-        var contracts=AgentCompletionRules.leaves(task.completion).stream().filter(c->AgentTaskState.completionKind(c).equals("transfer")).toList();
+        var contracts=AgentCompletionRules.leaves(task.activeCompletion()).stream().filter(c->AgentTaskState.completionKind(c).equals("transfer")).toList();
         if(contracts.isEmpty()) return true;
         var session=com.wjx.touhou_aifun.maid.gui.MaidGuiSessionManager.session(maid.getUUID());
         if(session==null || session.targetPosition==null || !arguments.has("session_id") || !session.id.toString().equals(arguments.get("session_id").getAsString())) return false;
@@ -395,7 +403,7 @@ public final class TaskCallback extends LLMCallback {
                         && session.targetPosition.getY()==xyz.get(1).getAsInt() && session.targetPosition.getZ()==xyz.get(2).getAsInt()) {matched=contract;break;}
             }
             if(matched==null) return false;String key=AgentCompletionRules.transferKey(matched);
-            long accumulated=requested.merge(key,amount,Long::sum),remaining=matched.get("count").getAsLong()-task.transfers.getOrDefault(key,0L)*(receive?1:-1);
+            long accumulated=requested.merge(key,amount,Long::sum),remaining=matched.get("count").getAsLong()-task.activeTransfers().getOrDefault(key,0L)*(receive?1:-1);
             if(accumulated>remaining) return false;
         }
         return true;
@@ -426,7 +434,7 @@ public final class TaskCallback extends LLMCallback {
             gui.addProperty("revision",session.projection.revision());live.add("gui",gui);
             bindings.addProperty("session_id",session.id.toString());bindings.addProperty("revision",session.projection.revision());
         }
-        var conditions=AgentCompletionRules.leaves(task.completion);
+        var conditions=AgentCompletionRules.leaves(task.activeCompletion());
         for(int n=0;n<conditions.size();n++) {
             var condition=conditions.get(n);String kind=AgentTaskState.completionKind(condition);
             if(condition.has("position")) {
@@ -440,7 +448,7 @@ public final class TaskCallback extends LLMCallback {
                 } else target.addProperty("unloaded",true);targets.add(target);
             }
             if(!kind.equals("transfer")) continue;
-            boolean receive=condition.get("to_maid").getAsBoolean();long remaining=Math.max(0,condition.get("count").getAsLong()-task.transfers.getOrDefault(AgentCompletionRules.transferKey(condition),0L)*(receive?1:-1));
+            boolean receive=condition.get("to_maid").getAsBoolean();long remaining=Math.max(0,condition.get("count").getAsLong()-task.activeTransfers().getOrDefault(AgentCompletionRules.transferKey(condition),0L)*(receive?1:-1));
             bindings.addProperty("remaining_"+n,remaining);
             if(session==null || session.targetPosition==null || !condition.get("dimension").getAsString().equals(maid.level().dimension().location().toString())) continue;
             var xyz=condition.getAsJsonArray("position");if(session.targetPosition.getX()!=xyz.get(0).getAsInt() || session.targetPosition.getY()!=xyz.get(1).getAsInt() || session.targetPosition.getZ()!=xyz.get(2).getAsInt()) continue;
@@ -499,11 +507,13 @@ public final class TaskCallback extends LLMCallback {
     }
     public void defineCompletion(JsonObject condition) {
         if(!freshWorld) throw new IllegalArgumentException("fresh_world_observation_required");
+        if(task.completion!=null) {task.defineCompletion(condition);return;}
         validateTransferPositions(condition);
         var conflicts=AgentCompletion.supplyConflicts(maid,task,condition);
         if(!conflicts.isEmpty()) throw new IllegalArgumentException("completion_supply_conflict: "+conflicts
                 + "; inventory means REQUIRED FINAL backpack stock, never an initial precondition. Use transfer conditions for items being put away. If final stock really is required, plan its incoming supply. Existing contracts require an explicit owner amendment; never silently remove a requirement.");
-        task.defineCompletion(condition);
+        var baselines=ContainerCompletionSnapshot.capture(maid,condition);
+        task.defineCompletion(condition);task.initialContainerSnapshots.putAll(baselines);
         trace("completion_defined",null,"update_task_plan",null,results.put(task.completion.toString()),"Completion established from current observations; existing conditions are immutable.");
     }
     public void requestCompletion() {
@@ -523,6 +533,9 @@ public final class TaskCallback extends LLMCallback {
     private void validateTransferPositions(JsonObject condition) {
         var spec=AgentTaskState.validateCompletion(condition);
         if(spec==null) throw new IllegalArgumentException("completion_required");
+        if(AgentTaskState.completionKind(spec).equals("sequence")) {
+            spec.getAsJsonArray("phases").forEach(c->validateTransferPositions(c.getAsJsonObject()));return;
+        }
         if(AgentTaskState.completionKind(spec).equals("all")) {
             spec.getAsJsonArray("conditions").forEach(c->validateTransferPositions(c.getAsJsonObject()));return;
         }

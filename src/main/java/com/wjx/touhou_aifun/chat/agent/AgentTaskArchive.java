@@ -16,11 +16,19 @@ public final class AgentTaskArchive {
     public long mutationVersion;
     public Map<String,Long> verifiedTransfers = new LinkedHashMap<>();
     public List<com.google.gson.JsonObject> verifiedActionFacts = new ArrayList<>();
+    public int verifiedCompletionStage;
+    public int verifiedCompletionGoalVersion;
+    public Map<String,Long> verifiedTransferBase = new LinkedHashMap<>();
+    public Map<String,String> verifiedContainerSnapshots = new LinkedHashMap<>();
     private transient int recordBytes;
 
     public AgentTaskArchive() { }
     public AgentTaskArchive(String maidId, String taskId) { this.maidId = maidId; this.taskId = taskId; }
     public void validateSize() {
+        if(verifiedCompletionStage<0 || verifiedCompletionStage>7 || verifiedCompletionGoalVersion<0
+                || verifiedTransferBase==null || verifiedTransferBase.size()>512 || verifiedTransferBase.values().stream().anyMatch(Objects::isNull)
+                || verifiedContainerSnapshots==null || verifiedContainerSnapshots.size()>128 || verifiedContainerSnapshots.values().stream().anyMatch(v->v==null || !v.matches("[0-9a-f]{64}")))
+            throw new IllegalArgumentException("invalid_task_phase_checkpoint");
         if(mutationVersion<0 || verifiedTransfers==null || verifiedTransfers.size()>512 || verifiedTransfers.values().stream().anyMatch(Objects::isNull))
             throw new IllegalArgumentException("invalid_task_mutation_checkpoint");
         if(verifiedActionFacts==null || verifiedActionFacts.size()>256 || verifiedActionFacts.stream().anyMatch(Objects::isNull))
@@ -30,10 +38,16 @@ public final class AgentTaskArchive {
     }
     public boolean hasCapacity() { return records.size() < 8192 && recordBytes < 3584 * 1024; }
     public void commitFacts(AgentTaskState task) {
+        verifiedCompletionGoalVersion=task.goalVersion;verifiedCompletionStage=task.completionStage;verifiedTransferBase=new LinkedHashMap<>(task.completionTransferBase);
+        verifiedContainerSnapshots=new LinkedHashMap<>(task.initialContainerSnapshots);
         verifiedTransfers=new LinkedHashMap<>(task.transfers);verifiedActionFacts=task.actionFacts.stream().map(com.google.gson.JsonObject::deepCopy).collect(java.util.stream.Collectors.toCollection(ArrayList::new));task.appliedMutationVersion=++mutationVersion;
     }
     public void reconcile(AgentTaskState task) {
         if(mutationVersion>task.appliedMutationVersion) {
+            if(verifiedCompletionGoalVersion==task.goalVersion) {
+                task.completionStage=verifiedCompletionStage;task.completionTransferBase=new LinkedHashMap<>(verifiedTransferBase);
+                task.initialContainerSnapshots=new LinkedHashMap<>(verifiedContainerSnapshots);
+            }
             task.transfers=new LinkedHashMap<>(verifiedTransfers);task.actionFacts=verifiedActionFacts.stream().map(com.google.gson.JsonObject::deepCopy).collect(java.util.stream.Collectors.toCollection(ArrayList::new));task.appliedMutationVersion=mutationVersion;task.refreshTransferProgress();
         }
     }

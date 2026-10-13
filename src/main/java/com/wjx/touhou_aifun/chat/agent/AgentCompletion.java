@@ -18,7 +18,7 @@ public final class AgentCompletion {
         if(session!=null) result.addProperty("cursor_empty",session.menu().getCarried().isEmpty());
         JsonArray sources=new JsonArray();result.add("source_checks",sources);
         java.util.Set<String> items=new java.util.TreeSet<>(),seen=new java.util.HashSet<>();
-        if(task.completion!=null) collectSources(maid,task.completion,sources,items,seen);
+        if(task.completion!=null) collectSources(maid,task.activeCompletion(),sources,items,seen);
         JsonObject counts=new JsonObject();var inventory=maid.getAvailableBackpackInv();
         for(String item:items) {
             long count=0;for(int i=0;i<inventory.getSlots();i++) {
@@ -39,13 +39,14 @@ public final class AgentCompletion {
     }
     public static JsonArray supplyConflicts(EntityMaid maid,AgentTaskState task,JsonObject condition) {
         var validated=AgentTaskState.validateCompletion(condition);Map<String,Long> counts=new java.util.HashMap<>();
+        if(validated!=null && AgentTaskState.completionKind(validated).equals("sequence"))validated=validated.getAsJsonArray("phases").get(task.completionStage).getAsJsonObject();
         for(var leaf:AgentCompletionRules.leaves(validated)) if(leaf.has("item")) {
             String item=leaf.get("item").getAsString();long available=inventoryCount(maid,item);
             for(var stack:java.util.List.of(maid.getMainHandItem(),maid.getOffhandItem()))
                 if(item.equals(String.valueOf(net.minecraftforge.registries.ForgeRegistries.ITEMS.getKey(stack.getItem())))) available+=stack.getCount();
             counts.put(item,available);
         }
-        return AgentCompletionRules.supplyConflicts(validated,maid.level().dimension().location().toString(),counts,task.transfers);
+        return AgentCompletionRules.supplyConflicts(validated,maid.level().dimension().location().toString(),counts,task.activeTransfers());
     }
     /** Exact failed predicates, with no mutation of the contract or execution counters. */
     public static JsonObject diagnostics(EntityMaid maid,AgentTaskState task,boolean freshWorld) {
@@ -54,15 +55,18 @@ public final class AgentCompletion {
             report.addProperty("reason",!freshWorld?"fresh_world_observation_required":task.completion==null?"completion_contract_missing":"pending_owner_amendment");
         }
         String dimension=maid.level().dimension().location().toString();
-        for(var condition:AgentCompletionRules.leaves(task.completion)) {
+        for(var condition:AgentCompletionRules.leaves(task.activeCompletion())) {
             JsonObject row=condition.deepCopy();String kind=AgentTaskState.completionKind(condition);boolean satisfied=false;
             if(!condition.get("dimension").getAsString().equals(dimension)) row.addProperty("reason","dimension_mismatch");
             else if(kind.equals("inventory") || kind.equals("transfer")) {
                 long actual=kind.equals("inventory")?inventoryCount(maid,condition.get("item").getAsString())
-                        :task.transfers.getOrDefault(AgentCompletionRules.transferKey(condition),0L)*(condition.get("to_maid").getAsBoolean()?1:-1);
+                        :task.activeTransfers().getOrDefault(AgentCompletionRules.transferKey(condition),0L)*(condition.get("to_maid").getAsBoolean()?1:-1);
                 long expected=condition.get("count").getAsLong();row.addProperty("actual_count",actual);row.addProperty("remaining_count",Math.max(0,expected-actual));
                 row.addProperty("reason",kind.equals("inventory")?"final_inventory_below_required_count":"recorded_transfer_below_required_count");
-                satisfied=actual>=expected;
+                satisfied=kind.equals("inventory") && condition.has("match") && condition.get("match").getAsString().equals("exact")?actual==expected:actual>=expected;
+            } else if(kind.equals("container_unchanged") || kind.equals("backpack_empty")) {
+                satisfied=kind.equals("container_unchanged")?ContainerCompletionSnapshot.verify(maid,task,condition):backpackEmpty(maid);
+                row.addProperty("reason",kind.equals("container_unchanged")?"container_changed_or_baseline_unavailable":"backpack_not_empty");
             } else if(kind.equals("position")) {
                 var pos=condition.getAsJsonArray("position");double radius=condition.has("radius")?condition.get("radius").getAsDouble():2;
                 double distance=Math.sqrt(maid.distanceToSqr(pos.get(0).getAsInt()+.5,pos.get(1).getAsInt(),pos.get(2).getAsInt()+.5));
@@ -88,6 +92,8 @@ public final class AgentCompletion {
             if(kind.equals("position")) {text.append("尚未到达要求的位置 ").append(row.get("position")).append("。");continue;}
             if(kind.equals("maid_state")) {text.append("女仆状态尚未达到要求。");continue;}
             if(kind.equals("eat_food")) {text.append("实际食用记录尚未满足要求。");continue;}
+            if(kind.equals("container_unchanged")) {text.append("箱子的物品或槽位尚未恢复原状。");continue;}
+            if(kind.equals("backpack_empty")) {text.append("背包尚未清空。");continue;}
             String item=row.get("item").getAsString();var registered=net.minecraftforge.registries.ForgeRegistries.ITEMS.getValue(new net.minecraft.resources.ResourceLocation(item));
             String name=registered==null?item:new net.minecraft.world.item.ItemStack(registered).getHoverName().getString();
             text.append(name).append(kind.equals("inventory")?"：要求最终背包保留 ":"：要求转移 ").append(row.get("count").getAsLong())
@@ -120,7 +126,27 @@ public final class AgentCompletion {
     public static boolean verify(EntityMaid maid, AgentTaskState task, boolean freshWorld) {
         if (!freshWorld || task.completion == null || !task.pendingAmendment.isBlank()) return false;
         JsonObject condition = task.completion;
+        if(AgentTaskState.completionKind(condition).equals("sequence")) {
+            if(advanceSequence(maid,task,freshWorld)) {
+                var data=AgentArchiveData.get((net.minecraft.server.level.ServerLevel)maid.level());
+                data.task(maid.getUUID(),task.id).commitFacts(task);data.setDirty();AgentRuntime.save(maid);
+            }
+            return verifyCondition(maid,task,task.activeCompletion());
+        }
         return verifyCondition(maid,task,condition);
+    }
+    /** Checked at every actual mutation, including operations within an ordered batch. */
+    public static boolean advanceSequence(EntityMaid maid,AgentTaskState task,boolean freshWorld) {
+        if(!freshWorld || task.completion==null || !task.pendingAmendment.isBlank() || !AgentTaskState.completionKind(task.completion).equals("sequence"))return false;
+        int previous=task.completionStage;
+        int last=task.completion.getAsJsonArray("phases").size()-1;
+        while(task.completionStage<last && verifyCondition(maid,task,task.activeCompletion())) {
+            task.completionStage++;task.completionTransferBase=new java.util.LinkedHashMap<>(task.transfers);task.refreshTransferProgress();
+        }
+        return task.completionStage!=previous;
+    }
+    private static boolean backpackEmpty(EntityMaid maid) {
+        var inventory=maid.getAvailableBackpackInv();for(int i=0;i<inventory.getSlots();i++)if(!inventory.getStackInSlot(i).isEmpty())return false;return true;
     }
     private static boolean verifyCondition(EntityMaid maid,AgentTaskState task,JsonObject condition) {
         if(AgentTaskState.completionKind(condition).equals("all")) {
@@ -137,7 +163,7 @@ public final class AgentCompletion {
         String kind = AgentTaskState.completionKind(condition);
         if (kind.equals("transfer")) {
             String key=condition.get("dimension").getAsString()+":"+condition.get("position")+":"+condition.get("item").getAsString();
-            long count=task.transfers.getOrDefault(key,0L)*(condition.get("to_maid").getAsBoolean()?1:-1);
+            long count=task.activeTransfers().getOrDefault(key,0L)*(condition.get("to_maid").getAsBoolean()?1:-1);
             JsonObject evidence=condition.deepCopy(); evidence.addProperty("verified_net_count",count); evidence.addProperty("game_tick",maid.level().getGameTime());
             task.checkpoint(evidence.toString()); return count>=condition.get("count").getAsLong();
         }
@@ -156,8 +182,10 @@ public final class AgentCompletion {
                 if (condition.get("item").getAsString().equals(String.valueOf(net.minecraftforge.registries.ForgeRegistries.ITEMS.getKey(stack.getItem())))) count += stack.getCount();
             }
             task.verifiedCount=count; evidence.addProperty("item",condition.get("item").getAsString()); evidence.addProperty("count",count);
-            satisfied = count >= condition.get("count").getAsLong();
-        } else if(kind.equals("maid_state") || kind.equals("eat_food")) satisfied=additionalCondition(maid,task,condition);
+            satisfied = condition.has("match") && condition.get("match").getAsString().equals("exact")?count==condition.get("count").getAsLong():count>=condition.get("count").getAsLong();
+        } else if(kind.equals("container_unchanged")) satisfied=ContainerCompletionSnapshot.verify(maid,task,condition);
+        else if(kind.equals("backpack_empty")) satisfied=backpackEmpty(maid);
+        else if(kind.equals("maid_state") || kind.equals("eat_food")) satisfied=additionalCondition(maid,task,condition);
         else return false;
         evidence.addProperty("completion_verified",satisfied); task.checkpoint(evidence.toString()); return satisfied;
     }
@@ -192,7 +220,7 @@ public final class AgentCompletion {
     /** Used for typed step guards without changing the immutable task completion contract. */
     public static boolean verifyPredicate(EntityMaid maid,AgentTaskState task,JsonObject predicate,boolean freshWorld) {
         long previous=task.verifiedCount;
-        try {return freshWorld && task.pendingAmendment.isBlank() && predicate!=null && verifyCondition(maid,task,predicate);}
+        try {return freshWorld && task.pendingAmendment.isBlank() && predicate!=null && !AgentTaskState.completionKind(predicate).equals("sequence") && verifyCondition(maid,task,predicate);}
         finally {task.verifiedCount=previous;}
     }
 }
