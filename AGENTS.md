@@ -25,7 +25,7 @@ src/main/java/com/wjx/touhou_aifun/
 │   │   ├── EmotionControlPrompts.java   # TTS 情绪标记提示词（3 模式 + MiMo 标签体系）
 │   │   ├── mimo/        # MiMo（LLM+STT+TTS）：MimoEndpointResolver, MimoTTSClient...
 │   │   ├── stepfun/     # 阶跃星辰（LLM+STT+TTS）：StepFunLLMClient, StepFunTTSClient...
-│   │   ├── qwen/        # 通义千问/百炼（LLM+STT+TTS），夺舍基模 "aliyun" 身份（未提交）
+│   │   ├── qwen/        # 通义千问/百炼（LLM+STT+TTS），夺舍基模 "aliyun" 身份
 │   │   ├── openai/      # 通用兼容层：ReasoningCompatOpenAIClient（流式/取消/agent 中枢）
 │   │   ├── fishaudio/ minimax/ siliconflow/   # 各 TTS 引擎
 │   │   └── tts/         # TTSProgressiveSynthesis, SentenceTextSplitter, CustomVoiceHttpUtil, VoicePreset*
@@ -33,7 +33,7 @@ src/main/java/com/wjx/touhou_aifun/
 │   └── ai/*/response|request/  # 各家 API 的请求/响应 DTO
 ├── chat/
 │   ├── ChatFlowManager.java      # 按 maid 管理请求代际/在途 future（中途打断核心）
-│   └── ChatBubbleDisplayTime.java# 气泡存活时间按文本长度缩放（未提交）
+│   └── ChatBubbleDisplayTime.java# 气泡存活时间按文本长度缩放
 ├── client/
 │   ├── sound/           # QueuedTTSPlaybackManager（FIFO 播放）、AIFunStreamSoundManager、PCM 流
 │   └── gui/             # CustomVoiceScreen, STTSiteDropdownWidget, TTSInstructionScreen...
@@ -48,7 +48,7 @@ src/main/java/com/wjx/touhou_aifun/
 
 - 在 `LittleMaidCompat` 注册的 `STT "aliyun"` 直接覆盖基模 `STTAliyunSite`（老 NLS 网关）。
 - LLM 覆盖还要手动把 `DefaultLLMSite.ALIYUN` 重赋值为我方 site（仿 DEEPSEEK 写法），否则 `addDefaultSites()` 会用基模 openai 类型站点覆盖回 key，留下死注册。
-- `AvailableSitesMixin`（未提交）：`AvailableSites.init` 时若 key `stepfun`/`stepfun_plan` 被存成普通 `LLMOpenAISite`（用户改配置导致类型漂移），重建为我方 StepFun* 站点；并把 `stepfun_plan` 重排到 `stepfun` 后面（展示顺序）。
+- `AvailableSitesMixin`：`AvailableSites.init` 时若 key `stepfun`/`stepfun_plan` 被存成普通 `LLMOpenAISite`（用户改配置导致类型漂移），重建为我方 StepFun* 站点；并把 `stepfun_plan` 重排到 `stepfun` 后面（展示顺序）。
 
 ## 统一 LLM 中枢：ReasoningCompatOpenAIClient
 
@@ -65,12 +65,14 @@ StepFun / MiMo / Qwen / OpenAI 兼容 / DeepSeek 的 LLM 都继承它，自动�
 
 - **思考中被打断 → 主动取消**：`LLMCallbackMixin` `<init>` RETURN 注入 `registerRequest`，先 `cancelInFlight` 取消上一个在途 future（`cancel(true)` 断开底层 HTTP），再记为最新。**必须存原始 `sendAsync` future**，不能存 `.orTimeout/.whenComplete` 之后的，否则取消不了底层 HTTP。被取消触发 `onFailure`(CancellationException)，superseded 则 `ci.cancel()` 吞掉；竞态兜底：旧回复取消前完成 → `onSuccess` superseded → `addAssistantHistory` 保留进历史但不显示/不朗读。
 - **语音播放中被打断**：最新回复 `onSuccess` 时 `beginTtsTakeover`（代际+1）+ `AIFunNetwork.sendInterruptTts` → 客户端 `QueuedTTSPlaybackManager.interrupt()` + `AIFunStreamSoundManager.interrupt()` 立即停旧音。
+- **玩家按 STT 键（默认 X）开始语音对话 → 先终止女仆说话**：不等转写文本开启新一轮。`STTChatKeyMixin` 在 `tryToStart` HEAD 调 `SpeechMute.beginListening()`（客户端立刻 interrupt 两个播放管理器；录音期间 `SpeechMute.muted()` 让在途的旧 TTS 音频被丢弃，60s 安全上限）+ `AIFunNetwork.sendMaidSpeechStop(maidId)`；服务端 `AIFunMaidSpeechStopMessage` 校验女仆 owner 后调 `ChatFlowManager.interruptSpeech`（仅 TTS 代际+1：旧回复后续合成/发送被代际门控丢弃，文本回复仍照常完成入史，下一轮 `beginTurn` 会再 +1 让新回复正常出声）。松开按键 `sttStop` → `SpeechMute.endListening()`。
 - 仅对我方 client 生效；车万女仆内置其它 LLM client 无法捕获 future，退回"跑完丢弃"。
 
 ### 流式 TTS（StreamingTtsReply，仅网络 TTS）
 - 独占网络 TTS 文本回复的收尾，**不走** `callback.onSuccess`（否则重复合成）。首句 `ensureStarted` 只做 TTS 接管（`beginTtsTakeover` + `sendInterruptTts`，**不画气泡**）；`finish` 补完剩余句 + `addAssistantHistory` + `showChatBubble(完整 chatText)`（显示/广播最终气泡只能在 finish 做，否则聊天框文本截断 + 双气泡）。
 - **顺序管理**：客户端 `QueuedTTSPlaybackManager` FIFO。服务端流水线并行合成 + 重排缓冲：`pump()` 最多 `MAX_CONCURRENT_SYNTHESIS`(=3) 在途，每句分配递增 `nextDispatchIndex`，`onSynthesized(index,data,gen)` 存入 `readyAudio`，从 `nextSendIndex` 起把连续就绪的句子按序冲刷（失败/静音句存 `EMPTY_AUDIO` 占位跳过）。**合成可并行超前，发送严格按句序** → 客户端到达顺序 == 句序。代际门控在发送前查 `ttsGeneration==capturedGeneration`；`ensureStarted` 在锁内设 `generation`（防并行 dispatch 抢到未设的 0）。
 - 文本流：同语言单段整段即 ttsText；跨语言等出现 `---` 且后半段有真文本，按 `SentenceTextSplitter` 切句入队。
+- **StepFun 官方流式会话（`StepFunStreamingReply` + `StepFunTTSStream`）**：站点为官方 `api.stepfun.com` 且模型属于 WS 列表时 `stepFunStreaming=true`，不再走 `batchWholeReply`。每句完成即以 `tts.text.delta` 追加进同一个 WS 会话（session 级 `instruction` 保留情绪上下文），服务端逐句合成回 PCM，`AIFunTTSStreamMessage` 边收边播 → 第一句可在 LLM 还没写完回复时出声。`pumpStepFun()` 在锁内按句顺序 feed（HTTP 路径的并行合成 + 重排缓冲在这里不需要）；**唱歌回复（`(唱歌)` 开头）例外**：完全绕过 WS，`finishSingingStepFun` 用整段文本走一次 HTTP 请求，保持整首歌的演唱连续性。播放已开始后失败只收尾不重试；**出声前**失败由 `StepFunStreamingReply` 用整段文本走一次 HTTP 兜底。
 
 ### 流式显示（StreamingDisplay，与 TTS 无关，每个流式回复都跑）
 - 节流 120ms，尾部截断 160 字。思考阶段（`reasoning_content` 或未闭合 `<think>`）→ "思考中"气泡（`refreshWaitingChatBubble`）；答案阶段（`---` 前正文有内容）→ 切普通 `TextChatBubbleData`（`addChatBubble` 一次 + `setText` 原地更新, existTick 90s）。
@@ -98,6 +100,45 @@ StepFun / MiMo / Qwen / OpenAI 兼容 / DeepSeek 的 LLM 都继承它，自动�
 
 `SentenceTextSplitter.SENTENCE_ENDINGS` 切分点含句末符 + **逗号/读点**（`，,、`），让 TTS 更早出声。受 `TTS_SENTENCE_STREAMING` 配置控制。
 
+## 畅聊模式（免按键音量门控 + JEV/Perplexity 判定）
+
+新增 `client/voice/`、`chat/freechat/`、`compat/ai/stt/BufferedSTTClient`：
+
+- **触发链**：`FreeChatController`（ClientTick）→ `VadCapture` 独占 16kHz 麦克风 → `VadSegmenter`
+  音量门控/端点 → `PcmWav` → 选中 STT 站点的 `BufferedSTTClient.transcribe` → C2S
+  `AIFunFreeChatUtteranceMessage` → `FreeChatGate`（服务端主线程校验/自回声/打断）→ 异步
+  `NativeDecisionProvider` → 回主线程 `MaidAIChatManager.chat`。
+- **前置**：`decisionService.enabled=true` + provider 为 jev/perplexity + Key 非空；否则
+  `decision_unavailable`，绝不回退到后台执行 LLM。只支持本模组可缓冲转写的 STT（StepFun/
+  StepPlan、MiMo、Qwen）；基模站点按键语音照旧。
+- **UI**：`AIChatSettingsSTTConfigScreenMixin` 在 STT 配置页加畅聊开关、判定服务入口和
+  295×30 的 `FreeChatGateMeterWidget`（实时 RMS、5 秒历史、拖动阈值、女仆说话时 1.5× 琥珀线、
+  触发指示）。打开页面时 `startMonitor` 只监听麦克风；关闭后由 tick 自动 `stopMonitor` 并恢复
+  畅聊。阈值保存到 `[stt].freeChatThreshold`。
+- **TTS 期间照常采集**：没有采集抑制；只把起音阈值 ×1.5。`SelfEchoMatcher` 在决策前比较
+  转写与候选女仆最近 2 条 assistant 历史（规范化后包含或 bigram Dice ≥ 0.8），命中
+  `self_echo` 直接丢弃。
+- **打断**：`[stt].freeChatBargeIn` 三档。`after_asr`（默认）在自回声检查通过后、决策前对候选
+  女仆 `ChatFlowManager.interruptSpeech` + `AIFunNetwork.sendInterruptTts`；`immediate` 由客户端
+  在起音时停本地播放并发现有 `AIFunMaidSpeechStopMessage`；`off` 等新回合接管。打断只静音 TTS，
+  不取消文本回复。
+- **决策**：`FreeChatDecision` 纯函数构造 4 个 choice：`target`（maid_i/other_player/
+  other_entity/environment/ambient/unknown）、`validity`（meaningful/too_short_incoherent/
+  background）、`maid_related`（direct/relevant/maid_general/unrelated/unclear）、
+  `intervention`（answer/brief_ack/clarify/ignore）。候选直呼不看 related；`other_player` 要求
+  direct/relevant 且置信 ≥ `freeChatPlayerRelatedConfidence`（默认 0.85）；其他实体/方块/环境
+  门槛 `freeChatOtherRelatedConfidence`（默认 0.7）。通用门槛 `freeChatMinConfidence`（0.7）。
+- **上下文**：`FreeChatContext` 在 `chat()` 前按 maid+message 身份挂起 ambient facts，
+  `MaidAIChatManagerMixin.normalChat` 取到并在 `<context>` 内插入；不写入聊天历史。`player_view`
+  是客户端上报的玩家视角实体摘要（候选女仆、准星目标、其他玩家/实体、方向/距离/视野/朝向），
+  服务端清洗截断；最近 3 条环境转写和候选 `recent_reply` 用于判断玩家对话话题相关性。
+- **网络版本 21**：ID 31 C2S utterance、32 S2C feedback。`FreeChatGate` 有每玩家 800ms 限流、
+  全局 `DecisionRequestGate` 共享 10/s、永久错误 10s 退避；日志不记录转写/场景/最近对话。
+- **坑**：不要用 `MicrophoneManager.startRecord` 做畅聊（静态录音状态与 STT 键冲突）；
+  按键语音时 `STTChatKeyMixin` 会让畅聊暂停。扬声器外放会把女仆 TTS 录进来，建议耳机或
+  `after_asr`/`off`。`AIFunStreamSoundManager.isSpeaking()` 跟踪 PCM 流是否仍在播放，不能只看
+  收到 END。
+
 ## Provider 集成要点
 
 ### 通用约束
@@ -111,7 +152,13 @@ StepFun / MiMo / Qwen / OpenAI 兼容 / DeepSeek 的 LLM 都继承它，自动�
 
 ### 阶跃星辰 StepFun（`compat/ai/stepfun/`）
 - 有 `stepfun` 与 `stepfun_plan` 两种 apiType；LLM/TTS/STT 各成对（`StepFunPlanLLMSite` 等）。
-- TTS 走自定义 PCM 流播放（`AIFunPcmAudioStream`），不经基模解码。
+- **TTS 两套通道**（配置 `[tts].stepfunStreaming`，默认开）：
+  - **官方流式 WS**：`wss://api.stepfun.com/v1/realtime/audio?model=<model>`（Step Plan 为 `wss://api.stepfun.com/step_plan/v1/realtime/audio`），头 `Authorization: Bearer <key>`。事件流：`tts.connection.done` → 发 `tts.create`（`response_format: pcm`、`sample_rate: 24000`、`mode: sentence`、可选 `instruction`）→ `tts.response.created` → 若干 `tts.text.delta`（单条 ≤1000 字符）→ `tts.text.done`；服务端回 `tts.response.audio.delta`（`data.audio` = base64 **裸 16-bit LE 单声道 PCM**，实测 24000Hz；`status` 可忽略）与 `tts.response.audio.done`（**其中 audio 是完整音频，绝不能再播/拼**）。PCM 经 `AIFunTTSStreamMessage`（START/DATA/END）实时下发，客户端 `AIFunPcmAudioStream` 边收边播，不经基模解码。
+  - **HTTP 兜底**：`POST /v1/audio/speech`，`response_format: mp3`（基模 `MaidAISoundInstance` 只认 MP3/Opus/Vorbis）。
+- WS 触发条件：host 必须是官方 `api.stepfun.com`（自定义 URL/代理仍走 HTTP）+ 模型在 `stepaudio-3-tts`/`stepaudio-2.5-tts`/`step-tts-2`/`step-tts-mini`/`step-tts-vivid` 内。连接/握手失败（401、代理阻断 WS 等）且尚未出声 → 自动回落 HTTP；已出声后失败只结束当前 PCM 流（避免重复朗读）。
+- 气泡：流式成功不再调用 `callback.onSuccess`（否则会重复发音频），改为经 `TTSCallbackAccessor` 读 `chatText`/`waitingChatBubbleId` 复刻基模气泡；`StreamingTtsReply` 自己的回调 chatText 为空，气泡仍由 `showChatBubble` 统一负责。
+- `instruction` 长度：`stepaudio-3-tts` 500 字、`stepaudio-2.5-tts` 200 字；两个模型都支持文本内联 `()` 不发音指令（情绪标记）。**唱歌（`(唱歌)` 开头）统一走整段 HTTP 请求**（`SINGING_INSTRUCTION`），不进入 WS 流式路径，保持整首歌的演唱连续性。
+- 冒烟脚本：`scripts/smoke-stepfun-streaming.ps1`（读本地 `run/config/.../sites/tts.json` 的 stepfun key，逐句发 `tts.text.delta`，断言首块音频到达并保存可播放 wav）。
 
 ### Anthropic 协议 DeepSeek（`compat/ai/anthropic/`，Anthropic 模式）
 - `AnthropicShared.API_TYPE = "anthropic"`，defaultSite id 同 `"anthropic"`（**必须等于注册键**：基模列表 map 按注册键存、按钮按 `site.id()` 操作，不一致会导致编辑/启用/删除静默失效；显示名经 lang 键 `ai.touhou_little_maid.chat.site.anthropic.name`），默认端点 `https://api.deepseek.com/anthropic`（client 自动拼 `/v1/messages`），默认模型 `deepseek-v4-flash`/`deepseek-v4-pro`。
@@ -121,7 +168,7 @@ StepFun / MiMo / Qwen / OpenAI 兼容 / DeepSeek 的 LLM 都继承它，自动�
 - 系统提示词：`PapiReplacerMixin` 注入末尾按 `site.getApiType()=="anthropic"` 附加 `touhouAIFun$webSearchGuidance()`（何时搜索、基于结果作答、禁止编造、仍守输出格式契约）。
 - 冒烟脚本：`scripts/smoke-deepseek-anthropic.ps1 -ApiKey sk-xxx`（验证 `/v1/messages` 基本协议及 DeepSeek 原生搜索 provider 所需的 server-tool 返回结构）。
 
-### Qwen / 百炼（`compat/ai/qwen/`，未提交，夺舍基模 "aliyun" 身份）
+### Qwen / 百炼（`compat/ai/qwen/`，夺舍基模 "aliyun" 身份）
 - `QwenShared.API_TYPE = "aliyun"`，图标用 `SerializableSite.defaultIcon("aliyun")`，显示名沿用"阿里云"；中国站 `dashscope.aliyuncs.com`。
 - **三类端点**：
   - LLM + STT：OpenAI 兼容 `…/compatible-mode/v1/chat/completions`（STT 用 `qwen3-asr-flash`，body 为 chat+`input_audio`，换模型不变请求方式）。
@@ -146,16 +193,68 @@ dev 用 official 映射，本番用 SRG 名，桥梁是编译期生成的 **refm
 
 ## 网络消息（network/）
 
-- `AIFunNetwork` 统一注册；`AIFunSettingsMessage`（4 bool 服务端同步）、`AIFunTTSStreamMessage`（流式音频逐句下发，PLAY_TO_CLIENT + TRACKING_ENTITY）、`AIFunTTSInterruptMessage`（打断旧语音）。
+- `AIFunNetwork` 统一注册；`AIFunSettingsMessage`（4 bool 服务端同步）、`AIFunTTSStreamMessage`（流式音频逐句下发，PLAY_TO_CLIENT + TRACKING_ENTITY）、`AIFunTTSInterruptMessage`（打断旧语音）、`AIFunMaidSpeechStopMessage`（PLAY_TO_SERVER，玩家按下 STT 键开始录音时请求服务端停止女仆当前说话）、`AIFunFreeChatUtteranceMessage`（PLAY_TO_SERVER，转写 + 场景 + 候选 + 最近环境转写）、`AIFunFreeChatFeedbackMessage`（PLAY_TO_CLIENT，固定原因码）。**网络版本 21**；升版后两端必须一起更新。
+
+## 战斗反射 / 护主 / 仇恨指挥（maid/combat）
+
+服务端事件驱动，不经过 LLM，也不替换工作模式。核心链路：
+`MaidCombatEvents`（`MaidHurtEvent` / `LivingHurtEvent` / `MaidHurtTarget.Pre`）→ `MaidCombatReflex`
+（owner/self 威胁 + 显式命令 + 清除抑制三层，目标优先级 owner > command > self）→
+`MaidCombatBrain implements IExtraMaidBrain` 注册 CORE 行为（priority 1 `MaidCombatTargetTask`/
+`MaidCombatMeleeTask`，priority 99 `MaidCombatChaseTask`）。CORE 行为让夜间/非 WORK 日程也能还手；
+近战任务绕过基模 `NEAREST_VISIBLE_LIVING_ENTITIES` 的 20 tick 传感器，远程/弹幕任务只锁目标
+（`TARGET_ONLY`），绝不强迫远程女仆近战。
+
+**玩家硬规则**（`MaidCombatRules` + `MaidCombatPolicy`）：玩家可还手，但永远排除实际主人；
+公共女仆（`PublicMaidAccess.isPublic`）或友伤关闭（`!isFriendlyFireAllowed`）时拒绝一切玩家目标；
+`attackPlayers=false` 进一步全禁；创造/旁观/FakePlayer 拒绝；宠物/NPC/女仆/`MaidNoAttack` 拒绝。
+同队玩家在友伤开启时可按“只排除主人”的规则还手。
+
+**清除仇恨**：`mixin/MaidCombatTargetMixin` 在 `EntityMaid#canAttack` HEAD 返回 false；
+`EntityMaid` 是 mod 类但 `canAttack` 重写了原版 `LivingEntity#canAttack`，**按 AGENTS.md 的坑 1
+对该注入器单独用 `remap=true`**。`MaidHurtTarget.Pre` 取消伤害；抑制到 `aggroClearTicks`。
+基模攻击模式仍可能攻击其他敌对生物；要全停请切工作模式。
+
+**数据/工具**：`MaidCombatData` 把 per-maid 规则存在 `maid.getPersistentData()` 的
+`TouhouAIFunCombat`，不新增网络包；`combat_target` 指挥/清除目标（玩家门控照旧），
+`combat_control` 规则/状态（改规则仅实际主人，经 `AgentRuntime.ownerSpeaker`，状态任何有工具权限
+的说话者）。两个工具注册在 `LittleMaidCompat.registerAITool`，并加入
+`ToolContextSelector.CORE_TOOLS`、`AgentExecution.foregroundTool`、`ToolExecutionPolicy` 豁免；
+`PapiReplacerMixin` 追加 `MaidCombatPrompts.all(maid)`（guidance/status/notes）。配置在 `[combat]`。
+
+**测试**：`src/test/java/.../maid/combat/*`（规则/NBT/状态/提示词纯测试）；`CombatReflexGameTests`
+（`src/guiQa`，`@GameTestHolder("aifun_combat_test")`，`-PguiQa -PcombatQa`）。4 个 GameTest 必须
+放在**独立 batch**：`MaidCombatReflex` 的 map 是静态的，同 batch 并发会互相清状态；且不要用
+`QaConfigScope` 改全局配置（并发批次会互相恢复）。`GameTestHelper.makeMockPlayer()` 的 mock 会被
+玩家门控判为创造模式；测试 fixture 直接 `new Player(...) { isCreative()/isSpectator() 返回 false }`
+才走普通玩家路径。
 
 ## 已知坑 / 排查
 
+- **同一句女仆台词在聊天栏出现两次**：TLM 的 `ChatBubbleManager.addLLMChatText` 同时做两件事——替换头顶气泡 + 给主人发一条 `<女仆名> 文本` 聊天栏消息。任何"先手动加气泡（立刻显示）→ TTS 成功/失败回调再加一次"的流程都会二次发聊天栏消息。任务公告 `AgentRuntime.deliverNotification`（bubbleId=-1）就是典型：手动 `addLLMChatText` + `manager.tts(...)` 回调各加一次。`ChatBubbleManagerMixin` 原有去重只处理 `waitingChatBubbleId >= 0`（气泡已被移除的迟到回调），公告用 -1 绕过去了。现由 `chat/ChatLineDedup` 在 mixin HEAD 统一 claim `(maid UUID, bubbleId, text)`：正 id 用 60s 窗口、-1 公告用 15s 文本窗口，重复调用直接 cancel（只跳过聊天栏/气泡重复，音频链路不受影响）。
 - **光影下气泡文字消失**（Oculus/IterationRP）：不是本模组，是 **AcceleratedRendering** 的加速文字与光影不兼容。改 `config/acceleratedrendering-client.toml` 的 `[accelerated_text_rendering] default_pipeline = "ACCELERATED" → "VANILLA"`（或 feature_status=DISABLED）。判据：改 `Font.DisplayMode` 完全无效 = 不是深度问题。曾尝试的 `EntityGraphicsMixin` 改 DisplayMode 已删除（无效）。
-- **本环境 gradlew 可编译**：需设 `JAVA_HOME=C:\Users\Administrator\.gradle\jdks\eclipse_adoptium-17-amd64-windows\jdk-17.0.16+8`（系统 PATH 的 java 是 1.8，勿用）且**在线模式**（offline 缺 Forge 依赖缓存）。`gradlew build` 全流程（compileJava/reobfJar/refmap）可跑。
+- **本环境 gradlew 可编译**：`JAVA_HOME` 指 JDK 17（本机为 `C:\Program Files\Java\jdk-17.0.20`；系统 PATH 的 java 是 1.8，勿用）且**在线模式**（offline 缺 Forge 依赖缓存）。`gradlew build` 全流程（compileJava/reobfJar/refmap）可跑。
 - 本仓库是 Windows + 中文环境，与用户沟通用中文。
 
-## 未提交的工作（写本文件时）
+## 最近提交与验证状态（2026-10-18）
 
-git status：修改 `TouhouAIFun`、`CustomVoiceScreen`、`LittleMaidCompat`、`EmotionControlPrompts`、`ReasoningCompatOpenAIClient`、`StreamingTtsReply`、`StepFunTTSFormLayout`、`ChatBubbleManagerMixin`、`PapiReplacerMixin`、`LLMSiteEditorScreenMixin`、`TTSSiteEditorScreenMixin`、`touhou_aifun.mixins.json`；新增 `chat/ChatBubbleDisplayTime`（气泡存活时间按长度缩放，下限基模默认、上限 120s）、`compat/ai/qwen/` 全套、`AvailableSitesMixin`。尚未提交，改动是否完整需验证。
+工作区目前干净（`git status` 无改动）。最近一批提交包含：
 
-本次新增（同批未提交）：`compat/ai/anthropic/`（`AnthropicLLMSite` + `AnthropicShared`，Anthropic 协议 DeepSeek 选项）、`compat/ai/openai/AnthropicCompatLLMClient`（/v1/messages 协议 + 流式 SSE）、`compat/ai/web/`（普通 `web_search` 工具 + provider 抽象 + DeepSeek 原生搜索 provider）、`PapiReplacerMixin` 联网搜索提示词段落、`LLMSiteEditorScreenMixin`/`LittleMaidCompat` 注册与恢复分支、`lang` 键 `anthropic`、`textures/gui/ai_chat/anthropic.png`（复制自基模 deepseek.png）、`scripts/smoke-deepseek-anthropic.ps1`。`gradlew build` 曾验证通过；本次搜索解耦后仍需完整 Gradle 构建和真实 API key 运行验证。
+- **畅聊模式**：`client/voice/`（VadCapture/VadSegmenter/FreeChatController/GateMeter/PcmWav）、
+  `chat/freechat/`（FreeChatGate/FreeChatDecision/SelfEchoMatcher/FreeChatContext）、
+  `compat/ai/stt/BufferedSTTClient`、网络版本 21（ID 30 speech stop、31 C2S utterance、
+  32 S2C feedback）、STT 配置页门控仪表盘；按下 STT 键先停女仆说话（`SpeechMute`）。
+- **流式 TTS**：`StepFunTTSStream`（官方 WS 会话、PCM 转发、空闲看门狗、代际门控）+
+  `StepFunStreamingReply`（逐句增量合成 + HTTP 兜底）、`TTSCallbackAccessor`、`ChatLineDedup`、
+  `[tts].stepfunStreaming`。
+- **战斗反射**：`maid/combat/`（规则/数据/策略/反射三层/状态/提示词/CORE 行为/事件）+
+  `MaidCombatTargetMixin`、`combat_target`/`combat_control` 工具、`[combat]` 配置、`docs/combat.md`。
+- **任务公告与阶段决策**：`[agentRuntimeV1].taskAnnouncements`（detailed/brief/silent）、
+  `TaskAnnouncements`/`TaskAnnouncementPhrasing`/`TaskAnnouncementPrefetch`、`TaskStageChoices` 与
+  `TaskDecisionRouter` 阶段迁移、`drop_items_to_owner` 工具（`MaidOwnerDropAction`/`MaidBackpackSpace`）。
+- **QA**：`QaConfigScope`、`aifun_native_decision_test`/`aifun_combat_test`/
+  `aifun_observation_regression_test`/`aifun_observation_live_test`/`aifun_stage_live_test`、
+  `scripts/stage-decision-live-report.py`，`build.gradle` 对应 `-P...` 开关。
+
+`gradlew build` / `gradlew test` 通过；GameTest 与真实服务商 API 的端到端行为仍需实机/真实 key 复验
+（前置与坑见上文各功能小节）。

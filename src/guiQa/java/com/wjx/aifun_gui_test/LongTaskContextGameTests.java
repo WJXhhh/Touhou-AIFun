@@ -135,7 +135,7 @@ public final class LongTaskContextGameTests {
             var query=new JsonObject();query.addProperty("item","aifun_gui_test:machine");query.addProperty("count",6);
             f.task.onFunctionCall(modelTool("learn_loaded_recipe","query_recipes",query),ignored->{});
             f.compact();f.task.next(ignored->{});
-            var evidence=f.task.getMessages().stream().filter(m->m.role()==Role.SYSTEM && m.message().startsWith("## Known workbench recipes\n")).findFirst().orElseThrow().message();
+            var evidence=f.task.getMessages().stream().filter(m->m.role()==Role.SYSTEM && m.message().startsWith("## Known crafting and cooking recipes\n")).findFirst().orElseThrow().message();
             helper.assertTrue(evidence.contains("aifun_gui_test:qa_machine_shaped") && evidence.contains("ingredients") && !evidence.contains("matching_backpack_count") && !evidence.contains("can_fill_one_craft"),"Compression retains current recipe definitions, never old backpack availability");
             helper.assertTrue(f.state.verifiedCount==2 && f.chest().getItem(0).getCount()==6,"Recipe retention changes no requirements, receipts or inventory");
             var id=new net.minecraft.resources.ResourceLocation("aifun_gui_test:qa_machine_shaped");
@@ -150,7 +150,7 @@ public final class LongTaskContextGameTests {
             var result=MaidGuiSessionManager.call(f.task,"gui_action","stale_recipe",craft);
             helper.assertTrue(result.isDone() && result.join().toString().contains("recipes_reloaded_query_again") && f.maid.getMaidInv().getStackInSlot(5).getCount()==6,"Reload invalidates cached definitions before ingredients can move");
             f.task.next(ignored->{});
-            helper.assertTrue(f.task.getMessages().stream().anyMatch(m->m.role()==Role.SYSTEM && m.message().startsWith("## Known workbench recipes\n") && m.message().contains("reload_requires_query")),"The next request explicitly reports invalid recipe ids");
+            helper.assertTrue(f.task.getMessages().stream().anyMatch(m->m.role()==Role.SYSTEM && m.message().startsWith("## Known crafting and cooking recipes\n") && m.message().contains("reload_requires_query")),"The next request explicitly reports invalid recipe ids");
             helper.succeed();
         } finally {manager.replaceRecipes(originals);TouhouAIFunConfig.AGENT_RUNTIME.set(enabled);}
     }

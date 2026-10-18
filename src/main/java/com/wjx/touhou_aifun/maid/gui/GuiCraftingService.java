@@ -42,54 +42,84 @@ public final class GuiCraftingService {
         int limit = MaidGuiSessionManager.number(request, "limit", 4, 1, 8);
         int count = MaidGuiSessionManager.number(request, "count", 1, 1, 4096);
         var level = maid.level();
-        var recipes = level.getRecipeManager().getAllRecipesFor(RecipeType.CRAFTING).stream()
+        String requestedType = MaidGuiSessionManager.string(request, "recipe_type", "all");
+        var candidates = new ArrayList<Recipe<?>>();
+        for (RecipeType<?> type : List.of(RecipeType.CRAFTING, RecipeType.SMELTING, RecipeType.BLASTING, RecipeType.SMOKING, RecipeType.CAMPFIRE_COOKING)) {
+            String typeId = net.minecraft.core.registries.BuiltInRegistries.RECIPE_TYPE.getKey(type).toString();
+            if (requestedType.equals("all") || requestedType.equals(typeId))
+                level.getRecipeManager().getRecipes().stream().filter(r -> r.getType() == type).forEach(candidates::add);
+        }
+        if (!Set.of("all", "minecraft:crafting", "minecraft:smelting", "minecraft:blasting", "minecraft:smoking", "minecraft:campfire_cooking").contains(requestedType))
+            throw new IllegalArgumentException("unsupported_recipe_type");
+        var recipes = candidates.stream()
                 .filter(recipe -> recipeId.isBlank() || recipe.getId().toString().equals(recipeId))
                 .filter(recipe -> item.isBlank() || MaidGuiSession.itemId(recipe.getResultItem(level.registryAccess())).equals(item))
                 .sorted(Comparator.comparing(recipe -> recipe.getId().toString())).toList();
         JsonObject result = new JsonObject();
         result.addProperty("status", "ok");
         result.addProperty("source", "live_server_recipe_manager");
-        result.addProperty("recipe_type", "minecraft:crafting");
+        result.addProperty("recipe_type", requestedType);
         result.addProperty("requested_count", count);
         result.addProperty("total_recipes", recipes.size());
-        result.addProperty("notice", "Current loaded workbench recipes, including mod/datapack replacements. Availability checks one craft using unlocked maid backpack only. Machine recipes and opaque special layouts need their own interface. Query again after a recipe reload.");
+        result.addProperty("notice", "Current loaded crafting and cooking recipes, including mod/datapack replacements. Each row identifies recipe_type and station. Cooking recipes require the actual furnace/smoker/blast furnace/campfire; craft_recipe is workbench-only. Fuel is separate from ingredients. Inventory availability is live. Query again after a recipe reload.");
         JsonArray rows = new JsonArray();
         int end = Math.min(offset, recipes.size());
         for (; end < recipes.size() && rows.size() < limit; end++) {
-            CraftingRecipe recipe = recipes.get(end);
+            Recipe<?> recipe = recipes.get(end);
             JsonObject row = new JsonObject();
             row.addProperty("recipe_id", recipe.getId().toString());
+            row.addProperty("recipe_type", net.minecraft.core.registries.BuiltInRegistries.RECIPE_TYPE.getKey(recipe.getType()).toString());
             row.addProperty("recipe_version", version(recipe));
             ItemStack output = recipe.getResultItem(level.registryAccess());
             row.add("output", MaidGuiSession.stack(output));
             if (!output.isEmpty()) row.addProperty("crafts_for_requested_count", (count + output.getCount() - 1) / output.getCount());
             JsonArray ingredients = new JsonArray();
             try {
-                List<Cell> cells = layout(recipe);
-                row.addProperty("auto_fill_supported", true);
-                for (Cell cell : cells) {
-                    JsonObject ingredient = new JsonObject();
-                    ingredient.addProperty("grid_slot", cell.slot());
-                    JsonElement definition = cell.ingredient().toJson();
-                    if (definition.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8).length <= 512) ingredient.add("definition", definition);
-                    else ingredient.addProperty("definition_omitted", true);
-                    JsonArray examples = new JsonArray();
-                    ItemStack[] alternatives = cell.ingredient().getItems();
-                    for (int n = 0; n < Math.min(8, alternatives.length); n++) examples.add(MaidGuiSession.itemId(alternatives[n]));
-                    ingredient.add("accepted_examples", examples);
-                    ingredient.addProperty("accepted_example_count", alternatives.length);
-                    ingredient.addProperty("examples_truncated", alternatives.length > 8);
-                    ingredient.addProperty("matching_backpack_count", backpack(maid).stream().filter(cell.ingredient()::test).mapToInt(ItemStack::getCount).sum());
-                    ingredients.add(ingredient);
+                if (recipe instanceof AbstractCookingRecipe cooking) {
+                    row.addProperty("station", recipe.getType() == RecipeType.SMELTING ? "minecraft:furnace" : recipe.getType() == RecipeType.BLASTING ? "minecraft:blast_furnace" : recipe.getType() == RecipeType.SMOKING ? "minecraft:smoker" : "minecraft:campfire");
+                    row.addProperty("cooking_time_ticks", cooking.getCookingTime());
+                    row.addProperty("experience", cooking.getExperience());
+                    row.addProperty("auto_fill_supported", false);
+                    row.addProperty("operation", "Use actual station GUI input/fuel slots and wait_gui; never craft_recipe for cooking.");
+                    for (Ingredient input : cooking.getIngredients()) {
+                        var ingredient = new JsonObject(); ingredient.add("definition", input.toJson());
+                        var alternatives = input.getItems(); var examples = new JsonArray();
+                        for (int n = 0; n < Math.min(8, alternatives.length); n++) examples.add(MaidGuiSession.itemId(alternatives[n]));
+                        ingredient.add("accepted_examples", examples); ingredient.addProperty("accepted_example_count", alternatives.length);
+                        ingredient.addProperty("examples_truncated", alternatives.length > 8);
+                        ingredient.addProperty("matching_backpack_count", backpack(maid).stream().filter(input::test).mapToInt(ItemStack::getCount).sum());
+                        ingredients.add(ingredient);
+                    }
+                } else {
+                    CraftingRecipe crafting = (CraftingRecipe) recipe;
+                    row.addProperty("station", "minecraft:crafting_table");
+                    List<Cell> cells = layout(crafting);
+                    row.addProperty("auto_fill_supported", true);
+                    for (Cell cell : cells) {
+                        JsonObject ingredient = new JsonObject();
+                        ingredient.addProperty("grid_slot", cell.slot());
+                        JsonElement definition = cell.ingredient().toJson();
+                        if (definition.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8).length <= 512) ingredient.add("definition", definition);
+                        else ingredient.addProperty("definition_omitted", true);
+                        JsonArray examples = new JsonArray();
+                        ItemStack[] alternatives = cell.ingredient().getItems();
+                        for (int n = 0; n < Math.min(8, alternatives.length); n++) examples.add(MaidGuiSession.itemId(alternatives[n]));
+                        ingredient.add("accepted_examples", examples);
+                        ingredient.addProperty("accepted_example_count", alternatives.length);
+                        ingredient.addProperty("examples_truncated", alternatives.length > 8);
+                        ingredient.addProperty("matching_backpack_count", backpack(maid).stream().filter(cell.ingredient()::test).mapToInt(ItemStack::getCount).sum());
+                        ingredients.add(ingredient);
+                    }
+                    Plan plan = plan(crafting, backpack(maid), maid);
+                    boolean active = false;
+                    if (plan != null) {
+                        var selected = maid.level().getRecipeManager().getRecipeFor(RecipeType.CRAFTING, sampleGrid(plan.grid()), maid.level());
+                        active = selected.isPresent() && selected.get().getId().equals(recipe.getId());
+                        if (!active && selected.isPresent()) row.addProperty("shadowed_by_recipe", selected.get().getId().toString());
+                    }
+                    row.addProperty("can_fill_one_craft", active);
                 }
-                Plan plan = plan(recipe, backpack(maid), maid);
-                boolean active = false;
-                if (plan != null) {
-                    var selected = maid.level().getRecipeManager().getRecipeFor(RecipeType.CRAFTING, sampleGrid(plan.grid()), maid.level());
-                    active = selected.isPresent() && selected.get().getId().equals(recipe.getId());
-                    if (!active && selected.isPresent()) row.addProperty("shadowed_by_recipe", selected.get().getId().toString());
-                }
-                row.addProperty("can_fill_one_craft", active);
+                row.add("output_backpack_state",MaidBackpackSpace.describe(maid.getAvailableBackpackInv(),output,output.getCount()));
             } catch (IllegalArgumentException unsupported) {
                 row.addProperty("auto_fill_supported", false);
                 row.addProperty("reason", unsupported.getMessage());
@@ -212,21 +242,28 @@ public final class GuiCraftingService {
         ItemStack remaining = session.menu().getCarried();
         for (int i = 0; i < inventory.getSlots() && !remaining.isEmpty(); i++) remaining = inventory.insertItem(i, remaining, false);
         session.menu().setCarried(remaining);
-        if (!remaining.isEmpty()) throw new IllegalArgumentException("backpack_full_cursor_retained");
+        if (!remaining.isEmpty()) throw new StorageFailure(MaidBackpackSpace.failure(MaidBackpackSpace.describe(inventory,remaining,remaining.getCount()),"backpack_full_cursor_retained","backpack_rejects_cursor_item"));
     }
 
     private static Plan prepare(MaidGuiSession session, CraftingRecipe recipe, boolean collecting) {
         check(session);
         List<ItemStack> available = backpack(session.maid);
-        for (int i = 1; i <= 9; i++) if (!insert(session.maid, available, session.menu().getSlot(i).getItem())) {
-            throw new IllegalArgumentException("backpack_has_no_room_to_clear_grid");
+        for (int i = 1; i <= 9; i++) {
+            var stack=session.menu().getSlot(i).getItem();
+            var storage=MaidBackpackSpace.describe(session.maid.getAvailableBackpackInv(),available,stack,stack.getCount());
+            if(!insert(session.maid,available,stack))throw new StorageFailure(MaidBackpackSpace.failure(storage,"backpack_has_no_room_to_clear_grid","backpack_rejects_grid_item"));
         }
         Plan plan = plan(recipe, available, session.maid);
         if (plan == null) throw new IllegalArgumentException("missing_recipe_ingredients");
         // assign consumed the simulated ingredients. Reserve room for the output AND all native
         // remaining items before moving anything, including buckets or reusable mod tools.
-        if (collecting && !insert(session.maid, available, plan.output())) throw new IllegalArgumentException("backpack_full_for_crafting_output");
-        for (ItemStack remainder : plan.remainders()) if (!insert(session.maid, available, remainder)) throw new IllegalArgumentException("backpack_full_for_recipe_remainders");
+        var outputStorage=MaidBackpackSpace.describe(session.maid.getAvailableBackpackInv(),available,plan.output(),plan.output().getCount());
+        if (collecting && !insert(session.maid, available, plan.output()))
+            throw new StorageFailure(MaidBackpackSpace.failure(outputStorage,"backpack_full_for_crafting_output","backpack_rejects_crafting_output"));
+        for (ItemStack remainder : plan.remainders()) {
+            var storage=MaidBackpackSpace.describe(session.maid.getAvailableBackpackInv(),available,remainder,remainder.getCount());
+            if(!insert(session.maid,available,remainder))throw new StorageFailure(MaidBackpackSpace.failure(storage,"backpack_full_for_recipe_remainders","backpack_rejects_recipe_remainder"));
+        }
         for (int i = 1; i <= 9; i++) if (!session.menu().getSlot(i).getItem().isEmpty()) {
             if (!session.menu().getSlot(i).mayPickup(session.actor)) throw new IllegalArgumentException("grid_slot_pickup_denied");
             session.menu().clicked(i, 0, ClickType.PICKUP, session.actor); depositCursor(session);
@@ -306,10 +343,14 @@ public final class GuiCraftingService {
                 session.lastAction = "craft_recipe";
                 session.snapshot("ok"); // Capture our own changes; later external changes still fail freshness checks.
                 if (crafted >= requested) finish(session, "completed", "");
-            } catch (RuntimeException failure) { finish(session, "partial", failure.getMessage()); }
+            } catch (StorageFailure failure) { finish(session,"partial",failure.getMessage(),failure.detail); }
+            catch (RuntimeException failure) { finish(session, "partial", failure.getMessage()); }
         }
         public void cancel(MaidGuiSession session, String reason) { finish(session, "partial", reason); }
         private void finish(MaidGuiSession session, String status, String error) {
+            finish(session,status,error,null);
+        }
+        private void finish(MaidGuiSession session,String status,String error,JsonObject storageFailure) {
             session.crafting = null;
             JsonObject result = session.snapshot(status);
             result.addProperty("recipe_id", recipe.getId().toString()); result.addProperty("requested_count", requested);
@@ -317,7 +358,12 @@ public final class GuiCraftingService {
             result.addProperty("surplus_count", Math.max(0, crafted - requested)); result.addProperty("crafted_item", outputId);
             result.addProperty("batch_notice", "count is newly delivered output for this call; native recipe batches may produce surplus, reported explicitly. Retries must subtract crafted_count.");
             if (error != null && !error.isBlank()) result.addProperty("error", error);
+            if(storageFailure!=null)for(var entry:storageFailure.entrySet())if(!entry.getKey().equals("status"))result.add(entry.getKey(),entry.getValue());
             future.complete(result);
         }
+    }
+    static final class StorageFailure extends IllegalArgumentException {
+        final JsonObject detail;
+        StorageFailure(JsonObject detail){super(detail.get("error").getAsString());this.detail=detail;}
     }
 }

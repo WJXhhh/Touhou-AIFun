@@ -8,7 +8,7 @@ import java.util.*;
 
 /** Generation-local recipe definitions, never inventory availability or task completion facts. */
 public final class TaskRecipeEvidence {
-    static final String HEADER="## Known workbench recipes\n";
+    static final String HEADER="## Known crafting and cooking recipes\n";
     private final LinkedHashMap<String,JsonObject> recipes=new LinkedHashMap<>();
     public void capture(String raw) {
         try {
@@ -23,7 +23,7 @@ public final class TaskRecipeEvidence {
         }catch(RuntimeException ignored){ /* Unknown results cannot establish reusable evidence. */ }
     }
     static JsonObject definition(JsonObject row) {
-        var retained=row.deepCopy();retained.remove("can_fill_one_craft");retained.remove("crafts_for_requested_count");
+        var retained=row.deepCopy();retained.remove("output_backpack_state");retained.remove("can_fill_one_craft");retained.remove("crafts_for_requested_count");
         if(retained.has("ingredients"))for(var ingredient:retained.getAsJsonArray("ingredients"))ingredient.getAsJsonObject().remove("matching_backpack_count");
         return retained;
     }

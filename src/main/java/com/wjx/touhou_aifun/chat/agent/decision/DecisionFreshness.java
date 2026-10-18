@@ -25,7 +25,8 @@ public final class DecisionFreshness {
             if(!state.get("owner_amendment").getAsString().matches("(?is).*(组|stacks?\\b).*"))out.remove("inventory");
             out.add("binding_proof",identities(live.getAsJsonObject("binding_proof"),null,false));
         } else {
-            if(purpose.equals("action"))out.remove("targets");
+            if(purpose.equals("action") || purpose.equals("stage"))out.remove("targets");
+            if(purpose.equals("stage"))for(String key:List.of("x","y","z","position"))out.remove(key);
             if(out.has("action_targets"))for(var row:out.getAsJsonArray("action_targets")){row.getAsJsonObject().remove("items");row.getAsJsonObject().remove("sign");}
             if(live.has("binding_proof"))out.add("binding_proof",identities(live.getAsJsonObject("binding_proof"),null,false));
         }

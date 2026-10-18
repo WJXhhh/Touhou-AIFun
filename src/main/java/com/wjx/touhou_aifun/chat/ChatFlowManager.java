@@ -49,6 +49,7 @@ public final class ChatFlowManager {
     public static void clearMaid(EntityMaid maidEntity) {
         com.wjx.touhou_aifun.maid.gui.MaidGuiSessionManager.cancel(maidEntity.getUUID(), "memory_cleared");
         UUID maid = maidEntity.getUUID();
+        com.wjx.touhou_aifun.chat.freechat.FreeChatContext.clearMaid(maid);
         Object previous = LATEST_REQUEST.put(maid, new Object());
         CURRENT_TURN.compute(maid, (ignored, value) -> value == null ? 1L : value + 1L);
         cancelInFlight(maid);
@@ -285,6 +286,19 @@ public final class ChatFlowManager {
         return TTS_GENERATION.merge(maid, 1, Integer::sum);
     }
 
+    /**
+     * Silences the maid's current speech without cancelling its text reply.
+     * <p>
+     * Runs when the player starts a voice turn (pressing the STT key) rather than when the
+     * transcribed message opens the next chat turn: audio that is still being synthesized or sent
+     * for the current reply is dropped through the TTS generation gate, while the reply itself may
+     * still finish and be recorded in history. A subsequent user turn bumps the generation again,
+     * so the next reply speaks normally.
+     */
+    public static void interruptSpeech(UUID maid) {
+        beginTtsTakeover(maid);
+    }
+
     /** Current TTS generation for the maid (captured by a synthesis run to detect takeovers). */
     public static int ttsGeneration(UUID maid) {
         return TTS_GENERATION.getOrDefault(maid, 0);
@@ -292,6 +306,7 @@ public final class ChatFlowManager {
 
     /** Releases strong runtime references when a maid leaves a level while rejecting late callbacks. */
     public static void forgetMaid(UUID maid) {
+        com.wjx.touhou_aifun.chat.freechat.FreeChatContext.clearMaid(maid);
         RETIRED_MAIDS.add(maid);
         Object callback = LATEST_REQUEST.remove(maid);
         CURRENT_TURN.remove(maid);

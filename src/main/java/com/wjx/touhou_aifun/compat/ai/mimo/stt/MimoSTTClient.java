@@ -14,6 +14,7 @@ import com.wjx.touhou_aifun.compat.ai.mimo.MimoEndpointResolver;
 import com.wjx.touhou_aifun.compat.ai.mimo.MimoShared;
 import com.wjx.touhou_aifun.compat.ai.mimo.response.MimoChatCompletionResponse;
 import com.wjx.touhou_aifun.compat.ai.mimo.response.MimoMessage;
+import com.wjx.touhou_aifun.compat.ai.stt.BufferedSTTClient;
 
 import javax.sound.sampled.AudioFormat;
 import javax.sound.sampled.Mixer;
@@ -25,7 +26,7 @@ import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.Base64;
 
-public class MimoSTTClient implements STTClient {
+public class MimoSTTClient implements STTClient, BufferedSTTClient {
     private static final AudioFormat FORMAT = new AudioFormat(16000, 16, 1, true, false);
     private static final Duration MAX_TIMEOUT = Duration.ofSeconds(30);
 
@@ -44,24 +45,32 @@ public class MimoSTTClient implements STTClient {
             callback.onFailure(null, new Throwable("No suitable microphone found"), ErrorCode.MICROPHONE_NOT_FOUND);
             return;
         }
-        URI uri = MimoEndpointResolver.resolve(this.site.url(), this.site.getSecretKey());
+        MicrophoneManager.startRecord(info.getName(), FORMAT, data -> transcribe(data, callback));
+    }
 
-        String apiKey = MimoShared.resolveSecretKey(this.site.getSecretKey());
+    @Override
+    public void transcribe(byte[] wav, ResponseCallback<String> callback) {
+        URI uri;
+        String apiKey;
+        try {
+            uri = MimoEndpointResolver.resolve(this.site.url(), this.site.getSecretKey());
+            apiKey = MimoShared.resolveSecretKey(this.site.getSecretKey());
+        } catch (RuntimeException invalid) {
+            callback.onFailure(null, invalid, ErrorCode.REQUEST_SENDING_ERROR);
+            return;
+        }
         if (apiKey == null) {
             callback.onFailure(null, new IllegalArgumentException("MiMo API key is empty"), ErrorCode.REQUEST_SENDING_ERROR);
             return;
         }
-
-        MicrophoneManager.startRecord(info.getName(), FORMAT, data -> {
-            HttpRequest request = HttpRequest.newBuilder().uri(uri)
-                    .header(HttpHeaders.CONTENT_TYPE, MediaType.JSON_UTF_8.toString())
-                    .header(HttpHeaders.AUTHORIZATION, "Bearer " + apiKey)
-                    .POST(HttpRequest.BodyPublishers.ofString(buildRequestBody(data), StandardCharsets.UTF_8))
-                    .timeout(MAX_TIMEOUT)
-                    .build();
-            httpClient.sendAsync(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8))
-                    .whenComplete((response, throwable) -> handle(callback, response, throwable, request));
-        });
+        HttpRequest request = HttpRequest.newBuilder().uri(uri)
+                .header(HttpHeaders.CONTENT_TYPE, MediaType.JSON_UTF_8.toString())
+                .header(HttpHeaders.AUTHORIZATION, "Bearer " + apiKey)
+                .POST(HttpRequest.BodyPublishers.ofString(buildRequestBody(wav), StandardCharsets.UTF_8))
+                .timeout(MAX_TIMEOUT)
+                .build();
+        httpClient.sendAsync(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8))
+                .whenComplete((response, throwable) -> handle(callback, response, throwable, request));
     }
 
     @Override

@@ -6,7 +6,7 @@ public record ToolExecutionPolicy(ThreadKind thread, String resource, boolean pa
     public enum ThreadKind { SERVER, ASYNC }
     public static boolean requiresFreshWorld(String id) {
         return !java.util.Set.of("update_task_plan", "scan_surroundings", "observe_surroundings", "review_observation", "query_game_context",
-                "load_tool_schema", "read_task_result", "query_recipes", "current_date_time", "get_current_datetime", "web_search", "web_fetch", "use_skill", "query_minecraft_wiki").contains(id);
+                "load_tool_schema", "read_task_result", "read_tool_history", "query_recipes", "current_date_time", "get_current_datetime", "web_search", "web_fetch", "use_skill", "query_minecraft_wiki", "combat_target", "combat_control").contains(id);
     }
     public static ToolExecutionPolicy forTool(String id) {
         return switch (id) {

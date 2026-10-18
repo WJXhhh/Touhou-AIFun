@@ -25,7 +25,11 @@ public final class TTSProgressiveSynthesis {
 
         List<String> chunks = synthesisChunks(client, message, TouhouAIFunConfig.TTS_SENTENCE_STREAMING.get());
         if (chunks.size() <= 1) {
-            client.play(message, config, gated(callback, maidId, generation));
+            // StepFun's client already drops late audio itself (streaming and its HTTP fallback both
+            // capture the TTS generation). It also needs the original callback so it can reproduce
+            // the base callback's chat bubble without sending a second audio packet.
+            client.play(message, config,
+                    client instanceof StepFunTTSClient ? callback : gated(callback, maidId, generation));
             return;
         }
         playNext(client, chunks, 0, config, callback, maidId, generation);

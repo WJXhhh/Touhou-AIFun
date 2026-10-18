@@ -20,8 +20,8 @@ public final class TaskToolSelection {
 
     private static final Set<String> PHASE_TOOLS = Set.of("scan_surroundings", "read_task_result",
             "update_task_plan", "load_tool_schema", "open_gui", "inspect_gui", "inspect_containers", "query_recipes",
-            "gui_action", "gui_batch", "wait_gui", "close_gui");
-    private static final Set<String> GUI_MUTATIONS = Set.of("gui_action", "gui_batch", "wait_gui");
+            "gui_action", "gui_batch", "wait_gui", "close_gui", "drop_items_to_owner");
+    private static final Set<String> GUI_MUTATIONS = Set.of("gui_action", "gui_batch", "wait_gui", "drop_items_to_owner");
     private static final Set<String> ALLOWLIST_RECOVERY = Set.of("update_task_plan", "load_tool_schema", "read_task_result");
     private static final Set<String> OPEN_MENU_TOOLS = Set.of("gui_action", "gui_batch", "wait_gui", "inspect_gui", "close_gui");
     private static final Set<String> READ_ONLY_SELECTION = Set.of("open_gui", "inspect_gui", "inspect_containers", "query_recipes",
@@ -67,6 +67,7 @@ public final class TaskToolSelection {
         var leaves=AgentCompletionRules.leaves(activeCompletion);
         boolean inventory=leaves.stream().anyMatch(c->AgentTaskState.completionKind(c).equals("inventory") && c.get("count").getAsLong()>0);
         var selected=new java.util.TreeSet<>(ids);
+        if(leaves.stream().anyMatch(c->AgentTaskState.completionKind(c).equals("drop_to_owner")))selected.add("drop_items_to_owner");
         // A recipe query cannot produce inventory. Retain the actual workbench operation
         // even when a model only names preparation tools for a manufacturing phase.
         if(inventory && ids.contains("query_recipes"))selected.addAll(Set.of("open_gui","gui_action"));

@@ -39,19 +39,19 @@ public final class AgentTool implements ITool<JsonObject> {
     }
     private static ObjectParameter completionParameter(boolean sequence) {
         ObjectParameter completion=atomicCompletion(false,sequence
-                ?new String[]{"transfer","position","inventory","maid_state","eat_food","container_unchanged","backpack_empty","all","sequence"}
-                :new String[]{"transfer","position","inventory","maid_state","eat_food","container_unchanged","backpack_empty","all"});
-        completion.addProperties("conditions",ArrayParameter.create().setItems(atomicCompletion(true,"transfer","position","inventory","maid_state","eat_food","container_unchanged","backpack_empty")).setRange(1,16)
+                ?new String[]{"transfer","position","inventory","maid_state","eat_food","drop_to_owner","container_unchanged","backpack_empty","all","sequence"}
+                :new String[]{"transfer","position","inventory","maid_state","eat_food","drop_to_owner","container_unchanged","backpack_empty","all"});
+        completion.addProperties("conditions",ArrayParameter.create().setItems(atomicCompletion(true,"transfer","position","inventory","maid_state","eat_food","drop_to_owner","container_unchanged","backpack_empty")).setRange(1,16)
                 .setDescription("kind=all: every atomic requirement must hold."),false);
         if(sequence)completion.addProperties("phases",ArrayParameter.create().setItems(completionParameter(false)).setRange(2,8)
-                .setDescription("kind=sequence: ordered verified phases, excluding eat_food. Transfer counts are NET WITHIN EACH PHASE. Use for take-then-return or intermediate states; never encode a round trip as a final outbound net transfer. Final phase remains live-verified."),false);
+                .setDescription("kind=sequence: ordered verified phases, excluding eat_food/drop_to_owner. Transfer counts are NET WITHIN EACH PHASE. Use for take-then-return or intermediate states; never encode a round trip as a final outbound net transfer. Final phase remains live-verified."),false);
         return completion.setDescription("Full user requirements, verified from actual server facts. EVERY transfer leaf requires dimension,item,count,to_maid,position=[observed container x,y,z]. Composite groups require explicit kind=all or sequence; never drop owner requirements to fix validation. No dummy conditions.");
     }
     private static ObjectParameter atomicCompletion(boolean requiredDimension,String... kinds) {
         ObjectParameter root=ObjectParameter.create();
         root.addProperties("kind",StringParameter.create().addEnumValues(kinds).setDescription("Defaults to transfer. inventory is FINAL backpack stock, never a precondition."),false);
         root.addProperties("dimension",StringParameter.create().setDescription("Required on EVERY atomic condition, including backpack_empty. Composite all/sequence groups may omit."),requiredDimension);
-        root.addProperties("item",StringParameter.create().setDescription("Exact item id for transfer/inventory."),false);
+        root.addProperties("item",StringParameter.create().setDescription("Exact item id for transfer/inventory/drop_to_owner. drop_to_owner verifies spawned entities aimed at the current owner, not inventory absence or player pickup."),false);
         root.addProperties("count",IntegerParameter.create().setMinimum(0).setDescription("Transfer >=1; inventory >=1, or 0 with match=exact."),false);
         root.addProperties("match",StringParameter.create().addEnumValues("at_least","exact").setDescription("inventory only; default at_least."),false);
         root.addProperties("position",ArrayParameter.create().setItems(IntegerParameter.create()).setRange(3,3).setDescription("Actual container/arrival x,y,z, never the sign position. container_unchanged captures original slot/count/NBT from an open single container before actions."),false);

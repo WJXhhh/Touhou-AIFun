@@ -14,6 +14,10 @@ public final class TaskDecisionRouter {
     private final DecisionServiceSettings.Snapshot settings;
     private final boolean startupTemplates;
     private boolean disabled,pending,initialScan;
+    private boolean serviceDiagnosticRecorded;
+    private String disabledReason="";
+    private int requestAttempts;
+    private final long snapshotCreated=System.nanoTime();
     private int executingStep=-1;
     private int templateAttemptVersion;
     private boolean templateDelegated;
@@ -28,6 +32,11 @@ public final class TaskDecisionRouter {
     private final Map<Integer,Integer> recoveries=new HashMap<>();
     private final TargetBindingCache targetBindings=new TargetBindingCache();
     private int bindingVersion;
+    private boolean stageSegment,stageContinuation;
+    private int stageSegmentPhase;
+    private String stageSuppressed="";
+    private int plannerHandoffs;
+    private final Map<String,Integer> bypassReasons=new LinkedHashMap<>();
     public TaskDecisionRouter(TaskCallback callback) { this.callback=callback;settings=DecisionServiceSettings.snapshot();startupTemplates=com.wjx.touhou_aifun.config.TouhouAIFunConfig.DECISION_STARTUP_TEMPLATES.get(); }
     public boolean enabled() { return settings.view().enabled(); }
     public boolean permitsCompletion() {
@@ -35,19 +44,37 @@ public final class TaskDecisionRouter {
         return task.actionSteps==null || task.actionSteps.isEmpty() || task.actionPlanGoalVersion!=task.goalVersion || task.actionStep>=task.actionSteps.size();
     }
     public boolean route(LLMClient client,JsonObject checkpoint,ToolCatalogSnapshot catalog,boolean freshWorld,boolean recovering) {
-        if(!enabled()) return false;
+        boolean routed=routeInternal(client,checkpoint,catalog,freshWorld,recovering);
+        if(!routed && enabled() && requestAttempts==0 && ++plannerHandoffs>=3)serviceDiagnostic("enabled_but_unused");
+        return routed;
+    }
+    public void finishDiagnostic() {
+        if(enabled() && requestAttempts==0 && plannerHandoffs>0)serviceDiagnostic("finished_without_decision_requests");
+    }
+    private boolean routeInternal(LLMClient client,JsonObject checkpoint,ToolCatalogSnapshot catalog,boolean freshWorld,boolean recovering) {
+        if(!enabled()) {
+            if(!serviceDiagnosticRecorded && com.wjx.touhou_aifun.config.TouhouAIFunConfig.DECISION_SERVICE_ENABLED.get())serviceDiagnostic("snapshot_disabled");
+            return false;
+        }
         if(pending) return true;
-        if(bindingVersion!=callback.task.goalVersion){bindingVersion=callback.task.goalVersion;targetBindings.clear();templateDelegated=false;templateAttemptVersion=0;failedStep=null;recoveryPrepared=false;inspecting=null;inspectionRequest=null;explicitItems=null;explicitAnswers=null;recoveries.clear();}
+        if(bindingVersion!=callback.task.goalVersion){bindingVersion=callback.task.goalVersion;targetBindings.clear();templateDelegated=false;templateAttemptVersion=0;failedStep=null;recoveryPrepared=false;inspecting=null;inspectionRequest=null;explicitItems=null;explicitAnswers=null;recoveries.clear();stageSegment=false;stageContinuation=false;stageSuppressed="";}
         if(recovering || failedStep!=null) {
             if(routeRecovery(client,recovering)) return true;
             if(recovering) return fallback("recovery_requires_planner");
         }
         if(!freshWorld) {
-            if(initialScan || recovering || catalog.decisionEntries().stream().noneMatch(e->e.id().equals("scan_surroundings"))) return false;
+            if(initialScan || recovering || catalog.decisionEntries().stream().noneMatch(e->e.id().equals("scan_surroundings"))) return bypass("fresh_observation_required");
             initialScan=true;dispatch(new DecisionQuestionCompiler.Selection("scan_surroundings",new JsonObject()),client,-1,"deterministic_observation");return true;
         }
         var task=callback.task;
-        if(task.actionPlanGoalVersion!=task.goalVersion || task.actionSteps==null || task.actionSteps.isEmpty()) return bootstrap(client,catalog);
+        if(stageSegment && stageSegmentPhase!=task.completionStage) {
+            stageSegment=false;task.clearActionPlan();
+            if(MaidGuiSessionManager.session(callback.getMaid().getUUID())!=null){dispatch(new DecisionQuestionCompiler.Selection("close_gui",sessionArgs()),client,-1,"stage_cleanup");return true;}
+        }
+        if(task.actionPlanGoalVersion!=task.goalVersion || task.actionSteps==null || task.actionSteps.isEmpty()) {
+            if(routeStage(client,catalog))return true;
+            return bootstrap(client,catalog);
+        }
         templateAttemptVersion=task.goalVersion;
         try {
             while(task.actionStep<task.actionSteps.size()) {
@@ -90,6 +117,7 @@ public final class TaskDecisionRouter {
                 },answers->{var selected=compiled.select(answers,settings.view().minConfidence());
                     if(selected==null){fallback("uncertain_or_none");callback.next(client);}else {if(capture!=null)targetBindings.remember(originalStep,capture,selected,live.getAsJsonObject("bindings"));dispatch(selected,client,index,"decision_selected");}});
             }
+            if(stageSegment) {stageSegment=false;task.clearActionPlan();callback.next(client);return true;}
             if(AgentCompletion.verify(callback.getMaid(),task,true)) {
                 if(MaidGuiSessionManager.session(callback.getMaid().getUUID())!=null) {
                     var args=new JsonObject();args.addProperty("session_id",MaidGuiSessionManager.session(callback.getMaid().getUUID()).id.toString());
@@ -102,6 +130,75 @@ public final class TaskDecisionRouter {
             return fallback("plan_exhausted_unmet");
         } catch(RuntimeException invalid) {return fallback("invalid_plan_or_settings");}
     }
+    private boolean bypass(String reason) {bypassReasons.merge(reason,1,Integer::sum);return false;}
+    private String stageKey(){return callback.task.goalVersion+":"+callback.task.completionStage+":"+callback.task.activeCompletion();}
+    private boolean routeStage(LLMClient client,ToolCatalogSnapshot catalog) {
+        var task=callback.task;
+        if(task.completion==null)return bypass("completion_not_registered");
+        if(task.steps.isEmpty())return bypass("existing_plan_required");
+        if(stageSuppressed.equals(stageKey()))return bypass("stage_delegated_to_flash");
+        var session=MaidGuiSessionManager.session(callback.getMaid().getUUID());
+        var segments=TaskStageChoices.transfers(task.activeCompletion(),task.activeTransfers(),callback.getMaid().level().dimension().location().toString());
+        if(stageContinuation && segments.isEmpty() && AgentCompletion.verify(callback.getMaid(),task,true)) {
+            task.currentStep=Math.max(0,task.steps.size()-1);
+            AgentRuntime.finished(callback,"已根据当前现场和实际操作记录核验完成。",true);return true;
+        }
+        if(segments.isEmpty())return bypass("no_supported_pending_transfer_phase");
+        if(segments.size()==1 && !stageContinuation && session==null)return bypass("single_choice_no_service_needed");
+        var eligible=catalog.decisionEntries().stream().map(e->e.id()).collect(java.util.stream.Collectors.toSet());
+        if(!eligible.containsAll(List.of("open_gui","gui_action","close_gui")))return bypass("stage_tools_unavailable");
+        var capture=TaskTargetBindings.capture(callback,false);
+        var observed=capture.targets().stream().filter(t->t.kind().equals("container")).map(t->t.data().get("position").toString()).collect(java.util.stream.Collectors.toSet());
+        if(segments.stream().anyMatch(s->!observed.contains(s.position().toString())))return bypass("phase_targets_not_freshly_observed");
+        if(session!=null) {
+            var current=segments.stream().filter(s->session.targetPosition!=null
+                    && session.targetPosition.getX()==s.position().get(0).getAsInt()
+                    && session.targetPosition.getY()==s.position().get(1).getAsInt()
+                    && session.targetPosition.getZ()==s.position().get(2).getAsInt()).findFirst();
+            if(current.isEmpty())return bypass("existing_menu_outside_pending_phase");
+            // Opening this menu already committed the target choice. Reuse it rather than
+            // asking either model to select it again or reopening the same container.
+            installStage(current.get(),client);return true;
+        }
+        if(segments.size()==1){installStage(segments.get(0),client);return true;}
+        if(segments.size()+1>settings.client().capabilities().maxChoices())return bypass("stage_choice_limit");
+        var choices=new LinkedHashMap<String,String>();var candidates=new JsonArray();
+        for(var segment:segments) {
+            var p=segment.position();double distance=callback.getMaid().distanceToSqr(p.get(0).getAsDouble()+.5,p.get(1).getAsDouble(),p.get(2).getAsDouble()+.5);
+            var row=new JsonObject();row.addProperty("id",segment.id());row.add("position",p);row.add("remaining",segment.remaining());row.addProperty("distance_squared",distance);candidates.add(row);
+            choices.put(segment.id(),"Execute authorized pending container "+p+", squared travel distance="+distance+", remaining required transfers="+segment.remaining()+". Suitable when this is the shortest feasible travel; every other container stays required.");
+        }
+        choices.put("llm","A blocker or uncertainty requires the execution planner; do not guess or change requirements.");
+        var questions=new JsonObject();questions.add("next_container",DecisionProtocol.choice("Choose only the NEXT container within this already registered same-direction transfer phase. Never select completed work, change quantities, cross a phase boundary, or treat closed-container stock as observed. Prefer the nearest feasible authorized candidate; use llm when uncertain.",choices));
+        var state=new JsonObject();state.addProperty("goal",task.goal);state.add("constraints",new Gson().toJsonTree(task.constraints));state.addProperty("completion_stage",task.completionStage);
+        state.add("candidates",candidates);state.add("live",DecisionStateProjection.modelView(callback.decisionLiveState()));state.getAsJsonObject("live").remove("targets");
+        var live=stageLive();
+        boolean routed=evaluate(client,"stage",state,questions,live,this::stageLive,answers->{
+            var answer=answers.getAsJsonObject("next_container");
+            callback.decisionTrace("decision_stage_answer","choice="+answer.get("choice").getAsString()+"; confidence="+answer.get("confidence").getAsDouble());
+            String id=answers.getAsJsonObject("next_container").get("choice").getAsString();
+            var chosen=segments.stream().filter(s->s.id().equals(id)).findFirst();
+            if(chosen.isEmpty()){stageSuppressed=stageKey();fallback("stage_requires_planner");callback.next(client);return;}
+            // Every offered segment is independently authorized by the same committed phase.
+            // This confidence describes scheduling preference among required work, not uncertain
+            // target/quantity interpretation. The validated highest-probability member is safe to
+            // schedule; semantic action/binding decisions retain their strict confidence gate.
+            installStage(chosen.get(),client);
+        });
+        if(!routed)stageSuppressed=stageKey();
+        return routed;
+    }
+    private JsonObject stageLive() {
+        var live=callback.decisionLiveState();live.addProperty("completion_stage",callback.task.completionStage);
+        live.addProperty("mutation_version",callback.task.appliedMutationVersion);
+        live.add("settled_transfers",new Gson().toJsonTree(callback.task.activeTransfers()));
+        live.add("binding_proof",TaskTargetBindings.capture(callback,false).fingerprint());return live;
+    }
+    private void installStage(TaskStageChoices.Segment segment,LLMClient client) {
+        var task=callback.task;task.actionSteps=segment.steps().deepCopy();task.actionStep=0;task.actionPlanGoalVersion=task.goalVersion;
+        stageSegment=true;stageContinuation=true;stageSegmentPhase=task.completionStage;
+        AgentRuntime.save(callback.getMaid());callback.decisionTrace("decision_stage_installed","stage="+stageSegmentPhase+"; target="+segment.position()+"; full_contract_preserved=true; receipts_preserved=true");callback.next(client);
+    }
     private boolean evaluate(LLMClient client,String purpose,JsonObject state,JsonObject questions,JsonObject live,Supplier<JsonObject> current,Consumer<JsonObject> accepted) {
         if(disabled || settings.apiKey().isBlank())return fallback("service_unavailable");
         // Action routing already acquires the gate before compiling its state.
@@ -109,6 +206,7 @@ public final class TaskDecisionRouter {
         var task=callback.task;int version=task.goalVersion,index=task.actionStep;long generation=task.generation;
         var timing=callback.executionTiming.child("decision_request:"+settings.view().provider());pending=true;
         try {
+            requestAttempts++;
             settings.client().evaluate(state,questions,callback.operations::add).whenComplete((result,error)->callback.runOnServerThread(()->{
                 pending=false;if(callback.stopped()){timing.finish("cancelled",0);return;}
                 try {
@@ -116,18 +214,22 @@ public final class TaskDecisionRouter {
                     var previous=live.deepCopy();
                     if(result!=null && error==null){previous=DecisionFreshness.project(previous,purpose,state,result.answers());now=DecisionFreshness.project(now,purpose,state,result.answers());}
                     if(task.generation!=generation || task.goalVersion!=version || task.actionStep!=index || !task.pendingAmendment.isBlank() || !previous.equals(now)) {
+                        if(purpose.equals("stage"))stageSuppressed=stageKey();
                         timing.finish("stale",0);callback.decisionTrace("decision_stale_fields",staleFields(previous,now));fallback("stale_observation");callback.next(client);return;
                     }
                     if(error!=null) {
+                        if(purpose.equals("stage"))stageSuppressed=stageKey();
                         Throwable cause=error;while(cause.getCause()!=null)cause=cause.getCause();
                         if(cause instanceof NativeDecisionProvider.HttpFailure http){disabled|=http.permanent();if(http.status==429 || http.status==529)DecisionRequestGate.coolDown(settings.view().provider(),System.nanoTime());}
                         else if(cause instanceof IllegalArgumentException)disabled=true;
                         String reason=cause instanceof NativeDecisionProvider.HttpFailure http?"http_"+http.status:cause instanceof java.util.concurrent.TimeoutException || cause instanceof java.net.http.HttpTimeoutException?"timeout":cause instanceof IllegalArgumentException?"invalid_response":"request_error";
+                        if(disabled)disabledReason=reason;
                         timing.finish("fallback",0);fallback(reason);callback.next(client);return;
                     }
                     timing.finish("answered",0);callback.decisionTrace("decision_response","purpose="+purpose+"; provider="+settings.view().provider()+"; requested="+settings.view().model()+"; reported="+result.model()+"; input="+result.inputTokens()+"; output="+result.outputTokens()+"; request_id="+result.requestId());
+                    com.wjx.touhou_aifun.TouhouAIFun.LOGGER.info("AIFun native decision response: task={} generation={} purpose={} provider={} requested_model={} reported_model={} input_tokens={} output_tokens={} request_id={}",task.id,generation,purpose,settings.view().provider(),settings.view().model(),result.model(),result.inputTokens(),result.outputTokens(),result.requestId());
                     accepted.accept(result.answers());
-                }catch(RuntimeException invalid){timing.finish("fallback",0);fallback("invalid_response_or_binding");callback.next(client);}
+                }catch(RuntimeException invalid){if(purpose.equals("stage"))stageSuppressed=stageKey();timing.finish("fallback",0);fallback("invalid_response_or_binding");callback.next(client);}
             }));return true;
         }catch(RuntimeException invalid){pending=false;timing.finish("fallback",0);return fallback("request_invalid");}
     }
@@ -147,7 +249,7 @@ public final class TaskDecisionRouter {
         var candidates=new JsonArray();for(var target:capture.targets())if(target.kind().equals("container")){var row=target.data().deepCopy();row.addProperty("id",target.id());row.addProperty("kind",target.kind());candidates.add(row);}state.add("target_candidates",candidates);return state;
     }
     private boolean bootstrap(LLMClient client,ToolCatalogSnapshot catalog) {
-        if (!startupTemplates) return false;
+        if (!startupTemplates) return bypass("startup_templates_disabled");
         var task=callback.task;
         if(templateDelegated || disabled || settings.apiKey().isBlank())return false;
         if(!task.constraints.isEmpty() && inspecting==null)return amend(client,catalog);
@@ -349,9 +451,45 @@ public final class TaskDecisionRouter {
         callback.dispatchAutomatic(selection.tool(),selection.arguments(),client);
     }
     private boolean fallback(String reason) {
+        if(stageSegment)stageSuppressed=stageKey();
+        stageSegment=false;stageContinuation=false;bypassReasons.merge(reason,1,Integer::sum);
+        if(reason.equals("service_unavailable") || disabled)serviceDiagnostic(reason);
         callback.executionTiming.child("decision_fallback:"+reason).finish("fallback",0);
         templateDelegated=true;templateAttemptVersion=callback.task.goalVersion;inspecting=null;inspectionRequest=null;explicitItems=null;explicitAnswers=null;failedStep=null;recoveryPrepared=false;targetBindings.clear();
         callback.task.clearActionPlan();callback.decisionTrace("decision_fallback",reason);return false;
+    }
+    /** Once per callback generation, including bypassed routing; no secrets, URLs or owner text. */
+    private void serviceDiagnostic(String reason) {
+        if(serviceDiagnosticRecorded)return;
+        serviceDiagnosticRecorded=true;
+        var detail=new JsonObject();detail.addProperty("reason",reason);
+        detail.addProperty("snapshot_age_ms",java.util.concurrent.TimeUnit.NANOSECONDS.toMillis(System.nanoTime()-snapshotCreated));
+        detail.addProperty("request_attempts",requestAttempts);detail.addProperty("disabled",disabled);detail.addProperty("disabled_reason",disabledReason);
+        detail.addProperty("planner_handoffs",plannerHandoffs);detail.addProperty("startup_templates",startupTemplates);
+        detail.add("bypass_reasons",new Gson().toJsonTree(bypassReasons));
+        detail.add("captured",diagnosticView(settings));
+        try {
+            var current=DecisionServiceSettings.snapshot();detail.add("current",diagnosticView(current));
+            var changed=new JsonArray();var old=settings.view();var now=current.view();
+            if(old.enabled()!=now.enabled())changed.add("enabled");
+            if(!old.provider().equals(now.provider()))changed.add("provider");
+            if(!old.endpoint().equals(now.endpoint()))changed.add("endpoint");
+            if(!old.model().equals(now.model()))changed.add("model");
+            if(!settings.apiKey().equals(current.apiKey()))changed.add("key");
+            if(old.timeoutMs()!=now.timeoutMs())changed.add("timeout");
+            if(old.minConfidence()!=now.minConfidence())changed.add("confidence");
+            detail.add("changed_fields",changed);
+        }catch(RuntimeException unavailable){detail.addProperty("current_read_error",unavailable.getClass().getSimpleName());}
+        com.wjx.touhou_aifun.TouhouAIFun.LOGGER.warn("AIFun native decision diagnostic: maid={} task={} generation={} {}",callback.getMaid().getUUID(),callback.task.id,callback.task.generation,detail);
+        try {callback.decisionDiagnostic(detail);}
+        catch(RuntimeException unavailable){com.wjx.touhou_aifun.TouhouAIFun.LOGGER.warn("AIFun native decision diagnostic archive unavailable: task={}; type={}",callback.task.id,unavailable.getClass().getSimpleName());}
+    }
+    private static JsonObject diagnosticView(DecisionServiceSettings.Snapshot snapshot) {
+        var result=new JsonObject();var view=snapshot.view();
+        result.addProperty("provider",view.provider());result.addProperty("enabled",view.enabled());
+        result.addProperty("model",view.model());
+        result.addProperty("has_key",!snapshot.apiKey().isBlank());result.addProperty("view_has_key",view.hasKey());
+        result.addProperty("timeout_ms",view.timeoutMs());return result;
     }
     public void settled(boolean failed,boolean freshWorld) {
         int index=executingStep;executingStep=-1;
@@ -362,7 +500,9 @@ public final class TaskDecisionRouter {
         if(failed) {failedStep=step;failedSelection=dispatched;failureReason=TaskRecoveryPolicy.reason(callback.lastFailedResult());recoveryPrepared=false;return;}
         recoveries.remove(index);
         if(step.until()==null || AgentCompletion.verifyPredicate(callback.getMaid(),task,step.until(),freshWorld)) {
-            task.actionStep++;task.currentStep=Math.min(task.actionStep,Math.max(0,task.steps.size()-1));AgentRuntime.save(callback.getMaid());
+            task.actionStep++;
+            if(!stageSegment)task.currentStep=Math.min(task.actionStep,Math.max(0,task.steps.size()-1));
+            AgentRuntime.save(callback.getMaid());
         }
     }
 }

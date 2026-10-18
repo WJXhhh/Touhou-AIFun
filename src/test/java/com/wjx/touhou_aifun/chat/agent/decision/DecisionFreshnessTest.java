@@ -3,6 +3,13 @@ import com.google.gson.*;
 import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.*;
 class DecisionFreshnessTest {
+    @Test void stageRetainsReceiptAndPhaseDependenciesWhileIgnoringUnobservedStockAndIncidentalMovement(){
+        var old=live();old.addProperty("completion_stage",0);old.addProperty("mutation_version",1);old.add("settled_transfers",json("{\"a\":3}"));
+        var next=old.deepCopy();next.addProperty("x",20);next.getAsJsonObject("binding_proof").getAsJsonArray("observed_targets").get(0).getAsJsonObject().remove("container_inventory");
+        assertEquals(DecisionFreshness.project(old,"stage",new JsonObject(),new JsonObject()),DecisionFreshness.project(next,"stage",new JsonObject(),new JsonObject()));
+        next.addProperty("completion_stage",1);assertNotEquals(DecisionFreshness.project(old,"stage",new JsonObject(),new JsonObject()),DecisionFreshness.project(next,"stage",new JsonObject(),new JsonObject()));
+        next=old.deepCopy();next.getAsJsonObject("settled_transfers").addProperty("a",4);assertNotEquals(DecisionFreshness.project(old,"stage",new JsonObject(),new JsonObject()),DecisionFreshness.project(next,"stage",new JsonObject(),new JsonObject()));
+    }
     @org.junit.jupiter.api.Test void mergedDeliveryDependsOnBackpackButUnusedBranchesDoNot(){
         var state=json("{\"batched_item_branches\":[\"receive\",\"deliver\"]}");var old=live();var next=old.deepCopy();next.remove("inventory");var answers=json("{\"template\":{\"choice\":\"deliver_then_follow\"}}");
         assertNotEquals(DecisionFreshness.project(old,"template",state,answers),DecisionFreshness.project(next,"template",state,answers));answers.getAsJsonObject("template").addProperty("choice","follow");assertEquals(DecisionFreshness.project(old,"template",state,answers),DecisionFreshness.project(next,"template",state,answers));

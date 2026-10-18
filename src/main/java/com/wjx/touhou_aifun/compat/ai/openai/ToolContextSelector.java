@@ -30,9 +30,10 @@ public final class ToolContextSelector {
     private static final Gson GSON = new Gson();
     public static final String LOAD_SCHEMA_TOOL = "load_tool_schema";
     private static final List<String> CORE_TOOLS = List.of(
-            "task_control", "read_task_result", "read_tool_history", "update_task_plan", "use_skill", "query_minecraft_wiki", "query_game_context", "query_recipes",
+            "task_control", "read_task_result", "read_tool_history", "update_task_plan", "use_skill", "query_minecraft_wiki", "query_game_context", "query_recipes", "scan_surroundings",
             "switch_follow_state", "switch_work_task", "switch_schedule", "switch_sit",
-            EatFoodBlockTool.TOOL_ID,
+            EatFoodBlockTool.TOOL_ID, "drop_items_to_owner",
+            "combat_target", "combat_control",
             LOAD_SCHEMA_TOOL, WebSearchTool.TOOL_ID, WebFetchTool.TOOL_ID, CurrentDateTimeTool.TOOL_ID);
     private static final Set<String> CORE_TOOL_SET = Set.copyOf(CORE_TOOLS);
     private static final Map<Object, ToolCatalogSnapshot> SNAPSHOTS = new ConcurrentHashMap<>();

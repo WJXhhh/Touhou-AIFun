@@ -182,7 +182,10 @@ public final class ProjectETransmutationAdapter implements MaidGuiAdapter {
             int accepted = left == 0 ? 0 : offer.getCount() - backpack.insertItem(slot, offer, true).getCount();
             portions.add(output.copyWithCount(accepted)); left -= accepted;
         }
-        if (left != 0) throw new IllegalArgumentException("projecte_backpack_full");
+        if (left != 0) {
+            var storage=MaidBackpackSpace.describe(backpack,output,count);storage.addProperty("simulated_accept_count",count-left);
+            return MaidBackpackSpace.failure(storage,"projecte_backpack_full","projecte_item_rejected_by_backpack");
+        }
         int inventoryBefore = matchingCount(session, output);
         provider.setEmc(provider.getEmc().subtract(cost));
         int delivered;

@@ -19,20 +19,35 @@ text-to-speech (TTS) and speech-to-text (STT) — and adds extra voice-customiza
 - **OpenAI-compatible** endpoints (generic)
 
 ### Text-to-Speech (TTS)
-- **StepFun** `stepaudio-2.5-tts` — with a synthesis instruction field (global emotion / tone / persona)
+- **StepFun** `stepaudio-3-tts` / `stepaudio-2.5-tts` — with a synthesis instruction field (global emotion / tone / persona)
 - **Xiaomi MiMo** — direct voice ID, **Voice Design** prompt, and **reference-audio cloning**
 - **MiniMax**, **SiliconFlow**, **Fish Audio**
 - Per-voice mode buttons in the editor and **sentence-by-sentence streaming** playback
+- **StepFun official WebSocket streaming synthesis** — PCM is played while it is generated; a streaming reply can start speaking before the model finishes, with an automatic HTTP MP3 fallback
 - **Inline emotion / style control** — per-sentence `(emotion)` markers (incl. combined tags like `(委屈，抽泣)`) for `stepaudio-2.5-tts` / `mimo-v2.5-tts`, carried across streamed sentences
 
 ### Speech-to-Text (STT)
-- **StepFun**, **Xiaomi MiMo**
+- **StepFun**, **Xiaomi MiMo**, **Qwen**
 - A site dropdown to pick the active STT provider, alongside the microphone / distance / proxy options
+- **Free chat**: no STT key required; a volume gate starts ASR, the STT settings page has a live
+  draggable-threshold meter, and every transcript is judged by the server-side JEV / Perplexity
+  decision service for addressee, validity and relevance (a higher bar for player-to-player chat).
+  Capture continues during maid TTS and can interrupt it (headphones recommended). See
+  [Free chat](docs/free-chat.md)
 
 ### Extra UI
 - Custom Voice screen (reference audio + reference text)
 - TTS instruction screen
 - Streaming toggles and improved AI settings screens
+
+### Combat reflex and aggro control
+- **Server-side instant retaliation** when the maid or its owner is hurt (normally the next tick),
+  instead of waiting for the base mod's 20-tick target sensor
+- Owner protection, opt-in self-defence outside attack work modes, and night / non-WORK schedules
+- Players are valid targets except the **actual owner**; all player targets are refused while the
+  maid is public or friendly fire is disabled, and `attack_players=false` can disable them entirely
+- `combat_target` commands/clears the maid's aggro target; `combat_control` reads/changes combat
+  rules (owner-only mutations). See [Combat](docs/combat.md)
 
 ## Building
 

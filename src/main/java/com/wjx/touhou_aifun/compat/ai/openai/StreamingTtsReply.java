@@ -18,6 +18,8 @@ import com.wjx.touhou_aifun.chat.ChatFlowManager;
 import com.wjx.touhou_aifun.chat.ChatFavorability;
 import com.wjx.touhou_aifun.chat.context.AIFunMemoryManager;
 import com.wjx.touhou_aifun.compat.ai.tts.SentenceTextSplitter;
+import com.wjx.touhou_aifun.compat.ai.stepfun.tts.StepFunStreamingReply;
+import com.wjx.touhou_aifun.compat.ai.stepfun.tts.StepFunTTSClient;
 import com.wjx.touhou_aifun.config.TouhouAIFunConfig;
 import com.wjx.touhou_aifun.network.AIFunNetwork;
 
@@ -79,6 +81,12 @@ final class StreamingTtsReply {
     private final boolean usable;
     private final TTSClient client;
     private final TTSConfig config;
+    /** Streams this reply's sentences through one StepFun WebSocket session, if available. */
+    private final boolean stepFunStreaming;
+    /** Created lazily when the first sentence is dispatched (it needs the takeover generation first). */
+    private StepFunStreamingReply stepFunReply;
+    /** Singing lyrics are kept as one performance instead of being split across synthesis calls. */
+    private volatile boolean singingDetected;
 
     /** Sentences awaiting synthesis, in order. */
     private final Deque<String> pending = new ArrayDeque<>();
@@ -115,28 +123,34 @@ final class StreamingTtsReply {
         this.propagateEmotion = propagateEmotion;
 
         TTSSite site = this.chatManager.getTTSSite();
-        this.batchWholeReply = site != null && requiresWholeReplyBatch(site.getApiType());
         boolean ttsOn = !com.wjx.touhou_aifun.chat.agent.AgentExecution.task(callback)
                 && !com.wjx.touhou_aifun.chat.agent.AgentRuntime.validateForegroundAnswer(callback)
                 && AIConfig.TTS_ENABLED.get() && site != null && site.enabled();
         TTSClient resolvedClient = ttsOn ? site.client() : null;
+        TTSClient usableClient = null;
+        TTSConfig usableConfig = null;
         // System/local TTS uses a different (local sound) path; let the normal onSuccess handle it.
         if (ttsOn && TouhouAIFunConfig.TTS_SENTENCE_STREAMING.get()
                 && resolvedClient != null && !(resolvedClient instanceof TTSSystemServices)) {
-            this.usable = true;
-            this.client = resolvedClient;
             String model = this.chatManager.getTTSModel();
             String lang = "en";
             String[] split = this.chatManager.getTTSLanguage().split("_");
             if (split.length >= 2) {
                 lang = split[0];
             }
-            this.config = new TTSConfig(model, lang);
-        } else {
-            this.usable = false;
-            this.client = null;
-            this.config = null;
+            usableClient = resolvedClient;
+            usableConfig = new TTSConfig(model, lang);
         }
+        this.usable = usableClient != null;
+        this.client = usableClient;
+        this.config = usableConfig;
+        // StepFun's official WebSocket endpoint can speak incremental sentences of this one reply in
+        // a single session: earlier speech, while the session-wide instruction still applies. If the
+        // site cannot stream, StepFun keeps the whole-reply HTTP request that preserves context.
+        this.stepFunStreaming = this.usable && this.client instanceof StepFunTTSClient stepfun
+                && stepfun.supportsStreamingReply(this.config);
+        this.batchWholeReply = !this.stepFunStreaming && site != null
+                && requiresWholeReplyBatch(site.getApiType());
     }
 
     boolean isUsable() {
@@ -145,10 +159,15 @@ final class StreamingTtsReply {
 
     /** Stops synthesis queued by a stream that failed before its terminal completion event. */
     void abort() {
+        StepFunStreamingReply streaming;
         synchronized (this) {
             this.aborted = true;
             this.pending.clear();
             this.readyAudio.clear();
+            streaming = this.stepFunReply;
+        }
+        if (streaming != null) {
+            streaming.abort();
         }
         this.runOnServer(() -> {
             if (this.started && !ChatFlowManager.isSuperseded(this.maidId, this.callback)
@@ -164,7 +183,7 @@ final class StreamingTtsReply {
      * separator (and real text after it) is present.
      */
     void onPartial(String visibleContent) {
-        if (!this.usable || this.batchWholeReply || this.aborted) {
+        if (!this.usable || this.aborted) {
             return;
         }
         String ttsText;
@@ -174,9 +193,6 @@ final class StreamingTtsReply {
             ReasoningOpenAIResponseChat partial =
                     ReasoningOpenAIResponseChat.singleSegment(visibleContent, null, this.showMarkerInChat);
             ttsText = partial.getTtsText();
-            if (StringUtils.isBlank(ttsText)) {
-                return;
-            }
         } else {
             int separator = visibleContent.indexOf("---");
             if (separator < 0) {
@@ -189,7 +205,18 @@ final class StreamingTtsReply {
             }
             ttsText = new ReasoningOpenAIResponseChat(visibleContent, null).getTtsText();
         }
-
+        if (StringUtils.isBlank(ttsText)) {
+            return;
+        }
+        // A singing reply must be generated as one performance (melody and lyric phrasing depend on
+        // the whole text); its whole text is queued by finish() instead of being spoken sentence by
+        // sentence. This only applies to the streaming session, where it is a deliberate exception.
+        if (this.stepFunStreaming && StepFunTTSClient.isSingingRequest(ttsText)) {
+            this.singingDetected = true;
+        }
+        if (this.batchWholeReply || this.singingDetected) {
+            return;
+        }
         // Queue only sentences completed so far (the still-growing trailing sentence is left for later).
         this.queueUpTo(ttsText, SentenceTextSplitter.completePrefixLength(ttsText, MAX_CHUNK_CODE_POINTS));
     }
@@ -200,7 +227,7 @@ final class StreamingTtsReply {
      * its own synthesis request rather than being buried inside one (see {@link #carryEmotion}).
      */
     private List<String> piecesOf(String text) {
-        if (this.batchWholeReply) {
+        if (this.batchWholeReply || this.singingDetected) {
             return text == null || text.isBlank() ? List.of() : List.of(text);
         }
         List<String> base = SentenceTextSplitter.split(text, MAX_CHUNK_CODE_POINTS);
@@ -255,6 +282,7 @@ final class StreamingTtsReply {
             this.ensureStarted();
             this.showChatBubble(response.getChatText());
             this.pump();
+            this.finishStepFun(ttsText);
         });
     }
 
@@ -326,10 +354,23 @@ final class StreamingTtsReply {
         if (!this.usable || this.aborted) {
             return;
         }
+        if (this.stepFunStreaming) {
+            this.pumpStepFun();
+            return;
+        }
         List<Dispatch> toDispatch = new ArrayList<>();
         synchronized (this) {
             if (ChatFlowManager.isSuperseded(this.maidId, this.callback)) {
                 this.pending.clear();
+                return;
+            }
+            if (this.started && ChatFlowManager.ttsGeneration(this.maidId) != this.generation) {
+                // A player-initiated interruption (for example the STT key) ended this run's
+                // speech. Drop the sentences that were not dispatched yet so no further synthesis
+                // requests are spent on a reply the player already silenced; the text reply itself
+                // still finishes normally.
+                this.pending.clear();
+                this.readyAudio.clear();
                 return;
             }
             while (this.inFlight < MAX_CONCURRENT_SYNTHESIS && !this.pending.isEmpty()) {
@@ -344,6 +385,97 @@ final class StreamingTtsReply {
             this.ensureStarted();
             this.synthesize(dispatch.index(), dispatch.sentence());
         }
+    }
+
+    /**
+     * Dispatches every queued sentence into the reply's single StepFun WebSocket session. The
+     * provider keeps sentence order internally, so the parallel-synthesis reorder buffer of the HTTP
+     * path is unnecessary; dispatching under the reply lock keeps concurrent partial/finish flushes
+     * from interleaving sentences.
+     */
+    private void pumpStepFun() {
+        synchronized (this) {
+            if (this.aborted) {
+                return;
+            }
+            // Singing keeps the historical whole-reply HTTP request (one performance); finishStepFun
+            // dispatches it instead of this incremental session.
+            if (this.singingDetected) {
+                return;
+            }
+            if (ChatFlowManager.isSuperseded(this.maidId, this.callback)) {
+                this.pending.clear();
+                return;
+            }
+            if (this.started && ChatFlowManager.ttsGeneration(this.maidId) != this.generation) {
+                // A player-initiated interruption ended this run's speech; stop feeding the session.
+                this.pending.clear();
+                if (this.stepFunReply != null) {
+                    this.stepFunReply.abort();
+                }
+                return;
+            }
+            if (this.pending.isEmpty()) {
+                return;
+            }
+            this.ensureStarted();
+            if (this.stepFunReply == null) {
+                this.stepFunReply = new StepFunStreamingReply((StepFunTTSClient) this.client, this.config,
+                        new TTSCallback(this.maid, StringUtils.EMPTY, -1), this.generation, this::sendAudio);
+            }
+            while (!this.pending.isEmpty()) {
+                String sentence = this.pending.pollFirst();
+                if (ChatFlowManager.ttsGeneration(this.maidId) != this.generation) {
+                    this.stepFunReply.abort();
+                    return;
+                }
+                this.stepFunReply.speak(sentence);
+            }
+        }
+    }
+
+    /** Closes the incremental session after {@link #finish} queued the remaining sentences. */
+    private void finishStepFun(String ttsText) {
+        if (!this.stepFunStreaming) {
+            return;
+        }
+        if (this.singingDetected) {
+            finishSingingStepFun(ttsText);
+            return;
+        }
+        StepFunStreamingReply streaming;
+        synchronized (this) {
+            streaming = this.stepFunReply;
+        }
+        if (streaming != null) {
+            streaming.finish(ttsText);
+        }
+    }
+
+    /**
+     * A lyric must be synthesized as one performance, so singing bypasses the incremental session and
+     * uses the same whole-reply HTTP request the provider path used before streaming was added.
+     */
+    private void finishSingingStepFun(String ttsText) {
+        if (ttsText == null || ttsText.isBlank()) {
+            return;
+        }
+        if (this.aborted || ChatFlowManager.ttsGeneration(this.maidId) != this.generation) {
+            return;
+        }
+        ((StepFunTTSClient) this.client).playHttpOnly(ttsText, this.config,
+                new TTSCallback(this.maid, StringUtils.EMPTY, -1) {
+                    @Override
+                    public void onSuccess(byte[] data) {
+                        StreamingTtsReply.this.sendAudio(data);
+                    }
+
+                    @Override
+                    public void onFailure(HttpRequest request, Throwable throwable, int errorCode) {
+                        TouhouLittleMaid.LOGGER.error("StepFun singing synthesis failed: {}",
+                                throwable == null ? "unknown" : throwable.getMessage());
+                    }
+                });
     }
 
     private void synthesize(long index, String sentence) {

@@ -76,7 +76,7 @@ public final class LoadToolSchemaTool implements ITool<String> {
         if(com.wjx.touhou_aifun.chat.agent.AgentRuntime.enabled(callback.getMaid())
                 && com.wjx.touhou_aifun.chat.agent.AgentExecution.foreground(callback)
                 && ("group:gui".equals(result) || !com.wjx.touhou_aifun.chat.agent.AgentExecution.foregroundTool(result)))
-            return callback.addToolResult("foreground_action_boundary: GUI, scans and physical tools belong to the background executor. Use task_control once and return an acknowledgement; loading schemas here cannot grant execution permission.",toolId);
+            return callback.addToolResult("foreground_action_boundary: GUI and physical actions belong to the background executor. Read-only scan_surroundings and queries may run directly in chat. For physical work use task_control once and return an acknowledgement; loading schemas here cannot grant action permission.",toolId);
         if ("group:gui".equals(result)) {
             if (callback instanceof com.wjx.touhou_aifun.chat.agent.TaskCallback task) {
                 task.task.loadedTools.addAll(java.util.Arrays.asList(com.wjx.touhou_aifun.compat.ai.action.GuiTool.IDS));

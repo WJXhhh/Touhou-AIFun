@@ -22,7 +22,7 @@ public final class AgentExecution {
     }
     public static boolean managed(Object callback) { return foreground(callback) || callback instanceof TaskCallback; }
     public static boolean foregroundTool(String id) {
-        return java.util.Set.of("task_control", "get_current_datetime", "web_search", "web_fetch", "query_minecraft_wiki", "use_skill", "query_game_context", "query_recipes", "load_tool_schema", "read_task_result", "read_tool_history").contains(id);
+        return java.util.Set.of("task_control", "get_current_datetime", "web_search", "web_fetch", "query_minecraft_wiki", "use_skill", "query_game_context", "query_recipes", "scan_surroundings", "load_tool_schema", "read_task_result", "read_tool_history", "combat_target", "combat_control").contains(id);
     }
     public static boolean foreground(Object callback) { return context(callback).purpose()==Purpose.CHAT; }
     public static boolean task(Object callback) { return callback instanceof TaskCallback; }

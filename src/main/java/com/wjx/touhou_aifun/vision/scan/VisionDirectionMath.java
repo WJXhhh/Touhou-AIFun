@@ -3,7 +3,7 @@ package com.wjx.touhou_aifun.vision.scan;
 import net.minecraft.world.phys.Vec3;
 
 /** Pure cubemap/relative-direction math with no registry or world bootstrap dependencies. */
-final class VisionDirectionMath {
+public final class VisionDirectionMath {
     private VisionDirectionMath() {
     }
 
@@ -36,8 +36,8 @@ final class VisionDirectionMath {
         return new Vec3(cos * local.x - sin * local.z, local.y, sin * local.x + cos * local.z);
     }
 
-    static String relativeDirection(double originX, double eyeY, double originZ,
-                                    float yawDegrees, Vec3 point) {
+    public static String relativeDirection(double originX, double eyeY, double originZ,
+                                           float yawDegrees, Vec3 point) {
         double dx = point.x - originX;
         double dy = point.y - eyeY;
         double dz = point.z - originZ;

@@ -29,21 +29,21 @@ public class GuiTool implements ITool<JsonObject> {
     /** Completion belongs to a TaskCallback, never to an ordinary chat or native client. */
     public String summary(EntityMaid maid, boolean taskExecutor) {
         String summary = switch (id) {
-            case "query_recipes" -> "Query CURRENT server-loaded workbench recipes by exact output item id or recipe_id, including mod/datapack/script replacements and ingredient alternatives. No GUI session needed. Use before crafting; never guess a pack's recipe. Reports whether one craft can be filled from unlocked maid backpack. Machine recipes require their own GUI.";
+            case "query_recipes" -> "Query CURRENT server-loaded crafting AND cooking recipes by exact output item id or recipe_id, including mod/datapack/script replacements and ingredient alternatives. No GUI session needed. Use before crafting; never guess a pack's recipe. Reports whether one craft can be filled from unlocked maid backpack. Rows identify recipe_type, station and cooking time; smelting glass is discoverable here. Operate cooking recipes through the actual furnace GUI, not craft_recipe.";
             case "inspect_containers" -> "Inspect up to eight exact chest targets in one ordered call using normal GUI access. Returns item counts for planning, keeps the final menu open with its current snapshot. Use when collecting all items with unknown quantities; never inspect each chest in separate model rounds. Counts from closed menus do not authorize slot actions.";
             case "gui_batch" -> "Execute at most 16 observed semantic GUI actions in order. Requires expected_revision. Stops at first failure; earlier changes remain committed. Use close_after=true when done with this menu.";
             case "open_gui" -> "Walk to and open a block/entity GUI, or use a maid-held item. Uses the maid's own inventory. "
                     + "Choose NO_WAIT when told not to wait; AUTO otherwise; UNTIL_GOAL when told to finish and bring products back.";
             case "inspect_gui" -> "Inspect current menu slots, controls, process state and inventory. visual=true captures the actual mod GUI in the background.";
             case "gui_action" -> "Operate an observed GUI: transfer, click_slot, quick_move, button, rename, trade, backpack_to_cursor, "
-                    + "cursor_to_backpack, fill_recipe, craft_recipe, click, widget, type, key or scroll. For workbenches query_recipes first: fill_recipe(recipe_id) fills ONE execution from maid backpack without taking output; craft_recipe(recipe_id,count) fills, crafts and delivers at least count NEW outputs over bounded server ticks. Native batches may produce explicitly reported surplus. Subtract crafted_count before retrying partial results. Unfamiliar mod machines require inspect_gui visual=true first; identify controls/slots, then operate the original GUI. Native Forge play protocols are bridged as the maid. Verify actual server inventory changes, not click success. Use close_after=true when done. Visual input requires the latest frame_id and layout.";
+                    + "cursor_to_backpack, fill_recipe, craft_recipe, click, widget, type, key or scroll. For workbenches query_recipes first: fill_recipe(recipe_id) fills ONE execution from maid backpack without taking output; craft_recipe(recipe_id,count) fills, crafts and puts at least count NEW outputs in the MAID backpack over bounded server ticks. Native batches may produce explicitly reported surplus. Subtract crafted_count before retrying partial results. Unfamiliar mod machines require inspect_gui visual=true first; identify controls/slots, then operate the original GUI. Native Forge play protocols are bridged as the maid. Verify actual server inventory changes, not click success. Use close_after=true when done. Visual input requires the latest frame_id and layout.";
             case "wait_gui" -> "Wait for and collect a specified output item/count using server process state. AUTO waits only short jobs, "
                     + "NO_WAIT leaves immediately, UNTIL_GOAL has a cumulative budget. blocked_* permits repair and another wait without resetting budget. "
                     + "A completed result means the products were actually delivered to the maid, not just started.";
             default -> "Close the maid's GUI and return cursor/temporary crafting items. Does not cancel processing in the machine.";
         };
         if (taskExecutor && java.util.Set.of("gui_action", "gui_batch").contains(id))
-            summary += " Use complete_task=true on the final action/batch to close and request verified task completion without another model turn.";
+            summary += " For craft-only goals put complete_task=true directly on the LAST craft_recipe call; it closes/settles the menu and verifies ALL registered requirements without another model turn. Do not add an owner-delivery step unless requested. The same final flag applies to the last action/batch of other goals.";
         if (taskExecutor && java.util.Set.of("gui_action", "gui_batch", "wait_gui").contains(id))
             summary += " Task item operations require a completion contract; define it using update_task_plan BEFORE this operation, optionally in the SAME ordered tool batch.";
         return summary;
@@ -59,6 +59,7 @@ public class GuiTool implements ITool<JsonObject> {
         text(root, "detail", "summary (default for mutations) or full snapshot.", false);
         switch (id) {
             case "query_recipes" -> {
+                root.addProperties("recipe_type", StringParameter.create().addEnumValues("all", "minecraft:crafting", "minecraft:smelting", "minecraft:blasting", "minecraft:smoking", "minecraft:campfire_cooking").setDescription("Default all: include cooking routes as well as workbench recipes."), false);
                 text(root, "item", "Exact registered output item id. Supply item or recipe_id. Reads live recipes, not a static wiki.", false);
                 text(root, "recipe_id", "Exact recipe id to inspect instead of searching output item.", false);
                 integer(root, "count", "Desired output count, 1..4096; reports required native recipe batches.", false);

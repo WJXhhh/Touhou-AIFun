@@ -11,6 +11,38 @@ import java.util.concurrent.*;
 import static org.junit.jupiter.api.Assertions.*;
 
 class AgentRuntimeTest {
+    @Test void failureReasonQuestionsAreRecognizedWithoutHijackingOrdinaryChat() {
+        for (String asked : List.of("为什么失败了？", "任务怎么卡住了", "你怎么停了", "咋回事，为什么没做完", "task为什么暂停了",
+                "Why did the task fail?", "why is it stuck", "what happened, it's paused"))
+            assertTrue(ForegroundTaskStatus.asksFailureReason(asked), asked);
+        for (String casual : List.of("今天天气怎么样", "为什么天是蓝的", "为什么游戏卡了", "给我讲个笑话", "How is the weather?", "tell me a joke"))
+            assertFalse(ForegroundTaskStatus.asksFailureReason(casual), casual);
+    }
+    @Test void failureReplyStatesTheRecordedReasonExplicitly() {
+        var paused = new ForegroundTaskStatus("id", AgentTaskState.Status.paused, "put five iron away",
+                5, "未通过完成验证或遇到阻塞：final_inventory_below_required_count");
+        String zh = paused.failureReply(false);
+        assertTrue(zh.contains("put five iron away") && zh.contains("暂停"), zh);
+        assertTrue(zh.contains("final_inventory_below_required_count"), zh);
+        String en = paused.failureReply(true);
+        assertTrue(en.contains("put five iron away") && en.contains("paused"), en);
+        assertTrue(en.contains("final_inventory_below_required_count"), en);
+        var failed = new ForegroundTaskStatus("id", AgentTaskState.Status.failed, "goal", 0, "");
+        assertTrue(failed.failureReply(false).contains("没有记录到具体失败原因"));
+        assertTrue(failed.failureReply(true).contains("no failure reason was recorded"));
+    }
+    @Test void scanCompletionDoesNotPretendAnOlderPhysicalTaskCompleted() {
+        assertFalse(ForegroundTaskStatus.claimsCompletion("已经完成扫描，箱子位于 [1,2,3]"));
+        assertFalse(ForegroundTaskStatus.claimsCompletion("All scans completed; the table is at [1,2,3]"));
+        assertTrue(ForegroundTaskStatus.claimsCompletion("已经完成扫描，物品也都已放进箱子"));
+        assertTrue(ForegroundTaskStatus.claimsCompletion("已经完成扫描和物品整理"));
+        assertTrue(ForegroundTaskStatus.claimsCompletion("已经完成扫描，旧任务已经完成"));
+    }
+    @Test void foregroundBlockObservationDoesNotGrantPhysicalTools() {
+        assertTrue(AgentExecution.foregroundTool("scan_surroundings"));
+        for(String id:List.of("open_gui","gui_action","gui_batch","wait_gui","switch_sit","switch_follow_state"))assertFalse(AgentExecution.foregroundTool(id));
+        assertTrue(AgentPrompts.FOREGROUND.contains("Do not enqueue a task merely to scan"));
+    }
     @Test void leanTaskSlotsKeepAuthorityAndCapturedGeometryWithoutChangingServerSnapshot() {
         var full=JsonParser.parseString("{\"frame_id\":0,\"revision\":7,\"slots\":[{\"slot\":2,\"item\":\"\",\"count\":0,\"name\":\"\",\"fingerprint\":\"empty\",\"x\":8,\"y\":18,\"enabled\":false,\"may_take\":false},{\"slot\":3,\"item\":\"minecraft:iron_ingot\",\"count\":2,\"name\":\"Iron\",\"fingerprint\":\"actual\",\"x\":26,\"y\":18,\"maid_storage\":\"backpack\",\"backpack_slot\":0}]}").getAsJsonObject();
         var lean=GuiSnapshotProjection.taskView(full);var empty=lean.getAsJsonArray("slots").get(0).getAsJsonObject();var occupied=lean.getAsJsonArray("slots").get(1).getAsJsonObject();

@@ -2,6 +2,7 @@ package com.wjx.touhou_aifun.compat;
 
 import com.github.tartaricacid.touhoulittlemaid.api.ILittleMaid;
 import com.github.tartaricacid.touhoulittlemaid.api.LittleMaidExtension;
+import com.github.tartaricacid.touhoulittlemaid.entity.ai.brain.ExtraMaidBrainManager;
 import com.github.tartaricacid.touhoulittlemaid.ai.service.ServiceType;
 import com.github.tartaricacid.touhoulittlemaid.ai.service.SerializerRegister;
 import com.github.tartaricacid.touhoulittlemaid.ai.service.llm.DefaultLLMSite;
@@ -13,6 +14,8 @@ import com.github.tartaricacid.touhoulittlemaid.ai.service.tts.minimax.TTSMiniMa
 import com.github.tartaricacid.touhoulittlemaid.ai.service.tts.siliconflow.TTSSiliconflowSite;
 import com.wjx.touhou_aifun.compat.ai.anthropic.AnthropicLLMSite;
 import com.wjx.touhou_aifun.compat.ai.deepseek.DeepSeekModels;
+import com.wjx.touhou_aifun.compat.ai.action.CombatControlTool;
+import com.wjx.touhou_aifun.compat.ai.action.CombatTargetTool;
 import com.wjx.touhou_aifun.compat.ai.action.EatFoodBlockTool;
 import com.wjx.touhou_aifun.compat.ai.fishaudio.tts.FishAudioCompatTTSSite;
 import com.wjx.touhou_aifun.compat.ai.mimo.MimoLLMSite;
@@ -46,6 +49,7 @@ public final class LittleMaidCompat implements ILittleMaid {
     @Override
     public void registerAITool(com.github.tartaricacid.touhoulittlemaid.ai.agent.tool.ToolRegister register) {
         register.register(new EatFoodBlockTool());
+        register.register(new com.wjx.touhou_aifun.compat.ai.action.DropItemsToOwnerTool());
         for (String id : com.wjx.touhou_aifun.compat.ai.action.GuiTool.IDS) register.register(new com.wjx.touhou_aifun.compat.ai.action.GuiTool(id));
         register.register(new LoadToolSchemaTool());
         register.register(new com.wjx.touhou_aifun.chat.agent.AgentTool("task_control"));
@@ -59,6 +63,13 @@ public final class LittleMaidCompat implements ILittleMaid {
         register.register(new CurrentDateTimeTool());
         register.register(new com.wjx.touhou_aifun.compat.ai.history.ToolHistoryTool());
         register.register(new com.wjx.touhou_aifun.chat.agent.VersionedGameContextTool());
+        register.register(new CombatTargetTool());
+        register.register(new CombatControlTool());
+    }
+
+    @Override
+    public void addExtraMaidBrain(ExtraMaidBrainManager manager) {
+        manager.addExtraMaidBrain(new com.wjx.touhou_aifun.maid.combat.MaidCombatBrain());
     }
 
     @Override

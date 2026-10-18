@@ -7,7 +7,7 @@
 #
 # 用法（PowerShell）：
 #   .\scripts\smoke-deepseek-anthropic.ps1 -ApiKey "sk-xxxx"
-#   .\scripts\smoke-deepseek-anthropic.ps1 -ApiKey "sk-xxxx" -Model "deepseek-v4-pro"
+#   .\scripts\smoke-deepseek-anthropic.ps1 -ApiKey "sk-xxxx" -Model "deepseek-flash"
 #
 # 预期输出：
 #   == 1) Basic chat ==     -> 一个 [text] 块

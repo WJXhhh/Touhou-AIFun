@@ -2,7 +2,12 @@ package com.wjx.touhou_aifun.chat.agent;
 
 import com.google.gson.JsonObject;
 
-/** Small deterministic acknowledgement based on authoritative queue facts, not a model's prediction. */
+/**
+ * Legacy deterministic receipt for the detailed announcement mode. The brief mode deliberately keeps
+ * the acknowledgement in the model's hands instead: fixed templates read wrong when the maid is idle
+ * ("starting now") versus busy ("noted") versus amending ("got it, change X"), so the model phrases it
+ * from {@link TaskAnnouncements#controlNotice} and the real dispatch state.
+ */
 public final class AgentControlReply {
     private AgentControlReply() { }
     public static boolean supports(String language) {

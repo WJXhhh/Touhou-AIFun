@@ -25,7 +25,17 @@ public final class AgentRuntime {
     private static final Map<UUID, Boolean> SPEAKERS = new HashMap<>();
     private static final Map<Object, Boolean> OWNERS = Collections.synchronizedMap(new WeakHashMap<>());
     private record ControlReceipt(String action, String taskId) { }
-    private record Notification(String text,AgentTiming.Span timing) { }
+    /** Text may stay null while a background phrasing request is in flight; later notifications wait. */
+    private static final class Notification {
+        volatile String text;
+        volatile String ttsText;
+        final AgentTiming.Span timing;
+        Notification(String text, String ttsText, AgentTiming.Span timing) {
+            this.text = text;
+            this.ttsText = ttsText;
+            this.timing = timing;
+        }
+    }
     private static final Map<Object, ControlReceipt> CONTROLS = Collections.synchronizedMap(new WeakHashMap<>());
     private static final Set<Object> HANDOFFS = Collections.synchronizedSet(Collections.newSetFromMap(new WeakHashMap<>()));
     private static final Map<UUID,ForegroundTaskStatus> FOREGROUND_STATUS=new java.util.concurrent.ConcurrentHashMap<>();
@@ -53,6 +63,10 @@ public final class AgentRuntime {
         }
     }
     public static void bind(LLMCallback callback) { OWNERS.put(callback, Boolean.TRUE.equals(SPEAKERS.remove(callback.getMaid().getUUID()))); }
+    /** True only when the current callback was started by the maid's actual owner. */
+    public static boolean ownerSpeaker(LLMCallback callback) {
+        return callback != null && Boolean.TRUE.equals(OWNERS.get(callback));
+    }
     private static Entry entry(EntityMaid maid) {
         return ENTRIES.computeIfAbsent(maid.getUUID(), id -> {
             AgentTaskQueue queue = new AgentTaskQueue();
@@ -61,7 +75,18 @@ public final class AgentRuntime {
                 if (bytes.length > CHECKPOINT_LIMIT) throw new IllegalStateException("task_checkpoint_too_large");
                 queue = GSON.fromJson(new String(bytes, StandardCharsets.UTF_8), AgentTaskQueue.class);
                 if (queue == null || queue.schemaVersion != 1 || queue.tasks == null) throw new IllegalStateException("unsupported_task_checkpoint");
-                queue.suspend("world_reloaded: ask to continue; old GUI and observations are invalid");
+                boolean unfinished=queue.tasks.stream().anyMatch(t->!t.terminal());
+                if (unfinished) {
+                    queue.suspend("world_reloaded: ask to continue; old GUI and observations are invalid");
+                } else {
+                    // A checkpoint can survive with no unfinished work (task finished, then the maid unloaded
+                    // or the game restarted). Keeping that empty queue paused forced the owner to say
+                    // "continue" before every new instruction; an empty queue has nothing to resume.
+                    queue.paused=false;
+                }
+                com.wjx.touhou_aifun.TouhouAIFun.LOGGER.info(
+                        "AIFun task queue reloaded: maid={} unfinished={} paused={}",
+                        maid.getUUID(),unfinished,queue.paused);
             }
             Entry loaded=new Entry(maid,queue);publishForeground(loaded);return loaded;
         });
@@ -113,7 +138,7 @@ public final class AgentRuntime {
         if(facts==null) return;
         FOREGROUND_REQUESTS.put(callback,facts);
         callback.getMessages().add(LLMMessage.systemChat(callback.getMaid(),ForegroundTaskStatus.PROMPT_HEADER+GSON.toJson(facts)
-                +"\nRuntime status is authoritative. Empty backpack or a transfer count is NOT completion. Only status=completed is a verified task completion. Read task_control(action=status) for current facts when asked about work. If running, queued or paused, say that explicitly; do not claim all requirements/containers were checked. Ordinary chat continues independently."));
+                +"\nRuntime status is authoritative. movedCount is cumulative transfer receipts INCLUDING intermediate crafting output, NOT current backpack stock and NOT a quantity mismatch. Do not invent held materials or blocker reasons from this number; query_game_context equipment gives live held items. Empty backpack or a transfer count is NOT completion. Only status=completed is a verified task completion. Read task_control(action=status) for current facts when asked about work. If running, queued or paused, say that explicitly; do not claim all requirements/containers were checked. If the owner asks why a task paused or failed, state the recorded outcome (the actual reason) explicitly; never hide, soften or omit it, even when task announcements are quiet. Ordinary chat continues independently."));
     }
     /** Hold foreground answers while task facts could contradict an early completion claim. */
     public static boolean validateForegroundAnswer(LLMCallback callback) {
@@ -127,15 +152,20 @@ public final class AgentRuntime {
         var facts=FOREGROUND_STATUS.get(callback.getMaid().getUUID());if(facts==null) return response;
         String question="";for(var message:callback.getMessages()) if(message.role()==Role.USER && message.message()!=null) question=message.message();
         boolean asked=ForegroundTaskStatus.isQuestion(question);
-        if(!asked && !(facts.status()!=AgentTaskState.Status.completed && (ForegroundTaskStatus.claimsCompletion(response.getChatText()) || ForegroundTaskStatus.claimsCompletion(response.getTtsText())))) return response;
+        // A paused/failed task must never be answered with a vague line: when the owner asks why it
+        // failed, the recorded outcome is returned even if announcements are brief or silent.
+        boolean askedFailure=ForegroundTaskStatus.asksFailureReason(question)
+                && (facts.status()==AgentTaskState.Status.paused || facts.status()==AgentTaskState.Status.failed);
+        if(!asked && !askedFailure && !(facts.status()!=AgentTaskState.Status.completed && (ForegroundTaskStatus.claimsCompletion(response.getChatText()) || ForegroundTaskStatus.claimsCompletion(response.getTtsText())))) return response;
         var requested=FOREGROUND_REQUESTS.get(callback);
         if(requested!=null && !requested.taskId().equals(facts.taskId())) {
             String changed="任务目标已经变化，当前任务状态为 "+facts.status()+"；旧回复不能作为新任务完成的依据。";
             if(changed.equals(response.getChatText()) && changed.equals(response.getTtsText())) return response;
             return new com.github.tartaricacid.touhoulittlemaid.ai.manager.response.ResponseChat(changed,changed);
         }
-        String chat=facts.reply(callback.getChatManager().getChatLanguage().startsWith("en"));
-        String tts=facts.reply(callback.getChatManager().getTTSLanguage().startsWith("en"));
+        boolean explainFailure=askedFailure && !asked;
+        String chat=explainFailure?facts.failureReply(callback.getChatManager().getChatLanguage().startsWith("en")):facts.reply(callback.getChatManager().getChatLanguage().startsWith("en"));
+        String tts=explainFailure?facts.failureReply(callback.getChatManager().getTTSLanguage().startsWith("en")):facts.reply(callback.getChatManager().getTTSLanguage().startsWith("en"));
         if(chat.equals(response.getChatText()) && tts.equals(response.getTtsText())) return response;
         return new com.github.tartaricacid.touhoulittlemaid.ai.manager.response.ResponseChat(chat,tts);
     }
@@ -200,6 +230,7 @@ public final class AgentRuntime {
             }
             save(maid);
             ControlReceipt receipt=new ControlReceipt(action,controlledTask);CONTROLS.put(caller,receipt);
+            logControl(entry,action,controlledTask);
             return receiptView(entry,caller,receipt,false);
         } catch (IllegalArgumentException e) { return error(e.getMessage()); }
     }
@@ -207,32 +238,64 @@ public final class AgentRuntime {
         JsonObject result=controlView(entry,caller);
         if(receipt!=null) {
             result.addProperty("applied_action",receipt.action);
-            if(receipt.taskId!=null) {
+            AgentTaskState controlled=receipt.taskId==null?null:entry.queue.tasks.stream()
+                    .filter(t->t.id.equals(receipt.taskId)).findFirst().orElse(null);
+            if(controlled!=null) {
                 result.addProperty("controlled_task_id",receipt.taskId);
-                entry.queue.tasks.stream().filter(t->t.id.equals(receipt.taskId)).findFirst().ifPresent(task->{
-                    result.addProperty("controlled_task_status",task.status.name());
-                    result.addProperty("controlled_task_goal",AgentTaskState.bounded(task.goal,256));
-                    int position=1;
-                    for (AgentTaskState queued:entry.queue.tasks) {
-                        if(queued==task) break;
-                        if(!queued.terminal()) position++;
-                    }
-                    result.addProperty("controlled_task_queue_position",position);
-                    result.addProperty("controlled_task_verified_count",task.verifiedCount);
-                    result.addProperty("controlled_task_outcome",AgentTaskState.bounded(task.outcome,256));
-                    if(receipt.action.equals("amend")) result.addProperty("accepted_owner_amendment",task.pendingAmendment.isBlank()
-                            ?task.constraints.isEmpty()?"":task.constraints.get(task.constraints.size()-1):task.pendingAmendment);
-                });
+                result.addProperty("controlled_task_status",controlled.status.name());
+                result.addProperty("controlled_task_goal",AgentTaskState.bounded(controlled.goal,256));
+                int position=1;
+                for (AgentTaskState queued:entry.queue.tasks) {
+                    if(queued==controlled) break;
+                    if(!queued.terminal()) position++;
+                }
+                result.addProperty("controlled_task_queue_position",position);
+                result.addProperty("controlled_task_verified_count",controlled.verifiedCount);
+                result.addProperty("controlled_task_outcome",AgentTaskState.bounded(controlled.outcome,256));
+                if(receipt.action.equals("amend")) result.addProperty("accepted_owner_amendment",controlled.pendingAmendment.isBlank()
+                        ?controlled.constraints.isEmpty()?"":controlled.constraints.get(controlled.constraints.size()-1):controlled.pendingAmendment);
+                AgentTaskState busy=entry.queue.current();
+                if(busy!=null && busy!=controlled) result.addProperty("active_task_goal",AgentTaskState.bounded(busy.goal,160));
             }
+            result.addProperty("controlled_task_dispatch",dispatch(entry,receipt.action,controlled));
             result.addProperty("already_applied",repeated);
             result.addProperty("foreground_handoff",true);
-            result.addProperty("notice","This user instruction has been applied once. Physical work runs in a separate background task. Report the controlled_task_goal, its queue position and paused state honestly. For amend, acknowledge accepted_owner_amendment: it overrides conflicting older exclusions while preserving other requirements. Resume restores the earliest unfinished task, not the latest enqueued goal. If another older task blocks it, say which goal is being resumed; do not promise that the new task has started. Do not invoke world/GUI tools or repeat task-control changes. A new owner message is required for another change.");
+            result.addProperty("notice",TaskAnnouncements.controlNotice(result,repeated,TaskAnnouncements.mode()));
         }
         return result;
+    }
+    /**
+     * Authoritative answer to "will this start now or is the maid busy": the model must phrase its
+     * acknowledgement from this instead of a fixed template.
+     */
+    private static String dispatch(Entry entry,String action,AgentTaskState task) {
+        if(task==null) return switch(action) {
+            case "pause" -> "queue_paused";
+            case "stop","clear" -> "stopped";
+            case "resume" -> "nothing_to_resume";
+            default -> "none";
+        };
+        if(task.status==AgentTaskState.Status.completed) return "completed";
+        if(task.status==AgentTaskState.Status.cancelled) return "cancelled";
+        if(action.equals("amend")) return task.status==AgentTaskState.Status.running || task.status==AgentTaskState.Status.waiting
+                ? "amendment_next_boundary" : "amendment_pending";
+        if(action.equals("resume")) return "resuming";
+        if(entry.queue.paused) return "paused";
+        boolean earlierUnfinished=false;
+        for(AgentTaskState queued:entry.queue.tasks) {
+            if(queued==task) break;
+            if(!queued.terminal()) earlierUnfinished=true;
+        }
+        return entry.queue.current()==null && !earlierUnfinished ? "starting_now" : "waiting";
     }
     /** The owner instruction has already been applied. No model round is needed to restate its receipt. */
     public static boolean finishForegroundHandoff(LLMCallback caller) {
         if (!AgentExecution.foreground(caller) || !enabled(caller.getMaid()) || !CONTROLS.containsKey(caller)) return false;
+        TaskAnnouncements.Mode announcement=TaskAnnouncements.mode();
+        // Only the legacy detailed mode keeps the deterministic receipt. Brief/silent deliberately let the
+        // model phrase the acknowledgement from the real dispatch state (idle vs busy vs amendment), so a
+        // fixed "noted" line is never shown when the executor is actually starting right now.
+        if(announcement!=TaskAnnouncements.Mode.detailed) return false;
         if (!AgentControlReply.supports(caller.getChatManager().getChatLanguage())
                 || !AgentControlReply.supports(caller.getChatManager().getTTSLanguage())) return false;
         caller.runOnServerThread(() -> {
@@ -248,6 +311,18 @@ public final class AgentRuntime {
             timing.finish("acknowledged", 0);
         });
         return true;
+    }
+    /** Queue receipt detail for the server log; the owner-facing text is chosen independently by the mode. */
+    private static void logControl(Entry entry,String action,String taskId) {
+        AgentTaskState task=taskId==null?null:entry.queue.tasks.stream().filter(t->t.id.equals(taskId)).findFirst().orElse(null);
+        int position=0;
+        if(task!=null) {
+            position=1;
+            for(AgentTaskState queued:entry.queue.tasks) { if(queued==task) break; if(!queued.terminal()) position++; }
+        }
+        TaskAnnouncements.logControl(entry.maid.getUUID().toString(),action,taskId,
+                task==null?null:task.status.name(),position,task==null?null:task.goal,entry.queue.paused,
+                dispatch(entry,action,task),TaskAnnouncements.mode());
     }
     private static String required(JsonObject args, String key) {
         if (!args.has(key) || args.get(key).getAsString().isBlank()) throw new IllegalArgumentException(key + "_required");
@@ -286,6 +361,9 @@ public final class AgentRuntime {
             default -> { return error("unknown_task_action"); }
         }
         save(maid);
+        if (!action.equals("status"))
+            TaskAnnouncements.logControl(maid.getUUID().toString(),"preview_"+action,null,null,0,null,
+                    entry.queue.paused,dispatch(entry,action,null),TaskAnnouncements.mode());
         JsonObject out = new JsonObject(); out.addProperty("paused",entry.queue.paused);
         JsonArray tasks = new JsonArray();
         for (AgentTaskState task : entry.queue.tasks) if (!task.terminal()) {
@@ -318,21 +396,152 @@ public final class AgentRuntime {
             callback.operations.cancel();
             com.wjx.touhou_aifun.compat.ai.openai.ToolContextSelector.clearSnapshot(callback);
         }
+        // A stopped/finished/unloaded task must not keep a speculative announcement request.
+        TaskAnnouncementPrefetch.clear(entry.maid);
         MaidGuiSessionManager.cancel(entry.maid.getUUID(), "task_stopped");
         VisionObservationManager.cancelForMaid(entry.maid.getUUID());
         entry.maid.getNavigation().stop();
     }
-    private static void suspend(Entry entry, String reason) { entry.queue.suspend(reason); release(entry); save(entry.maid); }
+    private static void suspend(Entry entry, String reason) {
+        long unfinishedCount = entry.queue.tasks.stream().filter(t -> !t.terminal()).count();
+        boolean unfinished = entry.callback != null || unfinishedCount > 0;
+        // Empty queues have nothing to resume. Persisting paused=true in that case made every new
+        // instruction start paused after an unload/reload; only an explicit owner pause is preserved.
+        if (unfinished || "paused_by_owner".equals(reason)) {
+            entry.queue.suspend(reason);
+            com.wjx.touhou_aifun.TouhouAIFun.LOGGER.info(
+                    "AIFun task queue suspended: maid={} reason={} unfinished={}",
+                    entry.maid.getUUID(), reason, unfinishedCount);
+        } else {
+            entry.queue.paused = false;
+            com.wjx.touhou_aifun.TouhouAIFun.LOGGER.info(
+                    "AIFun task queue not paused: maid={} reason={} no unfinished tasks",
+                    entry.maid.getUUID(), reason);
+        }
+        release(entry); save(entry.maid);
+    }
     public static void finished(TaskCallback callback, String result, boolean success) {
         Entry entry = ENTRIES.get(callback.getMaid().getUUID());
         if (entry == null || entry.callback != callback) return;
         callback.task.outcome = AgentTaskState.bounded(success ? result : "未通过完成验证或遇到阻塞：" + result, 2048);
         callback.task.status = success ? AgentTaskState.Status.completed : AgentTaskState.Status.paused;
         if (!success) entry.queue.paused = true;
-        long queued=entry.queue.tasks.stream().filter(t->!t.terminal() && t!=callback.task).count();
-        entry.notifications.addLast(new Notification(success ? "任务完成：" + callback.task.outcome : "任务已暂停【" + AgentTaskState.bounded(callback.task.goal,80)
-                + "】：" + callback.task.outcome + (queued>0 ? " 后续还有"+queued+"个任务等待，尚未执行。" : ""),callback.executionTiming.child("notification_wait")));
+        int queued=(int)entry.queue.tasks.stream().filter(t->!t.terminal() && t!=callback.task).count();
+        TaskAnnouncements.Mode announcement=TaskAnnouncements.mode();
+        boolean english=callback.getChatManager().getChatLanguage().startsWith("en");
+        // Full facts go to the log regardless of what the owner is told.
+        TaskAnnouncements.logOutcome(callback.getMaid().getUUID().toString(),callback.task.id,callback.task.goal,
+                success,callback.task.outcome,queued,announcement);
+        if (announcement==TaskAnnouncements.Mode.detailed) {
+            String text=TaskAnnouncements.outcome(success,english,callback.task.goal,callback.task.outcome,queued,announcement);
+            if (text!=null && !text.isBlank())
+                entry.notifications.addLast(new Notification(text,text,callback.executionTiming.child("notification_wait")));
+        } else if (announcement==TaskAnnouncements.Mode.brief) {
+            // The short line is normally prepared while the task runs (one background request per
+            // task start), so a verified completion uses it immediately. Only a missing or stale
+            // preparation (amended goal, failed task, provider failure) needs the on-demand request.
+            // The queue waits for the wording so later notifications cannot overtake this one.
+            String fallback=TaskAnnouncements.outcome(success,english,callback.task.goal,callback.task.outcome,queued,announcement);
+            AgentTiming.Span timing=callback.executionTiming.child("notification_wait");
+            Notification notification=new Notification(null,null,timing);
+            entry.notifications.addLast(notification);
+            java.util.concurrent.CompletableFuture<String> prepared=success
+                    ? TaskAnnouncementPrefetch.take(callback.getMaid(),callback.task) : null;
+            phraseNotification(callback.getMaid(),callback.getChatManager(),success,callback.task.goal,queued,
+                    fallback,notification,timing,prepared);
+        }
         release(entry); save(entry.maid);
+    }
+    /** Fill a pending notification from the side phrasing request; always ends with usable text. */
+    private static void phraseNotification(EntityMaid maid,
+            com.github.tartaricacid.touhoulittlemaid.ai.manager.entity.MaidAIChatManager manager,
+            boolean success,String goal,int queued,String fallback,Notification notification,AgentTiming.Span timing,
+            java.util.concurrent.CompletableFuture<String> prepared) {
+        java.util.concurrent.CompletableFuture<String> phrasing;
+        boolean prefetched=prepared!=null;
+        if (prefetched) {
+            phrasing=prepared;
+        } else try {
+            phrasing=TaskAnnouncementPhrasing.phrase(maid,manager,success,goal,queued);
+        } catch (RuntimeException error) {
+            phrasing=java.util.concurrent.CompletableFuture.failedFuture(error);
+        }
+        phrasing.whenComplete((phrased,error)-> {
+            Runnable apply=()-> {
+                Entry current=ENTRIES.get(maid.getUUID());
+                if (current==null || !current.notifications.contains(notification)) {
+                    if (timing!=null) timing.finish("undelivered",0);
+                    return;
+                }
+                if (error!=null) {
+                    String reason=error instanceof java.util.concurrent.TimeoutException ? "timeout" : error.getClass().getSimpleName();
+                    com.wjx.touhou_aifun.TouhouAIFun.LOGGER.info(
+                            "AIFun task announcement phrasing unavailable ({}); using fixed short line",reason);
+                }
+                String[] lines=TaskAnnouncementPhrasing.splitLanguages(phrased,fallback,
+                        manager.getChatLanguage(),manager.getTTSLanguage());
+                String text=lines[0];
+                String spoken=lines[1];
+                if (text==null || text.isBlank()) text=success?"Done~":"Paused; retry later~";
+                if (spoken==null || spoken.isBlank()) spoken=text;
+                boolean usedFallback=error!=null || text.equals(fallback);
+                notification.text=text;
+                notification.ttsText=spoken;
+                TaskAnnouncementPhrasing.logResult(maid,success,
+                        usedFallback?"fallback":prefetched?"prefetched":"model",text);
+            };
+            net.minecraft.server.MinecraftServer server=maid.getServer();
+            if (server==null || !server.isRunning()) {
+                if (timing!=null) timing.finish("undelivered",0);
+                return;
+            }
+            if (server.isSameThread()) apply.run(); else server.execute(apply);
+        });
+    }
+    /**
+     * Shows the notification bubble and, when TTS is enabled, speaks the same announcement through the
+     * maid's configured TTS site. System/local TTS adds the bubble itself, so it is not added twice.
+     */
+    private static void deliverNotification(EntityMaid maid, Notification notification) {
+        String spoken=notification.ttsText==null || notification.ttsText.isBlank()
+                ? notification.text : notification.ttsText;
+        com.github.tartaricacid.touhoulittlemaid.ai.service.tts.TTSSite site=notificationTtsSite(maid);
+        boolean systemTts=false;
+        if (site!=null) {
+            try { systemTts=site.client() instanceof com.github.tartaricacid.touhoulittlemaid.ai.service.tts.TTSSystemServices; }
+            catch (RuntimeException ignored) { site=null; }
+        }
+        boolean bubbleAdded=false;
+        try {
+            if (!systemTts) {
+                maid.getChatBubbleManager().addLLMChatText(notification.text,-1);
+                bubbleAdded=true;
+            }
+            if (site!=null) maid.getAiChatManager().tts(site,notification.text,spoken,-1);
+        } catch (RuntimeException failure) {
+            if (!bubbleAdded) {
+                try { maid.getChatBubbleManager().addLLMChatText(notification.text,-1); }
+                catch (RuntimeException ignored) { }
+            }
+            com.wjx.touhou_aifun.TouhouAIFun.LOGGER.warn(
+                    "AIFun task announcement voice failed ({}); bubble delivered without audio",
+                    failure.getClass().getSimpleName());
+        }
+        if (notification.timing!=null) notification.timing.finish("sent",0);
+    }
+    private static com.github.tartaricacid.touhoulittlemaid.ai.service.tts.TTSSite notificationTtsSite(EntityMaid maid) {
+        try {
+            if (!com.github.tartaricacid.touhoulittlemaid.config.subconfig.AIConfig.TTS_ENABLED.get()) return null;
+            // Never try to stream audio to a fake/test owner or to a private maid whose owner is offline.
+            if (maid.getOwner() instanceof net.minecraftforge.common.util.FakePlayer) return null;
+            boolean ownerClient = maid.getOwner() instanceof net.minecraft.server.level.ServerPlayer owner
+                    && owner.connection != null;
+            if (!ownerClient && !com.wjx.touhou_aifun.maid.PublicMaidAccess.isPublic(maid)) return null;
+            var site=maid.getAiChatManager().getTTSSite();
+            return site!=null && site.enabled() ? site : null;
+        } catch (RuntimeException ignored) {
+            return null;
+        }
     }
     @SubscribeEvent public static void tick(TickEvent.ServerTickEvent event) {
         if (event.phase != TickEvent.Phase.END) return;
@@ -346,10 +555,11 @@ public final class AgentRuntime {
                 continue;
             }
             if (!entry.notifications.isEmpty() && !com.wjx.touhou_aifun.chat.ChatFlowManager.hasActiveRequest(maid.getUUID())) {
-                Notification notification = entry.notifications.removeFirst();
-                try { maid.getChatBubbleManager().addLLMChatText(notification.text, -1);if(notification.timing!=null) notification.timing.finish("sent",0); }
-                catch(RuntimeException failure) {if(notification.timing!=null) notification.timing.finish("error",0);throw failure;}
-                // addLLMChatText already sends the owner the chat notification.
+                Notification notification = entry.notifications.peekFirst();
+                if (notification.text != null && !notification.text.isBlank()) {
+                    entry.notifications.removeFirst();
+                    deliverNotification(maid, notification);
+                }
             }
             if (entry.callback == null && entry.draining.isDone()) {
                 AgentTaskState task = entry.queue.next();
@@ -372,13 +582,29 @@ public final class AgentRuntime {
                     }
                     catch (RuntimeException failure) {
                         boolean invalidModel = "decision_model_unavailable".equals(failure.getMessage());
-                        task.pause(invalidModel ? "decision_model_unavailable" : "execution_archive_unavailable: " + failure.getClass().getSimpleName());
+                        String reason = invalidModel ? "decision_model_unavailable"
+                                : "execution_archive_unavailable: " + failure.getClass().getSimpleName();
+                        task.pause(reason);
                         entry.queue.paused = true;
-                        entry.notifications.addLast(new Notification(invalidModel
-                                ? "任务已暂停：后台执行模型不可用，请检查所选 LLM 站点、模型和凭据后继续。"
-                                : "任务已暂停：执行档案不可用，请检查世界数据或档案容量。",null));
+                        TaskAnnouncements.Mode announcement=TaskAnnouncements.mode();
+                        TaskAnnouncements.logRuntimePause(maid.getUUID().toString(),task.id,task.goal,reason,announcement);
+                        String pauseText=TaskAnnouncements.runtimePause(invalidModel,
+                                maid.getAiChatManager().getChatLanguage().startsWith("en"),announcement);
+                        if (pauseText!=null && !pauseText.isBlank()) {
+                            if (announcement==TaskAnnouncements.Mode.brief) {
+                                Notification pending=new Notification(null,null,null);
+                                entry.notifications.addLast(pending);
+                                phraseNotification(maid,maid.getAiChatManager(),false,task.goal,0,pauseText,pending,null,null);
+                            } else {
+                                entry.notifications.addLast(new Notification(pauseText,pauseText,null));
+                            }
+                        }
                         save(maid); continue;
                     }
+                    // Prepare the owner-facing completion wording now, in the background, so a verified
+                    // completion does not need another provider round trip before it can speak.
+                    if (TaskAnnouncements.mode()==TaskAnnouncements.Mode.brief)
+                        TaskAnnouncementPrefetch.prime(maid,maid.getAiChatManager(),task);
                     save(maid);
                     entry.callback.next(entry.callback.decisionTarget.site().client());
                 }

@@ -30,6 +30,7 @@ public final class TaskCallback extends LLMCallback {
     private boolean freshWorld;
     private boolean recovering;
     private String lastFailedTool="",lastFailedResult="";
+    private String inventoryBlockMessage;
     private final Set<String> requestedStageTools = new HashSet<>();
     private final TaskRecipeEvidence recipeEvidence;
     private Set<String> allowedTools;
@@ -157,9 +158,14 @@ public final class TaskCallback extends LLMCallback {
         String ownerAmendment=task.pendingAmendment;
         task.applyAmendment();
         if (previousVersion != task.goalVersion) {
+            completionCorrections=0; completionRequested=false; inventoryBlockMessage=null; noProgress=0;
             trace("amended", null, null, null, null, "goal_version=" + task.goalVersion);
             messages.add(LLMMessage.userChat(maid,"Owner amendment, goal version "+task.goalVersion+":\n"+ownerAmendment
                     +"\nThis is the latest owner instruction. It supersedes conflicting parts of the original goal (including an earlier 'leave untouched' or 'only these items' exclusion); all other requirements remain. Rebuild the completion contract to cover BOTH the original remaining requirements AND this supplement before further transfers. Already delivered items stay completed; do not replay them."));
+            // The completion wording prepared for the old goal is now stale; prepare it for the
+            // amended goal while the task keeps running instead of paying a round trip at the end.
+            if (TaskAnnouncements.mode()==TaskAnnouncements.Mode.brief)
+                TaskAnnouncementPrefetch.prime(maid,getChatManager(),task);
         }
         if(freshWorld && task.completion!=null && !AgentCompletion.supplyConflicts(maid,task,task.completion).isEmpty()) {
             AgentRuntime.finished(this,"完成条件要求保留的最终库存与转出计划冲突。"+AgentCompletion.describeUnmet(maid,task,true)+"请明确补充最终要保留的物品数量；已执行的转移记录已保留，不会重复搬运。",false);return;
@@ -210,6 +216,7 @@ public final class TaskCallback extends LLMCallback {
                 completionStatus.get("conditions_verified").getAsBoolean(), completionStatus.get("gui_open").getAsBoolean(),
                 recovering, requestedStageTools);
         if (nextSelection.stage() != toolSelection.stage()) requestedStageTools.clear();
+        if(task.completion!=null && AgentCompletionRules.leaves(task.activeCompletion()).stream().anyMatch(c->AgentTaskState.completionKind(c).equals("drop_to_owner"))) requestedStageTools.add("drop_items_to_owner");
         toolSelection = new TaskToolSelection.Context(nextSelection.freshWorld(), nextSelection.completionDefined(),
                 nextSelection.conditionsMet(), nextSelection.guiOpen(), nextSelection.recovering(), requestedStageTools);
         checkpoint.add("completion_status", completionStatus);
@@ -308,6 +315,8 @@ public final class TaskCallback extends LLMCallback {
                 if (stopped()) return;
                 if (task.transfers.size() > 256) { AgentRuntime.finished(this, "task_checkpoint_target_limit", false); return; }
                 if (failure != null) { AgentRuntime.finished(this, "tool_dispatch_failed", false); return; }
+                if(!task.pendingAmendment.isBlank()) { next(client); return; }
+                if(inventoryBlockMessage!=null){AgentRuntime.finished(this,inventoryBlockMessage,false);return;}
                 decisionRouter.settled(recovering,freshWorld);
                 if(completionRequested) {
                     completionRequested=false;
@@ -362,6 +371,17 @@ public final class TaskCallback extends LLMCallback {
                     lastFailedTool=call.getFunction().getName();lastFailedResult=result;
                     task.failures.add(call.getFunction().getName()+":"+AgentTaskState.bounded(result,256)+"; result_ref="+lastResultRef);
                     while(task.failures.size()>32) task.failures.remove(0);
+                    try {
+                        var rejected=JsonParser.parseString(result).getAsJsonObject();
+                        if(Set.of("gui_action","gui_batch").contains(call.getFunction().getName()) && rejected.has("backpack_state")
+                                && rejected.has("retryable") && !rejected.get("retryable").getAsBoolean()) {
+                            var storage=rejected.getAsJsonObject("backpack_state");
+                            String state=storage.get("state").getAsString();
+                            if(Set.of("item_rejected","insertion_denied","unavailable").contains(state))
+                                inventoryBlockMessage=state.equals("unavailable")?"女仆背包当前不可用。已暂停并保留已完成的操作记录。"
+                                        :"物品 "+storage.get("item").getAsString()+" 受存放规则限制，不能放入女仆背包（空位 "+storage.get("empty_slots").getAsInt()+" 格），并非背包已满。已暂停并保留已完成的操作记录，不会原样重试。";
+                        }
+                    }catch(RuntimeException ignored){ /* Ordinary tool failures keep their existing recovery path. */ }
                 }
                 committed=true;
                 } finally {
@@ -376,7 +396,7 @@ public final class TaskCallback extends LLMCallback {
         var timing=toolTimings.get(call.getId());var queued=queueTimings.remove(call.getId());
         if(queued!=null) queued.finish("ok",0);
         var execution=timing.child("tool_execution");AgentTelemetry.bindOperation(this,timing);
-        return invokeBody(call,client).handle((result,error)-> {
+        return (inventoryBlockMessage==null?invokeBody(call,client):CompletableFuture.completedFuture("{\"status\":\"failed\",\"error\":\"inventory_rule_blocked_before_start\"}")).handle((result,error)-> {
             String value=error!=null?"tool_failed: "+error.getClass().getSimpleName():result;
             if(value==null) value="tool_returned_no_result";
             execution.finish(stopped()?"cancelled":error!=null || failed(value)?"error":"ok",value.length());
@@ -400,7 +420,7 @@ public final class TaskCallback extends LLMCallback {
         if (!task.pendingAmendment.isBlank()) return CompletableFuture.completedFuture("goal_updated_before_dispatch: no action started; replan from the next checkpoint");
         if (!freshWorld && ToolExecutionPolicy.requiresFreshWorld(name))
             return CompletableFuture.completedFuture("fresh_world_observation_required: run scan_surroundings in this execution generation before world actions; old evidence is historical only");
-        if(task.completion==null && (name.equals("gui_action") || name.equals("gui_batch") || name.equals("wait_gui")) && !projectEObservation(call))
+        if(task.completion==null && (name.equals("gui_action") || name.equals("gui_batch") || name.equals("wait_gui") || name.equals("drop_items_to_owner")) && !projectEObservation(call))
             return CompletableFuture.completedFuture("completion_contract_required_before_mutation: inspect signs, GUI and inventory, then define all user-required quantities and container positions with update_task_plan.completion. No items moved by this call.");
         if(task.completion==null && decisionRouter.enabled() && ToolExecutionPolicy.requiresFreshWorld(name)
                 && !Set.of("open_gui","inspect_gui","inspect_containers","close_gui").contains(name) && !projectEObservation(call))
@@ -514,6 +534,9 @@ public final class TaskCallback extends LLMCallback {
         onFunctionCall(new Gson().fromJson(message,Message.class),client,false);
     }
     public void decisionTrace(String kind,String metadata) {trace(kind,null,null,null,null,metadata);}
+    public void decisionDiagnostic(JsonObject metadata) {
+        trace("decision_service_diagnostic",null,null,null,results.put(metadata.toString()),metadata.get("reason").getAsString());
+    }
     public JsonArray decisionObservations() {
         return com.wjx.touhou_aifun.chat.agent.decision.DecisionStateProjection.observations(decisionObservations);
     }
@@ -656,12 +679,14 @@ public final class TaskCallback extends LLMCallback {
         trace("state", null, null, null, null, task.status.name() + ": " + task.outcome);
     }
     public void finishTiming(boolean success) {
+        decisionRouter.finishDiagnostic();
         if(tailTiming!=null) tailTiming.finish(success?"completed":"paused",0);
         executionTiming.finish(success?"completed":task.terminal()?"cancelled":"paused",0);
     }
     @Override public void onSuccess(ResponseChat response) {
         runOnServerThread(() -> {
             if (!stopped()) {
+                if (!task.pendingAmendment.isBlank() && lastClient != null) { next(lastClient); return; }
                 var verification=executionTiming.child("completion_verification");
                 boolean verified = decisionRouter.permitsCompletion() && AgentCompletion.verify(maid,task,freshWorld);
                 verification.finish(verified?"verified":"unmet",0);
@@ -673,8 +698,16 @@ public final class TaskCallback extends LLMCallback {
                             + "One corrective planning attempt is available; a success sentence cannot override missing evidence."));
                     next(lastClient);return;
                 }
-                AgentRuntime.finished(this,verified?response.getChatText():task.completion==null
-                        ? "缺少可验证的完成条件，已执行的动作和进度已保留；需要核对后继续。"
+                String missing="缺少可验证的完成条件，已执行的动作和进度已保留；需要核对后继续。";
+                if(!verified && task.completion==null && freshWorld && decisionObservations.containsKey("scan_surroundings") && task.appliedMutationVersion==0
+                        && task.transfers.isEmpty() && task.actionFacts.isEmpty()
+                        && archive.records.stream().filter(r->r.kind().equals("tool_call")).noneMatch(r->ToolExecutionPolicy.requiresFreshWorld(r.tool()))) {
+                    // Misrouted read-only jobs keep their report, but cannot turn an action
+                    // goal into a verified success merely by returning a convincing sentence.
+                    trace("unverified_observation_report",null,null,null,results.put(response.getChatText()),"Read-only report retained; completion remains unverified.");
+                    missing+="\n已读取的现场结果（任务仍暂停，未核验完成）：\n"+response.getChatText();
+                }
+                AgentRuntime.finished(this,verified?response.getChatText():task.completion==null?missing
                         : "数量或位置证据未满足完成条件，已执行的动作和进度已保留。"+AgentCompletion.describeUnmet(maid,task,freshWorld),verified);
             }
         });
@@ -682,6 +715,7 @@ public final class TaskCallback extends LLMCallback {
     @Override public void onFailure(HttpRequest request, Throwable error, int code) {
         runOnServerThread(() -> {
             if(stopped()) return;
+            if(!task.pendingAmendment.isBlank() && lastClient!=null) {next(lastClient);return;}
             trace("request_failed",null,null,null,null,"code="+code+"; type="+(error==null?"unknown":error.getClass().getSimpleName()));
             // A failed final model reply cannot undo already verified physical transfers.
             // Open menus/in-flight actions or missing evidence still require an explicit pause.

@@ -130,7 +130,7 @@ public final class MaidGuiSessionManager {
             }
         } catch (RuntimeException e) {
             String reason = e.getMessage() == null ? "gui_error" : e.getMessage();
-            JsonObject rejected = error(reason);
+            JsonObject rejected = e instanceof GuiCraftingService.StorageFailure storage?storage.detail.deepCopy():error(reason);
             if (tool.equals("open_gui")) {
                 MaidGuiSession active = SESSIONS.get(maid.getUUID());
                 if (active != null) rejected = openingError(active, reason);
@@ -171,7 +171,7 @@ public final class MaidGuiSessionManager {
                 if (ChatFlowManager.isSuperseded(session.maid.getUUID(), session.callback)) throw new IllegalStateException("cancelled");
                 reserveActions(session, 1);
                 last = action(session, command.getAsJsonObject());
-            } catch (RuntimeException failure) { last = error(failure.getMessage()); }
+            } catch (RuntimeException failure) { last = failure instanceof GuiCraftingService.StorageFailure storage?storage.detail.deepCopy():error(failure.getMessage()); }
             JsonObject outcome = last.deepCopy();
             outcome.remove("slots"); outcome.remove("backpack_slots"); outcome.remove("controls");
             outcomes.add(outcome);

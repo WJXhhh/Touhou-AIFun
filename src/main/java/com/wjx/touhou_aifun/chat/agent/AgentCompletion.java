@@ -71,6 +71,10 @@ public final class AgentCompletion {
                 var pos=condition.getAsJsonArray("position");double radius=condition.has("radius")?condition.get("radius").getAsDouble():2;
                 double distance=Math.sqrt(maid.distanceToSqr(pos.get(0).getAsInt()+.5,pos.get(1).getAsInt(),pos.get(2).getAsInt()+.5));
                 row.addProperty("actual_distance",distance);row.addProperty("required_radius",radius);row.addProperty("reason","arrival_outside_required_radius");satisfied=distance<=radius;
+            } else if(kind.equals("drop_to_owner")) {
+                long actual=task.droppedToOwner(dimension,String.valueOf(maid.getOwnerUUID()),condition.get("item").getAsString());
+                row.addProperty("actual_count",actual);row.addProperty("reason","owner_drop_receipts_unmet");
+                satisfied=actual>=condition.get("count").getAsLong();
             } else if(kind.equals("maid_state") || kind.equals("eat_food")) {
                 satisfied=additionalCondition(maid,task,condition);row.addProperty("reason",kind.equals("maid_state")?"maid_state_unmet":"consumption_evidence_unmet");
             }
@@ -91,6 +95,7 @@ public final class AgentCompletion {
             if(row.get("reason").getAsString().equals("dimension_mismatch")) {text.append("目标维度尚未满足。");continue;}
             if(kind.equals("position")) {text.append("尚未到达要求的位置 ").append(row.get("position")).append("。");continue;}
             if(kind.equals("maid_state")) {text.append("女仆状态尚未达到要求。");continue;}
+            if(kind.equals("drop_to_owner")) {text.append("朝主人丢出的实际物品回执不足：").append(row.get("item")).append("，已丢 ").append(row.get("actual_count")).append("，要求 ").append(row.get("count")).append("。");continue;}
             if(kind.equals("eat_food")) {text.append("实际食用记录尚未满足要求。");continue;}
             if(kind.equals("container_unchanged")) {text.append("箱子的物品或槽位尚未恢复原状。");continue;}
             if(kind.equals("backpack_empty")) {text.append("背包尚未清空。");continue;}
@@ -161,6 +166,11 @@ public final class AgentCompletion {
         }
         if (!condition.get("dimension").getAsString().equals(maid.level().dimension().location().toString())) return false;
         String kind = AgentTaskState.completionKind(condition);
+        if(kind.equals("drop_to_owner")) {
+            long count=task.droppedToOwner(maid.level().dimension().location().toString(),String.valueOf(maid.getOwnerUUID()),condition.get("item").getAsString());
+            var proof=condition.deepCopy();proof.addProperty("actual_count",count);proof.addProperty("owner_uuid",String.valueOf(maid.getOwnerUUID()));
+            task.checkpoint(proof.toString());return count>=condition.get("count").getAsLong();
+        }
         if (kind.equals("transfer")) {
             String key=condition.get("dimension").getAsString()+":"+condition.get("position")+":"+condition.get("item").getAsString();
             long count=task.activeTransfers().getOrDefault(key,0L)*(condition.get("to_maid").getAsBoolean()?1:-1);

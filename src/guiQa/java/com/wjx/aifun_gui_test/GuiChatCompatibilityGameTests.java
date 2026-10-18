@@ -60,7 +60,7 @@ public final class GuiChatCompatibilityGameTests {
             TouhouAIFunConfig.AGENT_RUNTIME.set(enabled);
         }
     }
-    @GameTest(template = "empty", templateNamespace = "aifun_gui_test")
+    @GameTest(batch="isolated_completionSchemaAndGuidanceBelongOnlyToTaskExecutor",template = "empty", templateNamespace = "aifun_gui_test")
     public static void completionSchemaAndGuidanceBelongOnlyToTaskExecutor(GameTestHelper helper) {
         try (var f = new Fixture(helper)) {
             var state = new AgentTaskState("Deposit inventory"); state.status = AgentTaskState.Status.running;
@@ -89,7 +89,7 @@ public final class GuiChatCompatibilityGameTests {
             } finally { state.status = AgentTaskState.Status.cancelled; task.archiveState(); ToolContextSelector.clearSnapshot(task); }
         }
     }
-    @GameTest(template = "empty", templateNamespace = "aifun_gui_test")
+    @GameTest(batch="isolated_observedOpeningLoadsBatchAndDepositsFiveStacksWithoutSchemaRound",template = "empty", templateNamespace = "aifun_gui_test")
     public static void observedOpeningLoadsBatchAndDepositsFiveStacksWithoutSchemaRound(GameTestHelper helper) {
         try (var f = new Fixture(helper)) {
             Item[] items = {Items.OAK_LOG, Items.OAK_WOOD, Items.STRIPPED_OAK_WOOD, Items.STRIPPED_OAK_LOG, Items.OAK_PLANKS};

@@ -41,8 +41,8 @@ import java.util.Optional;
 import java.util.UUID;
 
 public final class AIFunNetwork {
-    // Version 19 adds detached block-entity and native Forge protocol state to GUI mirrors.
-    private static final String VERSION = "19";
+    // Version 21 adds hands-free free-chat utterances and typed decision feedback.
+    private static final String VERSION = "21";
     private static final SimpleChannel CHANNEL = NetworkRegistry.newSimpleChannel(
             new ResourceLocation(TouhouAIFun.MOD_ID, "network"),
             () -> VERSION, VERSION::equals, VERSION::equals);
@@ -51,6 +51,20 @@ public final class AIFunNetwork {
     }
 
     public static void init() {
+        CHANNEL.registerMessage(31, com.wjx.touhou_aifun.network.message.AIFunFreeChatUtteranceMessage.class,
+                com.wjx.touhou_aifun.network.message.AIFunFreeChatUtteranceMessage::encode,
+                com.wjx.touhou_aifun.network.message.AIFunFreeChatUtteranceMessage::decode,
+                com.wjx.touhou_aifun.network.message.AIFunFreeChatUtteranceMessage::handle,
+                Optional.of(NetworkDirection.PLAY_TO_SERVER));
+        CHANNEL.registerMessage(32, com.wjx.touhou_aifun.network.message.AIFunFreeChatFeedbackMessage.class,
+                com.wjx.touhou_aifun.network.message.AIFunFreeChatFeedbackMessage::encode,
+                com.wjx.touhou_aifun.network.message.AIFunFreeChatFeedbackMessage::decode,
+                com.wjx.touhou_aifun.network.message.AIFunFreeChatFeedbackMessage::handle,
+                Optional.of(NetworkDirection.PLAY_TO_CLIENT));
+        CHANNEL.registerMessage(30, com.wjx.touhou_aifun.network.message.AIFunMaidSpeechStopMessage.class,
+                com.wjx.touhou_aifun.network.message.AIFunMaidSpeechStopMessage::encode,
+                com.wjx.touhou_aifun.network.message.AIFunMaidSpeechStopMessage::decode,
+                com.wjx.touhou_aifun.network.message.AIFunMaidSpeechStopMessage::handle, Optional.of(NetworkDirection.PLAY_TO_SERVER));
         CHANNEL.registerMessage(28, com.wjx.touhou_aifun.network.message.AIFunNativeDecisionSettingsMessage.class,
                 com.wjx.touhou_aifun.network.message.AIFunNativeDecisionSettingsMessage::encode,
                 com.wjx.touhou_aifun.network.message.AIFunNativeDecisionSettingsMessage::decode,
@@ -204,6 +218,23 @@ public final class AIFunNetwork {
                 CHANNEL.send(PacketDistributor.PLAYER.with(() -> owner), message);
             }
         });
+    }
+
+    /** Ask the server to stop the maid's speech immediately because the player started a voice turn. */
+    public static void sendMaidSpeechStop(int maidId) {
+        CHANNEL.sendToServer(new com.wjx.touhou_aifun.network.message.AIFunMaidSpeechStopMessage(maidId));
+    }
+
+    public static void sendFreeChatUtterance(com.wjx.touhou_aifun.network.message.AIFunFreeChatUtteranceMessage message) {
+        CHANNEL.sendToServer(message);
+    }
+
+    public static void sendFreeChatFeedback(ServerPlayer player, String status, int maidId) {
+        if (player == null || player.connection == null) {
+            return;
+        }
+        CHANNEL.send(PacketDistributor.PLAYER.with(() -> player),
+                new com.wjx.touhou_aifun.network.message.AIFunFreeChatFeedbackMessage(status, maidId));
     }
 
     private static void runForMaid(EntityMaid maid, Runnable action) {

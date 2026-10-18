@@ -21,6 +21,7 @@
     "ChatBubbleManagerMixin",
     "HistorySummaryManagerMixin",
     "EntityMaidPublicDataMixin",
+    "MaidCombatTargetMixin",
     "NearbyEntitiesContextMixin",
     "MaidAIChatDataMixin",
     "LLMCallbackAccessor",
@@ -29,6 +30,7 @@
     "PapiReplacerMixin",
     "SyncMaidAIDataMessageMixin",
     "TamableAnimalPublicAccessMixin",
+    "TTSCallbackAccessor",
     "TTSCallbackMixin"
   ],
   "client": [

@@ -23,6 +23,18 @@ import java.util.concurrent.CompletableFuture;
 @GameTestHolder("aifun_gui_test")
 @PrefixGameTestTemplate(false)
 public final class CraftingGameTests {
+    @GameTest(template="empty",templateNamespace="aifun_gui_test")
+    public static void glassQueryIncludesLiveSmeltingAndRejectsWorkbenchExecution(GameTestHelper helper) {
+        var f=new Fixture(helper);
+        var result=f.query("minecraft:glass");var rows=result.getAsJsonArray("recipes");
+        var cooking=rows.asList().stream().map(JsonElement::getAsJsonObject).filter(r->r.get("recipe_type").getAsString().equals("minecraft:smelting")).findFirst().orElseThrow();
+        helper.assertTrue(cooking.get("station").getAsString().equals("minecraft:furnace") && cooking.get("cooking_time_ticks").getAsInt()>0 && !cooking.get("auto_fill_supported").getAsBoolean(),"Live cooking route identifies real furnace and duration without claiming workbench support");
+        helper.assertTrue(!cooking.getAsJsonArray("ingredients").isEmpty() && cooking.has("recipe_version"),"Ingredient alternatives and reload evidence are available");
+        var request=new JsonObject();request.addProperty("recipe_type","minecraft:smelting");request.addProperty("recipe_id",cooking.get("recipe_id").getAsString());
+        var filtered=com.wjx.touhou_aifun.maid.gui.GuiCraftingService.query(f.maid,request);
+        helper.assertTrue(filtered.getAsJsonArray("recipes").size()==1,"Exact cooking recipe lookup supports type filtering");
+        helper.succeed();
+    }
     private static final class Fixture {
         final GameTestHelper helper;
         final EntityMaid maid;
@@ -182,6 +194,17 @@ public final class CraftingGameTests {
             helper.assertTrue(result.get("error").getAsString().equals("backpack_full_for_crafting_output")
                     && result.get("crafted_count").getAsInt() == 0 && f.count(Items.OAK_PLANKS) == 64 && f.count(Items.STICK) == 0,
                     "Output capacity checked before consuming any input"); f.finish();
+        });
+    }
+    @GameTest(batch="crafting",template="empty",templateNamespace="aifun_gui_test",timeoutTicks=100)
+    public static void rejectedContainerOutputKeepsMaterialsAndReportsSlotRulesDespiteEmptySpace(GameTestHelper helper) {
+        var f=new Fixture(helper);f.put(0,new ItemStack(Items.SHULKER_SHELL,2));f.put(1,new ItemStack(Items.CHEST));f.open();
+        var future=f.craft("minecraft:shulker_box",1);
+        helper.succeedWhen(()->{
+            helper.assertTrue(future.isDone(),"Output preflight settled");var result=future.join();
+            helper.assertTrue(result.get("error").getAsString().equals("backpack_rejects_crafting_output") && !result.get("retryable").getAsBoolean(),"Denied container output is not reported as full storage");
+            helper.assertTrue(result.getAsJsonObject("backpack_state").get("empty_slots").getAsInt()==f.maid.getAvailableBackpackInv().getSlots()-2 && f.count(Items.SHULKER_SHELL)==2
+                    && f.count(Items.CHEST)==1 && f.count(Items.SHULKER_BOX)==0 && result.get("crafted_count").getAsInt()==0,"Preflight preserves actual ingredients, empty slots and zero delivery");f.finish();
         });
     }
 

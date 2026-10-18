@@ -4,39 +4,30 @@ import com.github.tartaricacid.touhoulittlemaid.ai.manager.entity.TTSCallback;
 import com.github.tartaricacid.touhoulittlemaid.ai.service.ErrorCode;
 import com.github.tartaricacid.touhoulittlemaid.ai.service.tts.TTSClient;
 import com.github.tartaricacid.touhoulittlemaid.ai.service.tts.TTSConfig;
+import com.github.tartaricacid.touhoulittlemaid.entity.passive.EntityMaid;
 import com.google.common.net.HttpHeaders;
 import com.google.common.net.MediaType;
 import com.google.gson.JsonObject;
-import net.minecraft.server.level.ServerPlayer;
-import net.minecraft.world.entity.LivingEntity;
-import com.wjx.touhou_aifun.network.AIFunNetwork;
-import com.wjx.touhou_aifun.network.message.AIFunTTSStreamMessage;
-import com.wjx.touhou_aifun.compat.ai.tts.VoicePresetSpec;
 import com.wjx.touhou_aifun.TouhouAIFun;
+import com.wjx.touhou_aifun.chat.ChatFlowManager;
+import com.wjx.touhou_aifun.compat.ai.stepfun.StepFunShared;
+import com.wjx.touhou_aifun.compat.ai.tts.VoicePresetSpec;
+import com.wjx.touhou_aifun.config.TouhouAIFunConfig;
+import org.jetbrains.annotations.Nullable;
 
 import java.io.ByteArrayOutputStream;
 import java.net.URI;
-import java.net.URISyntaxException;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
-import java.net.http.WebSocket;
-import java.nio.ByteBuffer;
-import java.nio.ByteOrder;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.ArrayList;
-import java.util.Base64;
 import java.util.List;
 import java.util.UUID;
-import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.CompletionStage;
-import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicReference;
 
 public class StepFunTTSClient implements TTSClient {
     private static final Duration MAX_TIMEOUT = Duration.ofSeconds(60);
-    private static final int SAMPLE_RATE = 24_000;
     private static final String DEFAULT_MODEL = "stepaudio-3-tts";
     private static final String DEFAULT_VOICE = "cixingnansheng";
     private static final String STEP_PLAN_MODEL = "stepaudio-2.5-tts";
@@ -53,45 +44,125 @@ public class StepFunTTSClient implements TTSClient {
         this.site = site;
     }
 
+    /** The effective provider model, voice id and session-wide delivery instruction of one request. */
+    public record SpeechSpec(String model, String voice, String instruction) {
+    }
+
     @Override
     public void play(String message, TTSConfig config, TTSCallback callback) {
+        SpeechSpec spec = resolveSpeech(this.site, config, message);
+        boolean singing = isSingingRequest(message);
+        if (singing) {
+            // Log the effective model (a Step Plan URL can override it), never credentials or lyrics.
+            TouhouAIFun.LOGGER.info("StepFun singing request: model={}, characters={}, singingInstruction={}",
+                    spec.model(), codePointLength(message), SINGING_INSTRUCTION.equals(spec.instruction()));
+        }
+        UUID maidId = callback.getMaid().getUUID();
+        int generation = ChatFlowManager.ttsGeneration(maidId);
+        // A song is one performance: the whole-reply HTTP request (with the singing instruction) is
+        // kept for it instead of cutting it into sentences on the realtime endpoint.
+        if (!singing && streamingEnabled() && supportsStreaming(this.site.url(), spec.model())) {
+            playStreaming(message, spec, callback, generation);
+            return;
+        }
+        playHttp(message, spec, gated(callback, maidId, generation));
+    }
+
+    /** Resolves the provider model, voice id and instruction for one synthesis request. */
+    public static SpeechSpec resolveSpeech(StepFunTTSSite site, TTSConfig config, String message) {
         VoicePresetSpec preset = VoicePresetSpec.decode(config.model());
         String[] parts = splitModelAndVoice(preset.runtimeValue());
-        if (isStepPlanUrl(this.site.url())) {
+        if (isStepPlanUrl(site.url())) {
             parts[0] = STEP_PLAN_MODEL;
         }
         String instruction = synthesisInstruction(parts[0], preset.instruction(), message);
-        if (isSinging(message)) {
-            // Log the effective model (a Step Plan URL can override it), never credentials or lyrics.
-            TouhouAIFun.LOGGER.info("StepFun singing request: model={}, characters={}, singingInstruction={}",
-                    parts[0], codePointLength(message), SINGING_INSTRUCTION.equals(instruction));
-        }
-        // Preserve the reply's delivery and musical context. Only split at the provider's size
-        // ceiling; every resulting request receives the same reply-wide instruction and MP3 format.
-        List<String> chunks = splitText(message, MAX_HTTP_INPUT_LENGTH);
-        if (chunks.size() == 1) {
-            playHttp(message, parts[0], parts[1], instruction, callback);
-            return;
-        }
-        playBufferedHttp(chunks, 0, parts[0], parts[1], instruction,
-                callback, new ArrayList<>());
+        return new SpeechSpec(parts[0], parts[1], instruction);
     }
 
-    private void playHttp(String message, String model, String voice, String instruction, TTSCallback callback) {
-        HttpRequest request = buildHttpRequest(message, model, voice, instruction, "mp3");
+    /**
+     * Whether the configured site/model can use the official WebSocket streaming endpoint. Only the
+     * official StepFun host is used: its {@code /v1/realtime/audio} path is not part of the
+     * OpenAI-compatible surface, so a custom self-hosted URL keeps the plain HTTP contract.
+     */
+    static boolean supportsStreaming(String configuredUrl, String model) {
+        return StepFunTTSStream.supportsModel(model) && StepFunShared.isStepFunApi(configuredUrl);
+    }
+
+    /** Whether an LLM-streaming reply may feed this site's TTS incrementally over one WS session. */
+    public boolean supportsStreamingReply(TTSConfig config) {
+        if (!streamingEnabled()) {
+            return false;
+        }
+        SpeechSpec spec = resolveSpeech(this.site, config, "");
+        return supportsStreaming(this.site.url(), spec.model());
+    }
+
+    /** Opens one incremental streaming session; used by {@link StepFunStreamingReply}. */
+    StepFunTTSStream openStream(EntityMaid maid, int generation, SpeechSpec spec, TTSCallback callback,
+                                StepFunTTSStream.Completion completion) {
+        return new StepFunTTSStream(this.httpClient, this.site, maid, generation,
+                spec.model(), spec.voice(), spec.instruction(), callback, completion);
+    }
+
+    /** Resolves the speech spec from the sentence that opens the session, so singing cues work. */
+    StepFunTTSStream openStream(EntityMaid maid, int generation, TTSConfig config, String contextText,
+                                TTSCallback callback, StepFunTTSStream.Completion completion) {
+        return openStream(maid, generation, resolveSpeech(this.site, config, contextText), callback, completion);
+    }
+
+    /**
+     * HTTP-only synthesis used as the fallback when a streaming session failed before any audio was
+     * played. The callback receives the complete encoded audio exactly like the base contract.
+     */
+    public void playHttpOnly(String message, TTSConfig config, TTSCallback callback) {
+        SpeechSpec spec = resolveSpeech(this.site, config, message);
+        UUID maidId = callback.getMaid().getUUID();
+        playHttp(message, spec, gated(callback, maidId, ChatFlowManager.ttsGeneration(maidId)));
+    }
+
+    private void playStreaming(String message, SpeechSpec spec, TTSCallback callback, int generation) {
+        StepFunTTSStream stream = openStream(callback.getMaid(), generation, spec, callback,
+                (outcome, anyAudio, error) -> {
+                    if (outcome == StepFunTTSStream.Outcome.FAILED && !anyAudio) {
+                        // Nothing has been played yet, so the ordinary request cannot duplicate speech.
+                        TouhouAIFun.LOGGER.warn("StepFun streaming TTS failed ({}), falling back to HTTP",
+                                describe(error));
+                        playHttp(message, spec, gated(callback, callback.getMaid().getUUID(), generation));
+                    }
+                });
+        stream.start();
+        // The complete reply is known here (this entry point is used for non-incremental callers), so
+        // every provider-size chunk is queued immediately and the stream starts as soon as it can.
+        for (String chunk : splitText(message, MAX_HTTP_INPUT_LENGTH)) {
+            stream.feed(chunk);
+        }
+        stream.finishText();
+    }
+
+    private void playHttp(String message, SpeechSpec spec, TTSCallback callback) {
+        List<String> chunks = splitText(message, MAX_HTTP_INPUT_LENGTH);
+        if (chunks.size() == 1) {
+            playHttpChunk(message, spec, callback);
+            return;
+        }
+        playBufferedHttp(chunks, 0, spec, callback, new ArrayList<>());
+    }
+
+    private void playHttpChunk(String message, SpeechSpec spec, TTSCallback callback) {
+        HttpRequest request = buildHttpRequest(message, spec, "mp3");
         this.httpClient.sendAsync(request, HttpResponse.BodyHandlers.ofByteArray())
                 .whenComplete((response, throwable) -> handleResponse(callback, response, throwable, request));
     }
 
-    private void playBufferedHttp(List<String> chunks, int index, String model, String voice,
-                                  String instruction, TTSCallback callback, List<byte[]> audioChunks) {
+    private void playBufferedHttp(List<String> chunks, int index, SpeechSpec spec,
+                                  TTSCallback callback, List<byte[]> audioChunks) {
         if (index >= chunks.size()) {
             ByteArrayOutputStream audio = new ByteArrayOutputStream();
             audioChunks.forEach(audio::writeBytes);
             callback.onSuccess(audio.toByteArray());
             return;
         }
-        HttpRequest request = buildHttpRequest(chunks.get(index), model, voice, instruction, "mp3");
+        HttpRequest request = buildHttpRequest(chunks.get(index), spec, "mp3");
         this.httpClient.sendAsync(request, HttpResponse.BodyHandlers.ofByteArray())
                 .whenComplete((response, throwable) -> {
             if (throwable != null) {
@@ -111,13 +182,13 @@ public class StepFunTTSClient implements TTSClient {
                 return;
             }
             audioChunks.add(audio);
-            playBufferedHttp(chunks, index + 1, model, voice, instruction, callback, audioChunks);
+            playBufferedHttp(chunks, index + 1, spec, callback, audioChunks);
         });
     }
 
-    private HttpRequest buildHttpRequest(String message, String model, String voice,
-                                         String instruction, String responseFormat) {
-        JsonObject requestBody = requestBody(message, model, voice, instruction, responseFormat);
+    private HttpRequest buildHttpRequest(String message, SpeechSpec spec, String responseFormat) {
+        JsonObject requestBody = requestBody(message, spec.model(), spec.voice(),
+                spec.instruction(), responseFormat);
 
         HttpRequest.Builder builder = HttpRequest.newBuilder(URI.create(this.site.url()))
                 .header(HttpHeaders.CONTENT_TYPE, MediaType.JSON_UTF_8.toString())
@@ -126,6 +197,28 @@ public class StepFunTTSClient implements TTSClient {
                 .timeout(MAX_TIMEOUT);
         this.site.headers().forEach(builder::header);
         return builder.build();
+    }
+
+    /**
+     * Drops late audio (and the chip bubble that would come with it) once a newer reply took over
+     * speaking. The generation is captured when the request starts, before any HTTP/WS work.
+     */
+    private static TTSCallback gated(TTSCallback callback, UUID maidId, int generation) {
+        return new TTSCallback(callback.getMaid(), "", -1) {
+            @Override
+            public void onSuccess(byte[] data) {
+                if (ChatFlowManager.ttsGeneration(maidId) == generation) {
+                    callback.onSuccess(data);
+                }
+            }
+
+            @Override
+            public void onFailure(HttpRequest request, Throwable throwable, int errorCode) {
+                if (ChatFlowManager.ttsGeneration(maidId) == generation) {
+                    callback.onFailure(request, throwable, errorCode);
+                }
+            }
+        };
     }
 
     static JsonObject requestBody(String message, String model, String voice,
@@ -139,7 +232,7 @@ public class StepFunTTSClient implements TTSClient {
         requestBody.addProperty("input", input);
         requestBody.addProperty("voice", voice);
         requestBody.addProperty("response_format", responseFormat);
-        requestBody.addProperty("sample_rate", SAMPLE_RATE);
+        requestBody.addProperty("sample_rate", StepFunTTSStream.SAMPLE_RATE);
         if (!instruction.isBlank()) {
             requestBody.addProperty("instruction", instruction);
         }
@@ -158,12 +251,25 @@ public class StepFunTTSClient implements TTSClient {
     static String synthesisInstruction(String model, String instruction, String message) {
         // A performance requested by the leading marker overrides this turn's general speaking
         // style. This is a best-effort contextual instruction, not a guaranteed singing API mode.
-        return synthesisInstruction(model, isSinging(message) ? SINGING_INSTRUCTION : instruction);
+        return synthesisInstruction(model, isSingingRequest(message) ? SINGING_INSTRUCTION : instruction);
     }
 
-    private static boolean isSinging(String message) {
+    /** True when the reply asks for singing through the leading {@code (唱歌)} performance cue. */
+    public static boolean isSingingRequest(String message) {
         String text = message == null ? "" : message.stripLeading();
         return text.startsWith("(唱歌)") || text.startsWith("（唱歌）");
+    }
+
+    private static boolean streamingEnabled() {
+        return TouhouAIFunConfig.STEPFUN_TTS_STREAMING.get();
+    }
+
+    private static String describe(@Nullable Throwable throwable) {
+        if (throwable == null) {
+            return "no audio";
+        }
+        String message = throwable.getMessage();
+        return message == null || message.isBlank() ? throwable.getClass().getSimpleName() : message;
     }
 
     private static int codePointLength(String value) {
@@ -205,57 +311,8 @@ public class StepFunTTSClient implements TTSClient {
         return hardEnd;
     }
 
-    private static byte[] wrapPcmAsWav(byte[] pcm, int sampleRate) {
-        int channels = 1;
-        int bitsPerSample = 16;
-        int byteRate = sampleRate * channels * bitsPerSample / 8;
-        ByteBuffer wav = ByteBuffer.allocate(44 + pcm.length).order(ByteOrder.LITTLE_ENDIAN);
-        wav.put("RIFF".getBytes(StandardCharsets.US_ASCII));
-        wav.putInt(36 + pcm.length);
-        wav.put("WAVE".getBytes(StandardCharsets.US_ASCII));
-        wav.put("fmt ".getBytes(StandardCharsets.US_ASCII));
-        wav.putInt(16);
-        wav.putShort((short) 1);
-        wav.putShort((short) channels);
-        wav.putInt(sampleRate);
-        wav.putInt(byteRate);
-        wav.putShort((short) (channels * bitsPerSample / 8));
-        wav.putShort((short) bitsPerSample);
-        wav.put("data".getBytes(StandardCharsets.US_ASCII));
-        wav.putInt(pcm.length);
-        wav.put(pcm);
-        return wav.array();
-    }
-
-    private static URI buildWebSocketUri(String configuredUrl, String model) {
-        URI configured = URI.create(configuredUrl);
-        String scheme = configured.getScheme();
-        String path = configured.getPath();
-        if ("http".equalsIgnoreCase(scheme) || "https".equalsIgnoreCase(scheme)) {
-            scheme = "https".equalsIgnoreCase(scheme) ? "wss" : "ws";
-            path = path != null && path.contains("/step_plan/")
-                    ? "/step_plan/v1/realtime/audio" : "/v1/realtime/audio";
-        }
-        try {
-            return new URI(scheme, configured.getUserInfo(), configured.getHost(), configured.getPort(),
-                    path, "model=" + model, null);
-        } catch (URISyntaxException e) {
-            throw new IllegalArgumentException("Invalid StepFun TTS URL: " + configuredUrl, e);
-        }
-    }
-
     private static boolean isStepPlanUrl(String configuredUrl) {
         return URI.create(configuredUrl).getPath().contains("/step_plan/");
-    }
-
-    private static URI toHttpUri(URI webSocketUri) {
-        String scheme = "wss".equalsIgnoreCase(webSocketUri.getScheme()) ? "https" : "http";
-        try {
-            return new URI(scheme, webSocketUri.getUserInfo(), webSocketUri.getHost(), webSocketUri.getPort(),
-                    webSocketUri.getPath(), webSocketUri.getQuery(), null);
-        } catch (URISyntaxException e) {
-            throw new IllegalArgumentException(e);
-        }
     }
 
     private static String[] splitModelAndVoice(String value) {
@@ -270,200 +327,5 @@ public class StepFunTTSClient implements TTSClient {
             return new String[]{DEFAULT_MODEL, DEFAULT_VOICE};
         }
         return new String[]{value.substring(0, splitIndex), value.substring(splitIndex + 1)};
-    }
-
-    private final class StreamingListener implements WebSocket.Listener {
-        private final String message;
-        private final String voice;
-        private final String instruction;
-        private final boolean streamToPlayer;
-        private final TTSCallback callback;
-        private final ServerPlayer player;
-        private final UUID streamId;
-        private final HttpRequest diagnosticRequest;
-        private final StringBuilder textBuffer = new StringBuilder();
-        private final AtomicBoolean completed = new AtomicBoolean();
-        private final AtomicBoolean started = new AtomicBoolean();
-        private final AtomicReference<WebSocket> webSocket = new AtomicReference<>();
-        private final ByteArrayOutputStream bufferedPcm = new ByteArrayOutputStream();
-
-        private StreamingListener(String message, String voice, String instruction, boolean streamToPlayer,
-                                  TTSCallback callback, ServerPlayer player,
-                                  UUID streamId, HttpRequest diagnosticRequest) {
-            this.message = message;
-            this.voice = voice;
-            this.instruction = instruction;
-            this.streamToPlayer = streamToPlayer;
-            this.callback = callback;
-            this.player = player;
-            this.streamId = streamId;
-            this.diagnosticRequest = diagnosticRequest;
-        }
-
-        private void setWebSocket(WebSocket webSocket) {
-            this.webSocket.compareAndSet(null, webSocket);
-        }
-
-        @Override
-        public void onOpen(WebSocket webSocket) {
-            setWebSocket(webSocket);
-            webSocket.request(1);
-        }
-
-        @Override
-        public CompletionStage<?> onText(WebSocket webSocket, CharSequence data, boolean last) {
-            textBuffer.append(data);
-            if (last) {
-                String event = textBuffer.toString();
-                textBuffer.setLength(0);
-                try {
-                    handleEvent(webSocket, GSON.fromJson(event, JsonObject.class));
-                } catch (Exception e) {
-                    fail(e);
-                }
-            }
-            webSocket.request(1);
-            return null;
-        }
-
-        private void handleEvent(WebSocket webSocket, JsonObject event) {
-            String type = event.has("type") ? event.get("type").getAsString() : "";
-            JsonObject data = event.has("data") && event.get("data").isJsonObject()
-                    ? event.getAsJsonObject("data") : new JsonObject();
-            switch (type) {
-                case "tts.connection.done" -> sendCreate(webSocket, data.get("session_id").getAsString());
-                case "tts.response.created" -> sendText(webSocket, data.get("session_id").getAsString());
-                case "tts.response.audio.delta" -> acceptAudio(data);
-                case "tts.response.audio.done" -> succeed();
-                case "tts.response.error", "error" -> fail(new IllegalStateException(readError(event, data)));
-                default -> {
-                }
-            }
-        }
-
-        private void sendCreate(WebSocket webSocket, String sessionId) {
-            JsonObject data = new JsonObject();
-            data.addProperty("session_id", sessionId);
-            data.addProperty("voice_id", voice);
-            data.addProperty("response_format", "pcm");
-            data.addProperty("sample_rate", SAMPLE_RATE);
-            data.addProperty("speed_ratio", 1.0);
-            data.addProperty("volume_ratio", 1.0);
-            data.addProperty("mode", "sentence");
-            if (!instruction.isBlank()) {
-                data.addProperty("instruction", instruction);
-            }
-            webSocket.sendText(event("tts.create", data), true);
-        }
-
-        private void sendText(WebSocket webSocket, String sessionId) {
-            JsonObject done = new JsonObject();
-            done.addProperty("session_id", sessionId);
-            CompletableFuture<WebSocket> chain = CompletableFuture.completedFuture(webSocket);
-            for (String chunk : splitText(message, MAX_HTTP_INPUT_LENGTH)) {
-                JsonObject delta = new JsonObject();
-                delta.addProperty("session_id", sessionId);
-                delta.addProperty("text", chunk);
-                chain = chain.thenCompose(ignored -> webSocket.sendText(event("tts.text.delta", delta), true));
-            }
-            chain.thenCompose(ignored -> webSocket.sendText(event("tts.text.done", done), true))
-                    .exceptionally(throwable -> {
-                        fail(throwable);
-                        return null;
-                    });
-        }
-
-        private String event(String type, JsonObject data) {
-            JsonObject event = new JsonObject();
-            event.addProperty("type", type);
-            event.add("data", data);
-            return GSON.toJson(event);
-        }
-
-        private void acceptAudio(JsonObject data) {
-            if (completed.get() || !data.has("audio")) {
-                return;
-            }
-            byte[] pcm = Base64.getDecoder().decode(data.get("audio").getAsString());
-            if (pcm.length == 0) {
-                return;
-            }
-            boolean firstChunk = started.compareAndSet(false, true);
-            if (!streamToPlayer) {
-                bufferedPcm.writeBytes(pcm);
-            } else if (firstChunk) {
-                AIFunNetwork.sendMaidTtsStream(callback.getMaid(), AIFunTTSStreamMessage.start(
-                        streamId, callback.getMaid().getId(), SAMPLE_RATE, pcm));
-            } else {
-                AIFunNetwork.sendMaidTtsStream(callback.getMaid(), AIFunTTSStreamMessage.data(streamId, pcm));
-            }
-        }
-
-        private void succeed() {
-            if (!completed.compareAndSet(false, true)) {
-                return;
-            }
-            closeStream();
-            WebSocket socket = webSocket.get();
-            if (socket != null) {
-                socket.sendClose(WebSocket.NORMAL_CLOSURE, "done");
-            }
-            if (started.get() && streamToPlayer) {
-                return;
-            }
-            if (started.get()) {
-                callback.onSuccess(wrapPcmAsWav(bufferedPcm.toByteArray(), SAMPLE_RATE));
-            } else {
-                callback.onFailure(diagnosticRequest, new IllegalStateException("StepFun returned no audio"),
-                        ErrorCode.REQUEST_RECEIVED_ERROR);
-            }
-        }
-
-        private void fail(Throwable throwable) {
-            if (!completed.compareAndSet(false, true)) {
-                return;
-            }
-            closeStream();
-            WebSocket socket = webSocket.get();
-            if (socket != null) {
-                socket.abort();
-            }
-            callback.onFailure(diagnosticRequest, throwable, ErrorCode.REQUEST_RECEIVED_ERROR);
-        }
-
-        private void timeout() {
-            if (!completed.get()) {
-                fail(new IllegalStateException("StepFun streaming TTS timed out"));
-            }
-        }
-
-        private void closeStream() {
-            if (streamToPlayer && started.get()) {
-                AIFunNetwork.sendMaidTtsStream(callback.getMaid(), AIFunTTSStreamMessage.end(streamId));
-            }
-        }
-
-        private String readError(JsonObject event, JsonObject data) {
-            if (data.has("message")) {
-                return data.get("message").getAsString();
-            }
-            if (event.has("message")) {
-                return event.get("message").getAsString();
-            }
-            return "StepFun streaming TTS failed: " + event;
-        }
-
-        @Override
-        public CompletionStage<?> onClose(WebSocket webSocket, int statusCode, String reason) {
-            if (!completed.get()) {
-                fail(new IllegalStateException("StepFun WebSocket closed: " + statusCode + " " + reason));
-            }
-            return null;
-        }
-
-        @Override
-        public void onError(WebSocket webSocket, Throwable error) {
-            fail(error);
-        }
     }
 }

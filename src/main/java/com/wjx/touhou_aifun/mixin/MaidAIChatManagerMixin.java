@@ -22,6 +22,7 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 import com.wjx.touhou_aifun.compat.ai.tts.TTSProgressiveSynthesis;
 import com.wjx.touhou_aifun.chat.context.AIFunMemoryManager;
 import com.wjx.touhou_aifun.chat.ChatSpeakerContext;
+import com.wjx.touhou_aifun.chat.freechat.FreeChatContext;
 import com.wjx.touhou_aifun.network.AIFunNetwork;
 
 import java.util.List;
@@ -30,6 +31,8 @@ import java.util.List;
 public abstract class MaidAIChatManagerMixin {
     @Unique
     private ChatSpeakerContext.Snapshot touhouAIFun$currentSpeaker;
+    @Unique
+    private String touhouAIFun$currentAmbient;
 
     @Inject(method = "chat", at = @At("HEAD"))
     private void touhouAIFun$rememberSpeaker(String message, ChatClientInfo clientInfo,
@@ -43,6 +46,7 @@ public abstract class MaidAIChatManagerMixin {
                                          LLMClient chatClient, CallbackInfo ci) {
         MaidAIChatManager manager = (MaidAIChatManager) (Object) this;
         this.touhouAIFun$currentSpeaker = ChatSpeakerContext.take(manager.getMaid(), message);
+        this.touhouAIFun$currentAmbient = FreeChatContext.take(manager.getMaid(), message);
         com.wjx.touhou_aifun.chat.agent.AgentRuntime.speaker(manager.getMaid(), this.touhouAIFun$currentSpeaker, message);
         AIFunMemoryManager.beginTurn(manager, message);
         List<LLMMessage> original = List.copyOf(messages);
@@ -57,13 +61,16 @@ public abstract class MaidAIChatManagerMixin {
                             + "Ljava/lang/String;)Lcom/github/tartaricacid/touhoulittlemaid/ai/service/llm/LLMMessage;"),
             index = 1)
     private String touhouAIFun$attachSpeakerIdentity(String messageWithContext) {
-        return ChatSpeakerContext.attach(messageWithContext, this.touhouAIFun$currentSpeaker);
+        return FreeChatContext.attach(
+                ChatSpeakerContext.attach(messageWithContext, this.touhouAIFun$currentSpeaker),
+                this.touhouAIFun$currentAmbient);
     }
 
     @Inject(method = "normalChat", at = @At("RETURN"))
     private void touhouAIFun$clearSpeaker(String message, List<LLMMessage> messages,
                                           LLMClient chatClient, CallbackInfo ci) {
         this.touhouAIFun$currentSpeaker = null;
+        this.touhouAIFun$currentAmbient = null;
     }
 
     @Redirect(method = "tts",

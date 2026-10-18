@@ -27,9 +27,19 @@ public final class QueuedTTSPlaybackManager {
         if (directPlay || !(sound instanceof MaidAISoundInstance)) {
             return false;
         }
+        // The player is recording a voice turn: swallow maid TTS that was already in flight instead
+        // of playing it over the microphone.
+        if (SpeechMute.muted()) {
+            return true;
+        }
         QUEUE.addLast(sound);
         playNext(soundManager);
         return true;
+    }
+
+    /** True while any maid TTS is queued or currently playing. */
+    public static boolean isPlaying() {
+        return current != null || !QUEUE.isEmpty();
     }
 
     /** Drop all pending TTS and stop the one currently playing (a newer reply is taking over). */

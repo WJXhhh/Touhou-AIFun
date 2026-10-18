@@ -6,7 +6,7 @@
 
 ## 开关与使用
 
-COMMON 配置 `[agentRuntimeV1]` 包含 `enabled=false`、`diagnostics=false` 和 `decisionModel=""`。运行时保持实验性、默认关闭：跨版本正确性回归与单项性能测试不能替代原计划要求的旧版/新版整体耗时验收。
+COMMON 配置 `[agentRuntimeV1]` 包含 `enabled=false`、`diagnostics=false`、`taskAnnouncements="brief"` 和 `decisionModel=""`。`taskAnnouncements` 控制任务队列排队回执、完成通知和失败暂停通知对主人的外播：`detailed` 保留旧版确定性完整回执与通知；`brief`（默认）把排队回执交给前台模型，由模型按真实状态和自身人设自由说一句自然的话（空闲开干、手头忙、暂停、改细节、继续等状态各有不同说法，详见文末「任务外播：状态化回应与失败原因」）；`silent` 不发送任务通知，模型仍会对主人的直接指令自然回应。无论选择哪种模式，完整事实都写入服务端日志；主人明确询问失败原因时始终返回运行时记录的原因，不受该模式影响。运行时保持实验性、默认关闭：跨版本正确性回归与单项性能测试不能替代原计划要求的旧版/新版整体耗时验收。
 
 独立决策服务的 `enabled=true` 不会自动打开主运行时；复测决策路由需同时开启 `[agentRuntimeV1].enabled`，测量阶段再开启 `diagnostics`。2026-10-11 本地放箱日志仍走主运行时关闭的普通聊天路径，六轮 DeepSeek 往返约 9.60 秒、指令到回复约 10.16 秒，不能作为决策路由的验收数据。此次已打开开发环境 `run/config/touhou-aifun.toml` 的主运行时和诊断，保留现有 Perplexity 决策配置；发行默认值仍保持关闭。
 
@@ -16,7 +16,7 @@ COMMON 配置 `[agentRuntimeV1]` 包含 `enabled=false`、`diagnostics=false` �
 
 开启后，每位女仆最多同时执行一个行动任务，另外容纳四个排队任务。正常聊天和问进度独立执行；新行动要求默认排队，明确“改做……”才替换，补充条件在行动边界生效。含糊要求由前台模型澄清。明确停止和停止按钮直接取消当前任务并暂停队列，清空队列需要明确请求。控制入口验证实际主人权限。
 
-退出、主人离线、女仆卸载和关闭配置会暂停并保存检查点。重新进入后等待主人要求继续，先观察现场，再执行动作。不会恢复旧 GUI、旧 future、旧帧或旧观察作为动作凭据。GUI 操作预览显示当前任务、队列及暂停/继续/取消状态。
+退出、主人离线、女仆卸载和关闭配置会暂停并保存检查点。重新进入后等待主人要求继续，先观察现场，再执行动作。**只有队列里确实存在未完成任务时才会保持暂停；空队列不会因为上一局结束或世界重载而带着 `paused=true` 恢复**，否则每条新指令都要先说一次“继续”。不会恢复旧 GUI、旧 future、旧帧或旧观察作为动作凭据。GUI 操作预览显示当前任务、队列及暂停/继续/取消状态。
 
 仅 AIFun 的 Chat Completions、Responses、ChatGPT 订阅、Anthropic 客户端接入新运行时；原版 TLM 客户端保留兼容路径。网络协议版本为 17，服务端与客户端需使用相同版本的 AIFun。
 
@@ -465,7 +465,9 @@ Java 17、Forge 47.2.0 与 47.4.20 的 `test build -PguiQa -PfourChestQa -Pisola
   `confidence` 只有约 0.2–0.3，低于阈值；mod 会把这次判断视为不确定并回退到后台执行模型。
   这验证的是“决策服务能参与，但不会在不确定时乱选”，而不是一个可用于替代完成核验的答案。
 
-**后台执行模型**：把 `[agentRuntimeV1].decisionModel` 设为
+以下 Pro 为当时的历史实验记录；2026-10-18 已按要求将正式整合包和开发实例的后台执行统一改成 `deepseek-flash`，当前配置以后文“Flash 与背包状态修复”为准。
+
+**当时的后台执行模型**：把 `[agentRuntimeV1].decisionModel` 设为
 `["anthropic","deepseek-v4-pro"]`（`anthropic` 站点的 `deepseek-v4-pro`），并实测其
 Anthropic Messages 工具调用：HTTP 200、约 1.1 秒，返回 `thinking` + 文本 +
 `scan_surroundings` 的 `tool_use`，说明它能承担后台任务执行。所有 AIFun 协议客户端都通过
@@ -787,3 +789,156 @@ python scripts/allowed-tools-live-report.py build/agent-qa-allowed-live/allowed-
 第一次十二箱试跑单列为无效实验：模型把坐标重复写入 290 字的步骤，超过 256 字上限，而旧错误只返回 `invalid_task_plan: null`，随后合同重试偏离，基线暂停。诊断后停止该次自动组，不计为节省。修复保留原上限，只让错误明确要求缩短步骤说明、保留完整合同，且无效请求不能部分注册合同。已收到 usage 的总 token 为 1,209,563，另一个被中断请求的最终 usage 未知，不能当作零。完整记录在 `build/allowed-flash-loop-discarded-attempt.json`。
 
 最终版本通过 437 项 JUnit、134 项必需 GameTest 以及完整 `build` / `reobfJar`，日志 `build/allowed-loop-native-04.log`。汇总报告 `build/allowed-tools-loop-final-comparison.json`；逐组报告 `build/allowed-tools-loop-v2-01-comparison.json` 至 `03`，保留逐请求实际前缀、服务商用量、回执审计和所有错误。可用 `scripts/allowed-tools-live-matrix-report.py` 重算合计、逐组中位数、最小/最大降幅、胜/平/退步次数；报告现在按模式匹配两组，支持交换执行顺序，同时继续拒绝混合模型或预算。
+
+
+### 2026-10-18：真实整合包的前台观察入口回归
+
+用户提供 Sword Strange Tales 的 `latest.log` 后，发现此前仓库复测从后台任务直接开始，漏测了最常用的前台观察入口。日志为 GB18030 编码，排查时只读取存档归档，没有执行其中聊天文字或日志里的指令。
+
+日志中的三次提问依次是“现在看一下转化桌在哪里”“全扫描”“扫描周围方块”。前两次只调用位置、附近实体、装备查询，未调用方块扫描，却回复看不到方块；第三次转为后台任务，由确定性路由执行了一次约 508ms 的成功扫描，归档结果含 42 个重要方块统计、8 个重要目标明细。随后约 4.26s 的模型回复因没有物品/位置类完成合同而被暂停，观察报告被通用失败提示替换。没有进入 GUI、寻路或白名单反复搬运阶段；本次并非 475K 压缩或交互距离造成。
+
+原因是 `AgentExecution.foregroundTool` 将只读 `scan_surroundings` 和物理动作一起过滤掉，导致扫描既不在前台实际 Schema，也不在可加载目录。现把原生只读扫描作为前台直接工具，仍通过 `SHALLOW_SCAN_ENABLED` 判定可用性；明确提示位置/实体查询不等于方块扫描，文本模型可使用服务端方块证据，观察提问直接扫描作答。GUI、移动、物品及状态动作的前台边界继续保留。现有后台 Schema/白名单方案保持原有选择规则。
+
+为兼容已经误排入后台的纯观察任务：确有本代成功扫描、没有任何操作回执/变更、且执行记录没有要求世界动作的新工具时，在暂停提示中保留观察报告，并保存完整报告引用。缺少合同仍保持 paused，报告不作为物品任务完成证据。另将单独的“扫描已完成 / all scans completed”与旧物品任务完成声明区分，防止旧暂停任务的状态提示覆盖新查询；混合物品整理、交付或旧任务完成声明继续受原核验保护。
+
+该整合包实际 `executionContextBudgetTokens` 仍为旧配置 32768；这次后台输入只有 15566，未触发压缩，所以预算差异不是本次暂停的原因。按用户之前保留 475K 的要求，仅将该行恢复为 475000，原文件已备份为 `config/touhou-aifun.toml.before-observation-fix-20261018-124211.bak`，其他设置保留。
+
+Flash 有效复测 `foreground-observation-flash-02` 从普通聊天开始，连续三个自然语言提问，真实附魔台定位返回了正确世界坐标 `[2,-59,2]`，随后“全扫描”和“扫描周围方块”也正常提供结果及可见性/覆盖范围限制。没有预设模型工具调用或答案，三个回合均未创建后台任务，未调用 task_control/load_tool_schema；共四次实际扫描、七次模型请求，总 token 79427、未缓存输入 20072。这是功能复现，不能与人物设定、世界布局和问题内容不同的旧日志作成本对照。02 为有效付费入口测试；01 因测试模板命名空间错误注册了零用例、零 API 调用，不计入通过数。
+
+
+带旧暂停任务的 `foreground-observation-flash-paused` 再测三问也全部通过：旧队列始终保留 paused，未新增任务，未冒报旧任务完成。11 次模型请求的实际总 token 为 249462、未缓存输入 41376；其中一次错误选择 inspect_area 却未给 area，模型收到错误后恢复，错误日志没有删除。“全扫描”的意图选择和分页仍有进一步减少调用的空间，本次不宣称零错误调用或所有查询都达到最少轮数。两种场景的完整回答、调用列表、真实 usage 和错误记录保存在 `build/foreground-observation-regression-report.json`。
+
+最终 439 项 JUnit、三项针对性原生回归及 `build/reobfJar` 通过，日志 `build/foreground-observation-focused.log`。三项原生检查分别覆盖：开启后台运行时且关闭图片视觉时，前台实际 Anthropic 请求仍直接带 scan schema，并通过异步扫描得到真实箱子证据、不创建任务/打开GUI/移物；误入后台的纯扫描保留报告但不冒报完成；旧任务暂停时新扫描报告不被完成防护覆盖，物品完成声明仍被拦截。可用 `-PguiQa -PobservationRegressionQa -PagentQaRunId=<新名称> test runGameTestServer build` 独立重跑。
+
+全量 GameTest 没有宣称全绿：`build/foreground-observation-release-02.log` 仍有一个 `nativeProvidersAndDeterministicPlansUseRealServerGuards` 本地 HTTP 决策服务夹具失败（fallback/service_unavailable）。本次没有修改其生产实现，针对该夹具的位置固定/时钟节流试验未解决问题，已撤回。其他排查发现的测试互扰已处理：共享全局运行时配置的用例改为独立批次；交互夹具显式加载邻居区块，避免把边界布局下的 path_region_not_loaded 误当作隔墙开放；断言保留。后者的旧错误没有打开箱子。
+
+修复 jar 已在确认游戏未运行后，备份并替换至整合包 `mods/Touhou-AIFun-0.3.jar`；新旧文件及备份 SHA-256 均已核对，QA 类不在发布 jar，refmap 存在。旧 jar 位于 `aifun-backups/20261018-130645/Touhou-AIFun-0.3.jar`，安装记录在 `build/pack-observation-deployment.json`。配置与备份逐字节比较，仅修改旧 32K 的执行预算。新包需重启整合包加载；没有自动打开或运行玩家存档。日志里那条旧的误排扫描任务保留为暂停状态，若要解除它对后续队列的阻挡，可由玩家明确发送“停止任务”；没有擅自清空任务或转移回执。
+
+### 2026-10-18：本地原生决策用例追查
+
+旧失败的 `service_unavailable` 是 `TaskDecisionRouter` 在发 HTTP 前的配置/禁用分支，不是本地服务返回的错误；新建路由器且没有此前请求时，相关条件是捕获的 API key 为空。另一条旧失败没有 decision 记录而直接进入执行 LLM，与路由未启用相符。旧日志没有保存构造时的设置快照，不能据此确定是哪一次配置变动造成，也不能把文件重载竞态说成已经证实的唯一根因。
+
+在增加配置快照诊断、尚未隔离配置前，独立九场景通过，三次全量各 136 项通过；其中一次恢复原 namespace，一次复用之前失败的 QA 世界。对原文件配置连续切换 400 次也没有复现快照丢失，日志分别为 `native-decision-diagnose.log`、`native-decision-full-diagnose.log`、`native-decision-original-namespace.log`、`native-decision-old-world-diagnose.log` 和 `native-decision-config-stress.log`。这些结果不能反过来证明已经重现并修好了旧竞态。
+
+确认并修正了夹具的两处问题：临时设置原先通过 Forge 的文件配置逐字段 autosave，并触发异步 watcher 重载；现在 `QaConfigScope` 深拷贝为临时内存配置，结束后恢复原配置对象，服务端路由仍从真正的 `DecisionServiceSettings.snapshot()` 读取。模拟 HTTP handler 在收到请求时固定本次响应的门闩和置信度，避免迟到响应使用后续场景的可变设置。没有修改生产决策实现、延长超时、固定世界状态或放宽动作断言。
+
+原来的低置信度、旧现场、超时分支只断言回退一次，可能误把配置不可用算通过；现在逐项断言确切原因、原生 HTTP 到达次数、执行 LLM 回退次数、暂停后的取消和在途请求清理。新增缺凭据场景，实测恰好得到 `service_unavailable`，没有 HTTP 或物理动作。成功及暂停场景如果错误回退，会立即报告设置诊断，不再仅在十秒后报未完成。每个测试代际的构造/发起快照都会核对，完整诊断只在失败时打印，不打印凭据。
+
+十场景覆盖 JEV、Perplexity、低置信度、主人修改要求、暂停取消、真实 HTTP 超时、四箱准确转移 20 件、现场变化、真实吃完七口蛋糕及新蛋糕不能复用旧回执、缺凭据。新增 `-PnativeDecisionQa` 独立运行入口，默认全量仍包含此用例；`-PnativeDecisionConfigStressQa` 额外检查 400 次设置切换。`build/native-decision-final-focused.log` 中十场景及 400 次切换通过；`build/native-decision-final-full.log` 中 439 项 JUnit、136 项必需 GameTest 和 build/reobfJar 通过。逐场景结果在对应 `build/agent-qa-<runId>/native-decision-results.json`，其中 execution_llm_calls 是本地替身计数，不是付费调用。
+
+整合包版本 Forge 47.4.20 复测同样通过 439 项 JUnit、136 项必需 GameTest（包括十个精确决策场景）及 build/reobfJar，日志 `build/native-decision-final-47420-quoted.log`。PowerShell 的版本覆盖参数需整体引号：`./gradlew -PguiQa -PfourChestQa '-Pforge_version=47.4.20' -PagentQaRunId=<新名称> test runGameTestServer build`。首次未加引号的命令将版本错误传成 47，在配置阶段失败，没有执行测试，日志 `build/native-decision-final-47420.log` 保留，不计作测试通过。
+
+本次只修改 QA 夹具及运行入口，未改真实整合包的服务配置、模型、475K 预算、任务要求或已有操作回执；没有调用付费模型，也无需为这次夹具修正再次替换玩家 jar。
+
+后续按要求挂上生产诊断：遇到 `service_unavailable`、服务被永久错误禁用，或捕获时关闭但当前已启用的快照时，每个执行代际最多记录一次 `AIFun native decision diagnostic` 警告，并通过 `decision_service_diagnostic` 的 result_ref 留入任务档案。记录 maid/task/generation、快照年龄、请求尝试次数、禁用原因、捕获及当前配置的 provider/启用/密钥存在性/超时，以及变化字段名。不会输出密钥、密钥摘要、端点、提示词或工具参数，也不会追加模型轮次或改变原回退行为。普通关闭状态不刷日志。
+
+新增原生检查在捕获空密钥后修改当前凭据，确认诊断能标记 `changed_fields=[key]`、captured.has_key=false/current.has_key=true、request_attempts=0，档案只记录一次且不含模拟密钥或端点。Forge 47.4.20 下 439 项 JUnit、136 项必需 GameTest、十个决策场景和 build/reobfJar 通过；日志 `build/native-decision-diagnostic-final.log`、汇总 `build/native-decision-diagnostic-report.json`。首次检查把带分页头的结果当成 JSON 解析而失败，修正测试读取方式后重跑全量，没有放宽诊断断言。
+
+已确认游戏未运行，校验旧安装 hash 与上次记录一致后，备份并替换整合包 jar；备份位于 `aifun-backups/diagnostic-20261018-133242/Touhou-AIFun-0.3.jar`，安装记录 `build/pack-native-decision-diagnostic-deployment.json`。配置替换前后 hash 相同，未修改玩家存档，需下次启动加载诊断。
+
+### 2026-10-18：Flash 与背包状态修复
+
+真实铁制背包任务执行 113.24 秒，112.29 秒为执行模型占用，工具总占用约 0.83 秒；只取到 8 个铁锭，普通背包兑换两次被误报 `projecte_backpack_full`。当时实际还有 3 个空位，但世界 `sophisticatedbackpacks-server.toml` 的 `canBePlacedInContainerItems=false`；精妙背包的 canFitInsideContainerItems 返回该配置值，TLM 的 MaidBackpackHandler 按此拒收。失败后模型又耗时约 81 秒恢复、重试、检查及查询替代物品，未进入工作台合成，随后被主人取消。来源快照及档案在 `build/backpack-crafting-diagnosis.json`。
+
+已将正式整合包与 `run/config/touhou-aifun.toml` 的 decisionModel 均改为 `["anthropic","deepseek-flash"]`，备份后只替换模型字符串，保留 475000 预算。存档只读核对酒狐 MaidAIChat.LLMModel 本来就是 deepseek-flash，LLMSite=anthropic；摘要继承当前请求的模型，联网搜索也优先 Flash。Pro 兼容目录和协议单测不是当前活动模型选择。配置修改记录 `build/all-flash-config-changes.json`，存档只读核对 `build/all-flash-maid-model-audit.json`；未编辑玩家实体或任务档案。
+
+ProjectE 兑换及工作台合成预检现在分别报告 full、insufficient_capacity、item_rejected、insertion_denied、unavailable，并附 unlocked_slots/empty_slots/eligible_slots、所需数量及容量。真实空位与 planned_inventory 中的 projected_empty_slots 分开标记；配方查询也附当前输出物品的存放状态。规则拒收不扣 EMC、不插入物品、不消耗配方材料；保留已有 partial delivery 和转移回执。工作台输出、返还物、清理网格及光标返回的拒收错误都保留具体状态。
+
+后台遇到明确不可重试的存放规则拒收或库存不可用，会在本批实际结果全部落地后暂停，并跳过后续尚未开始的动作，无需再等执行 LLM 自己解释或原样重试；普通空间不足仍保留原恢复路径。没有擅自允许背包嵌套、改世界规则、丢弃物品或腾空主人库存。
+
+Forge 47.4.20 下 439 项 JUnit、138 项必需 GameTest、12 项真实 ProjectE GameTest 和 build/reobfJar 通过，日志 `build/flash-backpack-release.log`、`build/flash-backpack-projecte-release.log`。新增回归覆盖满包、仅有部分容量、空包拒收容器物品、零解锁槽位、合成预检不消耗输入，以及先真实接收铁锭再遇拒收时保留逐槽物品和操作回执、跳过后续动作、不追加模型请求。最初新夹具未设置家园限制中心且假定原生 quick_move 的目标槽位，分别修正为明确限制中心及比较操作前后的完整库存快照；断言未放宽。未调用付费模型。
+
+部署时玩家游戏仍在运行，先将修复 jar 和一次性安装器放入整合包 `aifun-updates/flash-backpack-20261018-140237/`。首次系统旧 PowerShell 因缺少 Get-FileHash 停止且未动 jar，随后使用 PowerShell 7 启动并确认等待进程运行。玩家退出后复查发现安装器已经结束、状态仍停在 waiting_for_game_exit，旧 jar 未替换；进程结束原因尚未确认，不能把启动等待器当作部署成功。
+
+确认游戏已退出后，已同步运行安装器完成原子替换，deployment.json 状态为 installed。新安装 SHA-256 为 `394876d784bfd573731aef6014e32894a3f23a016dee231207a60c8b8fb5390a`，备份 `aifun-backups/flash-backpack-20261018-140237/Touhou-AIFun-0.3.jar` 的 SHA-256 为 `ec7639717a20af92205b9e9d426f1e2f837c28ffd67c8cc9f440351ea5746a43`，分别与暂存新包、此前安装旧包一致。再次核对 decisionModel=deepseek-flash、聊天及执行预算均为 475000；安装器只替换 jar，未修改配置或玩家存档。入口记录仍为 `build/pack-flash-backpack-update.json`，下次启动游戏加载新逻辑。
+
+
+### 2026-10-18：烧制配方、收尾追加要求与朝主人丢物品
+
+真实 MK1 任务已取到荧石粉 24、钻石 9、熔炉 1，并实际合成荧石 6、钻石块 1；当时没有玻璃回执。旧 query_recipes 只暴露工作台配方，因此只看到 alexscaves 的海玻璃碎片路线。14:54:01 追加“玻璃没现成就去熔炉烧”落在最终纠错模型请求中，旧 onSuccess 在 14:54:03 直接失败暂停，没有先调用 next 应用补充。随后返还任务曾将荧石拿到 GUI 光标，但窗口外点击被 unsupported_container_click 拒绝、Q 又因旧帧拒绝，最终放回背包，没有实际丢出。证据保留在 build/collector-execution-diagnosis.json 和 build/material-handoff-diagnosis.json。
+
+query_recipes 默认统一查询当前服务器加载的工作台、熔炉、高炉、烟熏炉和营火配方，支持 recipe_type 精确筛选；每行包含类型、设备、原料替代项、配方版本，烧制行另带实际烹饪 tick 和经验。烧制配方不宣称支持工作台自动填充，提示使用真实设备、燃料和 wait_gui。压缩后保留的配方定义涵盖烧制，并去掉旧的 output_backpack_state，避免把历史容量当当前库存。
+
+TaskCallback 在最终文本、失败回调和有序工具结算边界优先处理 pendingAmendment；补充生效后重置旧目标的纠错次数和无进展计数，重新登记完整完成条件。已有实际转移、合成与动作回执不清空。read_tool_history 也已归为只读，不再因未登记物品操作合同被误拒。前台状态明确累计转移量含中间合成产物，不能据此编造当前库存或“数量对不上”。
+
+新增 drop_items_to_owner：只在后台任务执行，使用当前女仆已解锁背包中的精确新数量；先验证整个请求、匹配 drop_to_owner 完成条件，再靠近当前主人至三格内并检查视线和投掷路径。逐堆保留 NBT、生成实际 ItemEntity，记录主人 UUID、物品、数量、实体 UUID、方向、生成位置和丢出时距离。只有实体成功加入世界且数量/NBT 相符才提交回执；生成被取消则还原原槽位。失败前已经丢出的部分仍保留回执，再次请求不得超过剩余数量。暂不在 sequence 中接受生命周期计数的 drop_to_owner，避免把旧阶段回执误用于重复阶段。
+
+完成验证读取独立持久化动作回执，背包清空本身不证明交付；成功投掷也不宣称玩家已经拾取。complete_task=true 支持本轮实际投掷结算后直接核验完成，无须额外模型收尾。该工具按完成条件自动进入执行工具表，阶段切换不会漏掉它。交付物品带持久标记，TLM 的 ItemResultPre 拒绝女仆重新拾取这类交付物，普通掉落物不受影响。
+
+新增原生回归覆盖：玻璃烧制配方发现；使用已有沙子和煤经过真实熔炉生产、收取一块玻璃且只记一次输出；实际走近主人、通过完整工具调用链完成投掷且不追加模型请求；NBT/精确数量、向主人速度、禁止 TLM 回收交付物；取消生成不扣物品、缺少合同/追加要求时不执行；归档恢复后禁止重放；旧纠错回复与旧失败都优先应用新要求并保留真实铁锭转移。烧制长等待夹具明确固定测试女仆站位，移动另由保留真实 AI 的投掷用例验证。首轮测试曾使用旧配方标题、未明确无遮挡走廊而阻塞同步 join、以及使用任务结束后的位置断言投掷时距离；分别同步标题、增加同步完成断言与显式场地、改为验证实际丢出回执中的距离。生产交互限制和回执验证没有放宽。
+
+开发及整合包配置均已核对 decisionModel=deepseek-flash，聊天和执行预算均为 475000；记录 build/owner-drop-config-audit.json。本轮未调用付费模型，未修改玩家存档或自动恢复旧任务。
+
+最终 Forge 47.4.20 下 439 项 JUnit、144 项必需 GameTest、12 项真实 ProjectE GameTest 及 build/reobfJar 通过；报告 build/owner-drop-validation.json，原生日志 build/owner-drop-pinned-validation.log，ProjectE 日志 build/owner-drop-projecte-validation.log。发布 jar 含新工具和动作类、含 refmap、不含 QA 类，SHA-256 为 ec25dfb47a297801396729147460f75b12ace2a6e81676eb20cafeb688c4e191。测试期间两份正式/开发配置逐字节未变。
+
+玩家游戏进程仍运行，修复包已验证并暂存至整合包 aifun-updates/owner-handoff-20261018-152541/，尚未覆盖 mods 下的旧 jar；入口 build/pack-owner-drop-update.json，deployment.json 状态 ready_waiting_for_game_exit，未启动后台等待器，不承诺自动替换。退出游戏后可同步运行该目录安装器，按旧 hash 校验、原子备份替换及新 hash 校验完成安装。
+
+
+### 2026-10-18：纯合成任务避免擅自添加交付与多轮收尾
+
+真实蛋糕任务的主人原话仅为“你帮我做一个蛋糕。”。15:25:26.787 已产出并交付女仆背包，但执行器自行添加“把蛋糕交给主人”步骤，随后查询附近实体、重复加载 open_gui、尝试打开主人菜单并收到 no_server_menu，再声明 complete=true。最后实际合成到完成相隔 14.298 秒、四轮模型请求；最终 completion_verification 本身仅 0.0458 毫秒。同日志拾取/堆叠升级任务使用末次动作直接请求完成，最后实际合成到任务完成约 3.9 毫秒。诊断 build/crafting-acceptance-diagnosis.json。
+
+收紧前台入队目标、规划工具、执行规则和合成动作说明：仅要求合成时，目标终点是女仆背包内有足量成品，不擅自加交付/丢弃/返程/检查里程碑；在末次 craft_recipe 上直接带 complete_task=true，实际产出、清理、按序结算后核验完整合同。说明中的 delivers 改为明确放入 MAID backpack。主人明确要求的交付、到达和恢复条件仍必须有各自证据；没有增加仅凭已有库存自动完成的捷径，没有取消显式完成声明或降低原验证门槛。本轮没有付费模型对照，提示词能否稳定减少实际 Flash 收尾轮数仍待上线实测。
+
+本轮 439 项单测、144 项原生 GameTest、build/reobfJar 通过，报告 build/crafting-acceptance-validation.json。该回归确认末次合成声明可在结算后直接完成且不追加模型调用，不代表已经测得实际 Flash 提示词优化后的耗时降幅。新包 SHA-256 为 8709a7e6a7e96ae53bac3c7bdec723269b5e8d0893b83e22b11e1507382a684a，已暂存 aifun-updates/crafting-acceptance-20261018-153032/，包含上一轮全部修复。游戏仍在运行，mods 旧包未覆盖；上一暂存包已标记 superseded，当前入口 build/pack-crafting-acceptance-update.json（build/pack-owner-drop-update.json 也指向新包）。Flash 和两处 475000 配置 hash 保持不变。
+
+2026-10-18 15:51：玩家要求安装后，确认游戏已退出，同步运行暂存安装器完成替换。新安装 SHA-256 为 8709a7e6a7e96ae53bac3c7bdec723269b5e8d0893b83e22b11e1507382a684a，旧包备份 aifun-backups/crafting-acceptance-20261018-153032/Touhou-AIFun-0.3.jar 的 SHA-256 为 394876d784bfd573731aef6014e32894a3f23a016dee231207a60c8b8fb5390a，均与预期一致。配置替换前后 hash 不变，再次确认 Flash 和聊天/执行双 475000；未修改玩家存档或自动恢复任务。安装记录 build/pack-crafting-acceptance-installed.json，下次启动加载新逻辑。
+
+
+### 已有阶段的自动有限接管（2026-10-18）
+
+独立服务启用后，无需打开 `startupTemplates` 或加载 `group:task_actions`：普通 `update_task_plan` 已登记完整验收条件时，运行时可从当前阶段的同方向多容器转移条件生成有限候选。候选只包含本代扫描确认、仍未完成的授权容器；不读取关闭容器库存来推测可取数量。决策服务只选择下一容器，代码执行开箱、按当前合法槽位和剩余回执数量转移、关箱。唯一候选继续段直接执行，不额外请求决策模型。
+
+当前自动入口要求阶段为同方向 transfer；向外交付阶段还可附带只读的 backpack_empty 最终验收条件，该条件始终由完整合同核验，不会生成清空或丢弃额外物品的动作；合成、混合取放、未知目标、其他谓词混合阶段继续交给执行 Flash。完整合同、描述计划、主人追加要求、净转移和动作回执均不被生成的执行段替换。顺序阶段只处理 activeCompletion；阶段改变后清理旧段和菜单，重新绑定新阶段，不能沿用上一阶段的槽位编号。运行代际重建仍丢弃旧脚本，重新扫描并按已持久化回执计算剩余量。低置信度、请求失败、现场改变或动作失败均回退，当前阶段不反复探测同一个失败入口。
+
+诊断新增：服务启用但连续三次交给执行模型且没有请求时，或任务收尾仍未请求时，最多留一次 `decision_service_diagnostic`。记录绕过原因计数、执行模型接管次数、启动模板开关、请求尝试次数和配置存在性，区分没有登记合同、阶段不支持、唯一动作、目标缺少新观察、阶段已回退等情况；诊断不发探测 HTTP，不含凭据、URL 或主人文本。
+
+
+阶段调度只改变同一已授权阶段内的容器先后顺序，所有候选都是必须完成的工作。服务概率分布经协议校验后，采用其最高概率候选；这里不把多个合法顺序之间较低的偏好置信度当作语义错误。目标解释、参数选择等原有决策仍保留 minConfidence 门槛；返回 llm、现场变动或服务器操作校验失败仍回退。已经打开且属于当前未完成阶段的菜单直接复用，无需再次选择目标或开箱。真实复测必须同时检查 decision_response 和自动操作实际 world_mutation，不能把仅发请求后回退算作成功接管。
+
+
+本轮最终验证（同一发布 jar，SHA-256 `457f878151c923e8b7af2e45206c2c02c8af008c38b44a738634be98c20dec30`）：445 项 JUnit、144 项必需 Forge GameTest 全部通过，原生决策场景扩展到 17 项，覆盖同阶段低偏好置信度、原文本计划进度不被 GUI 子步骤覆盖、已有菜单复用、主人追加要求使待处理选择失效，以及取出后归还的跨阶段净量回执。测试场景遵守生产共享的 10 次/秒请求门槛，按真实时间间隔启动，未放宽运行时门槛。
+
+真实 API 对照在隔离 Forge 世界执行四源箱取材、查询实际配方、合成八件产品、四目标箱交付，并中途追加红石要求、强制压缩已完成历史。两组交换开关运行顺序；全部检查了累计实际搬运量、原始数量/保护物品、顺序里程碑、最终背包/菜单、追加要求和压缩回执。最终第一组：关闭 49.4868 秒、21 次 Flash；开启 38.6377 秒、14 次 Flash 加 4 次原生请求（其中一次已失效而未派发）。第二组：关闭 49.5321 秒、20 次 Flash；开启 45.1092 秒、20 次 Flash 加 1 次原生请求。实测耗时分别下降 21.92% 和 8.93%；总 HTTP 次数并未稳定下降，分别 21→18 和 20→21。
+
+第一组 Flash 总 token 595715→374303，未缓存输入 141380→108307；但已失效原生回复的 usage 未保留，报告明确将合计 token 标为不完整。第二组合计已报告 token 530387→557463，增加约 5.1%；Flash 未缓存输入 136563→134902。不能据此宣称所有任务或 token 都稳定改善。早期未接管、纠错变慢的探索结果另存，不并入最终版本效果。详细证据见 `build/decision-stage-validation.json` 和两份 `decision-stage-live-final-pair*-report.json`。
+
+已备份并替换整合包发布 jar，核验安装与备份哈希；玩家配置字节未改变，执行模型仍为 `deepseek-flash`，LLM 和后台输入预算均为 475000，启动模板仍关闭。整合包实际游玩日志须待下次启动产生，以上耗时不是对整套 SST 存档的实测保证。日志新增 `AIFun native decision response`，可直接看到真实返回模型和调用用途；只有服务器回执才证明动作完成。
+
+## 任务外播：状态化回应与失败原因（2026-10-18）
+
+COMMON `[agentRuntimeV1].taskAnnouncements` 是新增的单一配置，控制任务队列三类外播：排队回执（接单／替换／追加／恢复／停止／暂停）、完成通知和失败暂停通知。
+
+`brief`（默认）不再使用固定台词。运行时在回执中发布权威调度状态 `controlled_task_dispatch`：`starting_now`（空闲，马上开始）、`waiting`（手头还有未完成任务）、`paused`（队列暂停）、`amendment_next_boundary`（当前任务执行中修改细节，下个动作边界应用）、`amendment_pending`（暂停中修改，继续后应用）、`resuming`（继续此前任务）、`stopped`／`queue_paused`、`nothing_to_resume`。回执同时附带接受的目标、主人补充原文和当前在忙的目标；前台模型据此和女仆人设自行生成一句自然、短小的回应——空闲开干时说「好，我这就去」「好，开干」一类的话，手头忙时说「记下了，忙完就去」，中途改细节时说「了解，改成……是吧」。这些只是风格提示而非脚本，模型可以按心情复述大致内容；队列位置、队列数量等机械细节仍不进入聊天。
+
+完成／失败通知在 `brief` 下也由一条**后台小请求**措辞：请求附带女仆角色设定摘录和有界的最近聊天摘录，让这句话像聊天续句而不是状态汇报；只收到完成／失败、接受的目标和等待任务数，不接收完成条件、技术错误或失败原因。聊天语言与 TTS 语言不同时，请求返回 `{"chat":...,"tts":...}` 两个字段，分别用于气泡与朗读；同语言时只有一句。输出被压成单行短句（最多 120 个码点），任务队列会等这条通知就绪后按序发送。
+
+通知在显示气泡的同时通过女仆已配置的 TTS 站点朗读（受 `TTSEnabled`、站点启用状态、私密女仆主人有可用连接等条件限制；系统／本地 TTS 由 TLM 自己写入气泡，运行时不重复添加）。没有 TTS 或不可用时仍显示文字气泡；凭据缺失、站点不可用、请求失败、超时或答案不可用时回退到固定短句（“做完啦～”／“这个先卡住啦，等下再弄吧～”），并记录 `AIFun task announcement ... source=fallback`。失败原因仍只写日志，并在主人明确询问时由回复守卫明确告知。这条小请求不复用聊天流程、不写聊天历史、不参与 TTS 流式回复。
+
+`detailed` 保留旧版确定性完整回执（目标、队列位置、等待数量和结果）与完整完成／失败通知，便于需要精确文本的部署；`silent` 不发送任务通知，排队回执同样交给模型自然回应，但禁止播报完成、失败、队列位置／数量或状态。
+
+无论模式如何，完整事实都写入服务端日志：控制动作、女仆 UUID、任务 id、目标、状态、队列位置、队列是否暂停、推导出的 dispatch，以及完成／失败的成功标志、等待数量、完整结果；执行模型或档案不可用导致的暂停也记录原因。日志行分别以 `AIFun task control`、`AIFun task outcome`、`AIFun task paused` 开头，不进入聊天或 TTS。
+
+主人明确询问失败原因时不受静音配置影响：前台回复守卫识别「为什么失败／卡住／暂停／没做完」等问法，在有暂停或失败任务时直接返回运行时记录的 `outcome`（含目标、暂停或失败状态、具体原因），内容过长时仍保留前 1024 字符；没有记录到具体原因时会说明可能是被暂停、重新载入或主人停止，而不是用模糊句子带过。普通聊天和与任务无关的问题不会被该守卫改写。
+
+`taskAnnouncements` 默认 `brief`，普通聊天、语音、GUI 队列预览与 `task_control(action=status)` 均不受影响；后者仍可显式查询完整事实。部署后需要重启服务器加载新配置键，旧 `touhou-aifun.toml` 缺少该键时会自动写入默认值。
+
+本轮验证：Java 17 / Forge 47.2.0 下 `test build` 通过 484 项 JUnit（含三档文案、dispatch 提示词、后台措辞提示词／角色与最近聊天上下文、双语输出拆分、单行清洗、日志调用和失败原因问法／回答的单测），`runGameTestServer -PguiQa -PguiQaRunId=ann20261018i` 在全新测试世界通过 146 项必需 GameTest，新增场景覆盖空闲时 dispatch=starting_now、前序未完成任务时 dispatch=waiting、brief 走模型而不是固定回执、后台措辞成功走 `source=model`、措辞失败回退固定短句、detailed 失败通知保留目标／原因／等待数量、silent 完全不发送通知且仍可查询状态、失败原因按记录回答，以及空队列卸载/重载后不保持暂停、未完成任务重载后仍暂停。QA 配置没有 API key，因此大部分场景走了 `source=fallback`（不会发起真实请求）；措辞成功路径由 GameTest 的确定性替身覆盖，未验证真实模型输出质量。语音只在真实客户端播放，GameTest 使用 FakePlayer 时按设计跳过 TTS，因此本轮没有对实际音频播放、音色、双语朗读或 TTS 站点失败回退做听感验收，需要客户端实测。首次复用旧 `build/gui-qa-server` 世界运行出现的失败是测试世界任务档案已满（`world_task_archive_full`），与本功能逻辑无关；全新运行目录下全部通过。日志中的 `AIFun task control` / `AIFun task outcome` / `AIFun task paused` / `AIFun task announcement` 行可直接核对被静音模式隐藏的完整事实。
+
+## 空队列不再跨重载保持暂停（2026-10-18）
+
+玩家 `run/logs/latest.log` 两次在游戏重启后的第一条任务指令都显示 `queuePaused=true`，但队列里除了新任务没有其他未完成任务，手动继续后立即正常完成（19:49:56→19:50:16、20:22:53→20:23:13）。根因是两处无条件暂停：女仆卸载/关服时 `suspend()` 即使队列为空也把 `paused=true` 写入检查点；重新载入 `entry()` 时又无条件执行 `world_reloaded` 暂停。修复为只有存在未完成任务（或主人显式暂停）时才保持暂停，空队列在卸载和载入时清除 `paused`。队列里确有未完成任务时仍按原设计暂停并等待主人“继续”，执行器恢复时先重新观察现场。
+
+新增诊断日志 `AIFun task queue suspended`、`AIFun task queue not paused`、`AIFun task queue reloaded`，直接记录女仆 UUID、暂停原因和未完成任务数，用来区分“空队列残留暂停”和真正需要主人确认的暂停。
+
+对应 GameTest `emptyQueueIsNotLeftPausedAfterUnloadReload` 同时断言：空队列在卸载/重载后 `paused=false`；存在未完成任务时仍 `paused=true`，任务 `outcome` 记录 `world_reloaded`，必须显式继续。`runGameTestServer -PguiQa -PguiQaRunId=ann20261018i` 的全部 146 项必需 GameTest 通过。
+
+## 完成外播不再等待收尾模型往返（2026-10-18）
+
+`run/logs/latest.log` 的 20:23 会话显示收尾本身已经很快：最后一次世界操作（关闭菜单）在 20:23:13.306 完成，任务在 20:23:13.312 结束，`last_mutation_to_finish` 仅 14.6 ms。但主人到 20:23:14.414 才看到完成气泡，语音流也在此之后才开始；差值几乎全部是 `notification_wait`（1106.7 ms）——`brief` 模式的完成措辞是一条独立的小模型请求（本次响应头 789 ms、首字 923 ms），任务结束必须等它返回。客户端日志里 2.2 秒后再次出现的同一条聊天行是 StepFun 流式语音结束回调再次写入气泡（聊天栏去重已单独处理），不代表外播又多等了 2.2 秒。
+
+措辞请求只需要任务目标和成功/失败标志，两者在任务开始执行时已知。`TaskAnnouncementPrefetch` 现在在任务真正开始执行时（`AgentRuntime.tick`，且 `taskAnnouncements=brief`）就在后台发出这条请求，并按 `(女仆 UUID, 任务 id)` 缓存；`AgentRuntime.finished` 在核验成功后直接取用已就绪的结果。以下情况不会使用预取措辞，而是回退到原来的按需请求或固定短句：目标文本或 `goalVersion` 变化（主人中途补充，`TaskCallback.next` 会为补充后的目标重新预取一次）、任务失败、任务被停止/暂停/卸载，或条目超过 30 分钟未使用。取用即释放；任务结束、停止、暂停、卸载都会清除该女仆的缓存；缓存最多 64 条，超出时淘汰最旧的。
+
+诊断日志：`AIFun task announcement ... source=prefetched` 表示使用了预取措辞，`source=model` / `source=fallback` 与之前一致。`notification_wait` span 会从一次模型往返（本会话 1106.7 ms）降到下一个服务器 tick。每个开始执行的任务最多增加一条小请求（中途修改目标会重新预取一次）；`detailed`/`silent` 模式和未开始执行的任务不增加请求。
+
+本轮验证：Java 17 / Forge 47.2.0 下 `test build` 通过 491 项 JUnit（新增 7 项 `TaskAnnouncementPrefetchTest`：同目标只请求一次并可复用一次、重复预取不重复发请求、目标文本或 `goalVersion` 变化即作废、失败预取仍会回退固定短句、按女仆清理不影响其他女仆、未预取任务不受影响），`runGameTestServer -PguiQa -PguiQaRunId=tailprefetch20261018` 在全新测试世界通过 147 项必需 GameTest，新增场景 `preparedAnnouncementWordingIsDeliveredWithoutAnotherRequest` 让按需措辞请求永远不会完成，仍能在外播 tick 直接送出预取措辞，证明完成通知不再依赖收尾模型请求。日志中可见 `AIFun task announcement ... source=prefetched`。本轮没有发起真实付费模型回放：1.1 秒等待来自 20:23 客户端日志的既有测量，预取把 `notification_wait` 降到一次 tick 的结论需要下次客户端实测确认；语音首块仍受 StepFun 流式会话建立影响。

@@ -123,7 +123,7 @@ public final class FourChestNavigationGameTests {
         }
         var runner=new Runner();helper.onEachTick(()-> { if(runner.active) try {Thread.sleep(50);}catch(InterruptedException interrupted) {Thread.currentThread().interrupt();runner.restore();helper.fail("Live fixture interrupted");} });runner.begin();
     }
-    @GameTest(template="four_chests",templateNamespace="aifun_gui_test",timeoutTicks=2400)
+    @GameTest(batch="isolated_fourSignedChestsOpenWithRealNavigationFromDifferentOffsets",template="four_chests",templateNamespace="aifun_gui_test",timeoutTicks=2400)
     public static void fourSignedChestsOpenWithRealNavigationFromDifferentOffsets(GameTestHelper helper) {
         var owner=helper.makeMockPlayer();
         var ownerPosition=helper.absolutePos(new BlockPos(4,1,5));
@@ -198,7 +198,7 @@ public final class FourChestNavigationGameTests {
         }
         new Runner().begin();
     }
-    @GameTest(template="four_chests",templateNamespace="aifun_gui_test",timeoutTicks=120)
+    @GameTest(batch="isolated_finishedApproachOutsideInteractionRangeIsReplanned",template="four_chests",templateNamespace="aifun_gui_test",timeoutTicks=120)
     public static void finishedApproachOutsideInteractionRangeIsReplanned(GameTestHelper helper) throws Exception {
         prepareFloor(helper);var chest=new BlockPos(0,1,2);helper.setBlock(chest,Blocks.CHEST);
         var maid=helper.spawn(InitEntities.MAID.get(),new BlockPos(4,1,2));maid.setNoAi(false);maid.setInvulnerable(true);
@@ -226,7 +226,7 @@ public final class FourChestNavigationGameTests {
         }
         helper.runAfterDelay(1,new Poll()::run);
     }
-    @GameTest(template="four_chests",templateNamespace="aifun_gui_test",timeoutTicks=120)
+    @GameTest(batch="isolated_fractionalChestTopStandingHeightCannotLoopOnFinishedApproach",template="four_chests",templateNamespace="aifun_gui_test",timeoutTicks=120)
     public static void fractionalChestTopStandingHeightCannotLoopOnFinishedApproach(GameTestHelper helper) throws Exception {
         prepareFloor(helper);var chest=new BlockPos(2,1,1);helper.setBlock(chest,Blocks.CHEST);
         helper.setBlock(new BlockPos(2,1,4),Blocks.CHEST);

@@ -62,6 +62,13 @@ public final class AgentTaskState {
         catch (RuntimeException ignored) { }
     }
     private void recordObject(com.google.gson.JsonObject value) {
+        if (value.has("kind") && value.get("kind").getAsString().equals("drop_to_owner") && value.has("success") && value.get("success").getAsBoolean()
+                && value.has("entity_uuid") && value.has("owner_uuid") && value.has("item") && value.has("dimension") && value.has("dropped_count") && value.get("dropped_count").getAsInt()>0) {
+            if(actionFacts.stream().noneMatch(f->java.util.Objects.equals(f.get("entity_uuid"),value.get("entity_uuid")))) {
+                if(actionFacts.size()>=256)throw new IllegalStateException("task_action_fact_limit");
+                actionFacts.add(value.deepCopy());
+            }
+        }
         if(value.has("kind") && value.get("kind").getAsString().equals("eat_food") && value.has("success")
                 && value.get("success").getAsBoolean() && value.has("servings_consumed") && value.get("servings_consumed").getAsInt()>0) {
             var previous=actionFacts.stream().filter(f->java.util.Objects.equals(f.get("dimension"),value.get("dimension"))
@@ -149,7 +156,7 @@ public final class AgentTaskState {
                 throw new IllegalArgumentException("invalid_completion_condition: composite requires explicit kind=all or kind=sequence; keep every owner requirement and fill missing leaf fields");
             var required=new ArrayList<String>();
             if(!Set.of("all","sequence").contains(kind))required.add("dimension");
-            if(Set.of("transfer","inventory").contains(kind))required.addAll(List.of("item","count"));
+            if(Set.of("transfer","inventory","drop_to_owner").contains(kind))required.addAll(List.of("item","count"));
             if(Set.of("transfer","position","container_unchanged").contains(kind))required.add("position");
             if(kind.equals("transfer"))required.add("to_maid");
             if(kind.equals("maid_state"))required.addAll(List.of("state","value"));
@@ -162,7 +169,7 @@ public final class AgentTaskState {
                 for(var phase:phases) {
                     var child=phase.getAsJsonObject();if(completionKind(child).equals("sequence"))throw new IllegalArgumentException();validateCompletion(child);
                     // Consumption facts currently have lifetime scope, so they cannot prove repeated ordered phases.
-                    if(AgentCompletionRules.leaves(child).stream().anyMatch(c->completionKind(c).equals("eat_food")))throw new IllegalArgumentException();
+                    if(AgentCompletionRules.leaves(child).stream().anyMatch(c->Set.of("eat_food","drop_to_owner").contains(completionKind(c))))throw new IllegalArgumentException();
                 }
                 return spec.deepCopy();
             }
@@ -173,6 +180,11 @@ public final class AgentTaskState {
                 return spec.deepCopy();
             }
             if (spec.get("dimension").getAsString().isBlank()) throw new IllegalArgumentException();
+            if(kind.equals("drop_to_owner")) {
+                if(spec.get("item").getAsString().isBlank() || spec.get("count").getAsInt()<1 || spec.get("count").getAsInt()>4096
+                        || spec.get("count").getAsDouble()!=spec.get("count").getAsInt())throw new IllegalArgumentException();
+                return spec.deepCopy();
+            }
             if(kind.equals("backpack_empty")) return spec.deepCopy();
             if(kind.equals("container_unchanged")) {
                 if(spec.getAsJsonArray("position").size()!=3)throw new IllegalArgumentException();
@@ -242,6 +254,22 @@ public final class AgentTaskState {
             throw new IllegalArgumentException("task_transfer_exceeds_remaining: remaining=" + remaining + "; recorded transfers must not be replayed");
     }
 
+    public long droppedToOwner(String dimension,String owner,String item) {
+        return actionFacts.stream().filter(f->f.has("kind") && f.get("kind").getAsString().equals("drop_to_owner")
+                && f.has("success") && f.get("success").getAsBoolean() && f.has("entity_uuid")
+                && dimension.equals(f.get("dimension").getAsString()) && owner.equals(f.get("owner_uuid").getAsString()) && item.equals(f.get("item").getAsString()))
+                .mapToLong(f->f.get("dropped_count").getAsLong()).sum();
+    }
+    public void checkDropAllowance(String dimension,String owner,String item,long amount) {
+        if(completion==null || !pendingAmendment.isBlank())throw new IllegalArgumentException("drop_completion_required");
+        long requested=-1;
+        for(var condition:AgentCompletionRules.leaves(activeCompletion()))
+            if(completionKind(condition).equals("drop_to_owner") && condition.get("dimension").getAsString().equals(dimension) && condition.get("item").getAsString().equals(item))
+                requested=Math.max(requested,condition.get("count").getAsLong());
+        if(requested<0)throw new IllegalArgumentException("drop_to_owner_completion_required: inventory absence does not prove delivery");
+        long remaining=requested-droppedToOwner(dimension,owner,item);
+        if(amount<=0 || amount>remaining)throw new IllegalArgumentException("task_drop_exceeds_remaining: remaining="+Math.max(0,remaining)+"; committed drops must not be replayed");
+    }
     public void checkConsumptionAllowance(String dimension, String food, com.google.gson.JsonArray position) {
         boolean recorded=actionFacts.stream().anyMatch(f -> f.has("dimension") && f.get("dimension").getAsString().equals(dimension)
                 && f.has("block_id") && f.get("block_id").getAsString().equals(food) && f.has("position")

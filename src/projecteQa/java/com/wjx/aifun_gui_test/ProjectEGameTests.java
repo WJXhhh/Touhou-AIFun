@@ -39,6 +39,7 @@ public final class ProjectEGameTests {
         final GameTestHelper helper; final Owner owner; final EntityMaid maid; final LLMCallback callback; final BlockPos target;
         int callId;
         boolean faultOnSecondInsert;
+        boolean unavailable;
         int insertions;
         Fixture(GameTestHelper helper) {
             this.helper = helper; owner = new Owner(helper);
@@ -49,6 +50,7 @@ public final class ProjectEGameTests {
             maid = new EntityMaid(InitEntities.MAID.get(), helper.getLevel()) {
                 @Override public net.minecraft.world.entity.LivingEntity getOwner() { return owner; }
                 @Override public net.minecraftforge.items.wrapper.CombinedInvWrapper getAvailableBackpackInv() {
+                    if(unavailable)return new net.minecraftforge.items.wrapper.CombinedInvWrapper(new net.minecraftforge.items.ItemStackHandler(0));
                     var actual=super.getAvailableBackpackInv();
                     if(!faultOnSecondInsert)return actual;
                     return new net.minecraftforge.items.wrapper.CombinedInvWrapper(actual) {
@@ -178,10 +180,36 @@ public final class ProjectEGameTests {
             f.knowledge().setEmc(BigInteger.valueOf(999999));
             for(int i=0;i<f.maid.getAvailableBackpackInv().getSlots();i++)f.put(i,new ItemStack(Items.COBBLESTONE,64));
             f.error(f.exchange("minecraft:iron_ingot",3),"stale_slots_reinspect"); f.observe();
-            f.error(f.exchange("minecraft:iron_ingot",3),"projecte_backpack_full");
+            var full=f.exchange("minecraft:iron_ingot",3);f.error(full,"projecte_backpack_full");
+            helper.assertTrue(full.getAsJsonObject("backpack_state").get("state").getAsString().equals("full") && full.getAsJsonObject("backpack_state").get("empty_slots").getAsInt()==0,"Occupied storage is distinguished from a rejected item");
             helper.assertTrue(f.knowledge().getEmc().equals(BigInteger.valueOf(999999)) && f.count(Items.IRON_INGOT)==0,"No EMC consumed on full bag");
+            f.put(0,ItemStack.EMPTY);f.observe();var limited=f.exchange("minecraft:iron_ingot",65);f.error(limited,"projecte_backpack_full");
+            helper.assertTrue(limited.getAsJsonObject("backpack_state").get("state").getAsString().equals("insufficient_capacity")
+                    && limited.getAsJsonObject("backpack_state").get("empty_slots").getAsInt()==1 && limited.getAsJsonObject("backpack_state").get("simulated_accept_count").getAsInt()==64
+                    && f.knowledge().getEmc().equals(BigInteger.valueOf(999999)) && f.count(Items.IRON_INGOT)==0,"Partially sufficient capacity reports the exact reservation without partial insertion or payment");
             f.put(0,new ItemStack(Items.BEDROCK)); f.observe(); f.error(f.deposit(0,1),"projecte_item_has_no_sell_emc");
             helper.assertTrue(f.count(Items.BEDROCK)==1,"Priceless item never burned"); helper.succeed();
+        }
+    }
+    @GameTest(batch="projecte",template="empty",templateNamespace="aifun_projecte_test")
+    public static void distinguishesRejectedContainerItemsFromFullStorageWithoutSpendingEmc(GameTestHelper helper) {
+        try(var f=new Fixture(helper)) {
+            helper.assertTrue(EMCHelper.getEmcValue(Items.SHULKER_BOX)>0,"Actual ProjectE knows an EMC price for a non-nestable container");
+            f.knowledge().addKnowledge(new ItemStack(Items.SHULKER_BOX));f.knowledge().setEmc(BigInteger.valueOf(999999));f.open();
+            var result=f.exchange("minecraft:shulker_box",1);f.error(result,"projecte_item_rejected_by_backpack");
+            var storage=result.getAsJsonObject("backpack_state");
+            helper.assertTrue(storage.get("state").getAsString().equals("item_rejected") && storage.get("empty_slots").getAsInt()>0
+                    && storage.get("eligible_slots").getAsInt()==0 && storage.get("reason").getAsString().equals("container_item_disallowed") && !result.get("retryable").getAsBoolean(),"Empty slots do not imply permission to receive a container item");
+            helper.assertTrue(f.count(Items.SHULKER_BOX)==0 && f.knowledge().getEmc().equals(BigInteger.valueOf(999999)),"Rejection never spends EMC or inserts an item");helper.succeed();
+        }
+    }
+    @GameTest(batch="projecte",template="empty",templateNamespace="aifun_projecte_test")
+    public static void unavailableStorageIsNotMisreportedAsFullOrItemRejection(GameTestHelper helper) {
+        try(var f=new Fixture(helper)) {
+            f.knowledge().addKnowledge(new ItemStack(Items.IRON_INGOT));f.knowledge().setEmc(BigInteger.valueOf(999999));f.unavailable=true;f.open();
+            var result=f.exchange("minecraft:iron_ingot",1);f.error(result,"maid_backpack_unavailable");
+            helper.assertTrue(result.getAsJsonObject("backpack_state").get("state").getAsString().equals("unavailable")
+                    && !result.get("retryable").getAsBoolean() && f.knowledge().getEmc().equals(BigInteger.valueOf(999999)),"No unlocked storage is a separate non-mutating blocker");helper.succeed();
         }
     }
     @GameTest(batch="projecte",template="empty",templateNamespace="aifun_projecte_test")

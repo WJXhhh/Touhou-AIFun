@@ -80,6 +80,9 @@ public abstract class PapiReplacerMixin {
         // LLM that can receive the tools, including providers whose native prompt is otherwise fixed.
         result += touhouAIFun$visionGuidance();
         result += touhouAIFun$speakerRelationshipGuidance();
+        if (TouhouAIFunConfig.SPEC.isLoaded() && TouhouAIFunConfig.COMBAT_ENABLED.get()) {
+            result += com.wjx.touhou_aifun.maid.combat.MaidCombatPrompts.all(maid);
+        }
 
         cir.setReturnValue(result);
     }

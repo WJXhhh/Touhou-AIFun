@@ -32,6 +32,9 @@ public final class BlockInteractionGameTests {
         EntityMaid maid = helper.spawn(InitEntities.MAID.get(), pos);
         maid.setNoAi(!moving);
         maid.setInvulnerable(true);
+        // Approach validation checks neighbouring chunks even for an immobile actor.
+        // Test layout near a chunk edge must not turn an enclosed-target case into an unloaded-region case.
+        FourChestNavigationGameTests.prepareNavigationChunks(maid);
         return maid;
     }
 
@@ -131,7 +134,7 @@ public final class BlockInteractionGameTests {
                 if (!wall.equals(new BlockPos(2,1,2))) helper.setBlock(wall, Blocks.GLASS);
             helper.assertTrue(MaidBlockInteraction.hit(maid, target) == null, "Transparent glass also blocks clicking");
             var result = open(maid, target).join();
-            helper.assertTrue(result.has("error") && result.get("error").getAsString().equals("unreachable"), "Enclosed chest has no valid approach");
+            helper.assertTrue(result.has("error") && result.get("error").getAsString().equals("unreachable"), "Enclosed chest has no valid approach: "+result);
             helper.assertTrue(MaidGuiSessionManager.session(maid.getUUID()) == null, "Failed opening leaves no menu/session");
             helper.succeed();
         } finally { clean(maid); }

@@ -13,7 +13,7 @@ import java.util.*;
 public class TaskPlanningTool implements ITool<JsonObject> {
     @Override public String id() { return "update_task_plan"; }
     @Override public boolean trigger(EntityMaid maid,ChatCompletion request) { return AgentRuntime.enabled(maid); }
-    @Override public String summary(EntityMaid maid) { return "Register a short plan and the FULL missing completion contract before mutations, covering every owner requirement. Once registered, execute actions directly; progress/tool selection alone does not need another planning call. GUI calls accept optional next_step/next_allowed_tools. complete=true at the final index requests live verification. Existing conditions cannot be weakened."; }
+    @Override public String summary(EntityMaid maid) { return "Register a short plan and the FULL missing completion contract before mutations, covering every owner requirement without inventing extra handoff or travel. A craft-only goal ends with verified products in the maid backpack; runtime verification is not a separate physical step. Once registered, execute actions directly; progress/tool selection alone does not need another planning call. GUI calls accept optional next_step/next_allowed_tools. complete=true at the final index requests live verification. Existing conditions cannot be weakened."; }
     @Override public Parameter parameters(ObjectParameter root,EntityMaid maid) {
         return parameters(root,maid,false);
     }

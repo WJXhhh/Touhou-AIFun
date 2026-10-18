@@ -11,6 +11,7 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 import org.apache.commons.lang3.StringUtils;
 import com.wjx.touhou_aifun.compat.ai.qwen.QwenShared;
+import com.wjx.touhou_aifun.compat.ai.stt.BufferedSTTClient;
 
 import javax.sound.sampled.AudioFormat;
 import javax.sound.sampled.Mixer;
@@ -31,7 +32,7 @@ import java.util.Base64;
  * {@code qwen3-asr-*} family; the async {@code fun-asr}/{@code *-filetrans} models and the
  * realtime {@code paraformer} model use different protocols.
  */
-public class QwenSTTClient implements STTClient {
+public class QwenSTTClient implements STTClient, BufferedSTTClient {
     private static final AudioFormat FORMAT = new AudioFormat(16000, 16, 1, true, false);
     private static final Duration MAX_TIMEOUT = Duration.ofSeconds(30);
 
@@ -50,23 +51,32 @@ public class QwenSTTClient implements STTClient {
             callback.onFailure(null, new Throwable("No suitable microphone found"), ErrorCode.MICROPHONE_NOT_FOUND);
             return;
         }
-        String apiKey = QwenShared.resolveSecretKey(this.site.getSecretKey());
+        MicrophoneManager.startRecord(info.getName(), FORMAT, data -> transcribe(data, callback));
+    }
+
+    @Override
+    public void transcribe(byte[] wav, ResponseCallback<String> callback) {
+        URI uri;
+        String apiKey;
+        try {
+            apiKey = QwenShared.resolveSecretKey(this.site.getSecretKey());
+            uri = URI.create(this.site.url());
+        } catch (RuntimeException invalid) {
+            callback.onFailure(null, invalid, ErrorCode.REQUEST_SENDING_ERROR);
+            return;
+        }
         if (apiKey == null) {
             callback.onFailure(null, new IllegalArgumentException("Qwen API key is empty"), ErrorCode.REQUEST_SENDING_ERROR);
             return;
         }
-        URI uri = URI.create(this.site.url());
-
-        MicrophoneManager.startRecord(info.getName(), FORMAT, data -> {
-            HttpRequest request = HttpRequest.newBuilder().uri(uri)
-                    .header(HttpHeaders.CONTENT_TYPE, MediaType.JSON_UTF_8.toString())
-                    .header(HttpHeaders.AUTHORIZATION, "Bearer " + apiKey)
-                    .POST(HttpRequest.BodyPublishers.ofString(buildRequestBody(data), StandardCharsets.UTF_8))
-                    .timeout(MAX_TIMEOUT)
-                    .build();
-            httpClient.sendAsync(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8))
-                    .whenComplete((response, throwable) -> handle(callback, response, throwable, request));
-        });
+        HttpRequest request = HttpRequest.newBuilder().uri(uri)
+                .header(HttpHeaders.CONTENT_TYPE, MediaType.JSON_UTF_8.toString())
+                .header(HttpHeaders.AUTHORIZATION, "Bearer " + apiKey)
+                .POST(HttpRequest.BodyPublishers.ofString(buildRequestBody(wav), StandardCharsets.UTF_8))
+                .timeout(MAX_TIMEOUT)
+                .build();
+        httpClient.sendAsync(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8))
+                .whenComplete((response, throwable) -> handle(callback, response, throwable, request));
     }
 
     @Override

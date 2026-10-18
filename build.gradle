@@ -213,7 +213,20 @@ if (project.hasProperty('guiQa')) {
             workingDirectory project.file(chestQaDirectory)
         }
         property 'forge.enabledGameTestNamespaces', (project.hasProperty('fourChestQa') || project.hasProperty('fourChestLiveQa') || project.hasProperty('foregroundLiveQa'))
-                ? 'aifun_gui_test,aifun_four_chest_test' : 'aifun_gui_test'
+                ? 'aifun_gui_test,aifun_four_chest_test,aifun_observation_regression_test,aifun_native_decision_test' : 'aifun_gui_test,aifun_observation_regression_test,aifun_native_decision_test'
+        if (project.hasProperty('nativeDecisionQa')) {
+            workingDirectory project.file(chestQaDirectory)
+            property 'forge.enabledGameTestNamespaces', 'aifun_native_decision_test'
+            if (project.hasProperty('nativeDecisionConfigStressQa')) property 'aifun.nativeDecisionQa.configStress', 'true'
+        }
+        if (project.hasProperty('combatQa')) {
+            workingDirectory project.file(chestQaDirectory)
+            property 'forge.enabledGameTestNamespaces', 'aifun_combat_test'
+        }
+        if (project.hasProperty('observationRegressionQa')) {
+            workingDirectory project.file(chestQaDirectory)
+            property 'forge.enabledGameTestNamespaces', 'aifun_observation_regression_test'
+        }
         if (project.hasProperty('projecteQa')) property 'forge.enabledGameTestNamespaces', 'aifun_projecte_test'
         if (project.hasProperty('agentLiveQa')) property 'aifun.agentQa.sites', file('run/config/touhou_little_maid/sites/llm.json').absolutePath
         if (project.hasProperty('craftingLiveQa')) property 'aifun.craftingQa.sites', file('run/config/touhou_little_maid/sites/llm.json').absolutePath
@@ -238,6 +251,20 @@ if (project.hasProperty('guiQa')) {
                 property 'aifun.allowedQa.mode', mode
             }
         }
+        if (project.hasProperty('observationLiveQa')) {
+            workingDirectory project.file(chestQaDirectory)
+            property 'forge.enabledGameTestNamespaces', 'aifun_observation_live_test'
+            property 'aifun.observationQa.sites', file('run/config/touhou_little_maid/sites/llm.json').absolutePath
+            if (project.hasProperty('observationPausedQa')) property 'aifun.observationQa.pausedTask', 'true'
+        }
+        if (project.hasProperty('stageDecisionLiveQa')) {
+            workingDirectory project.file(chestQaDirectory)
+            property 'forge.enabledGameTestNamespaces', 'aifun_stage_live_test'
+            property 'aifun.stageQa.sites', file('run/config/touhou_little_maid/sites/llm.json').absolutePath
+            property 'aifun.stageQa.config', file('run/config/touhou-aifun.toml').absolutePath
+            if (project.hasProperty('stageDecisionLiveMode')) property 'aifun.stageQa.mode', project.property('stageDecisionLiveMode').toString()
+            if (project.hasProperty('stageDecisionLiveAutomaticFirst')) property 'aifun.stageQa.automaticFirst', 'true'
+        }
         if (project.hasProperty('foregroundRetrieveLiveQa')) property 'aifun.foregroundQa.retrieve', 'true'
         if (project.hasProperty('foregroundLiveTrials')) {
             int trials = Integer.parseInt(project.property('foregroundLiveTrials').toString())
@@ -247,11 +274,27 @@ if (project.hasProperty('guiQa')) {
         if (project.hasProperty('foregroundAmendLiveQa')) property 'aifun.foregroundQa.amend', 'true'
     }
     tasks.named('processGuiQaResources').configure {
+        from('src/guiQa/resources/data/aifun_gui_test/structures/empty.nbt') {
+            into 'data/aifun_native_decision_test/structures'
+        }
+        from('src/guiQa/resources/data/aifun_gui_test/structures/empty.nbt') {
+            into 'data/aifun_combat_test/structures'
+        }
         from('src/guiQa/resources/data/aifun_gui_test/structures/four_chests.nbt') {
             into 'data/aifun_allowed_live_test/structures'
         }
+        from('src/guiQa/resources/data/aifun_gui_test/structures/four_chests.nbt') {
+            into 'data/aifun_observation_live_test/structures'
+        }
+        from('src/guiQa/resources/data/aifun_gui_test/structures/four_chests.nbt') {
+            into 'data/aifun_stage_live_test/structures'
+        }
+        from('src/guiQa/resources/data/aifun_gui_test/structures') {
+            include 'four_chests.nbt', 'empty.nbt'
+            into 'data/aifun_observation_regression_test/structures'
+        }
     }
-    if (project.hasProperty('fourChestQa') || project.hasProperty('fourChestLiveQa') || project.hasProperty('foregroundLiveQa') || project.hasProperty('allowedToolsLiveQa')) {
+    if (project.hasProperty('fourChestQa') || project.hasProperty('fourChestLiveQa') || project.hasProperty('foregroundLiveQa') || project.hasProperty('allowedToolsLiveQa') || project.hasProperty('observationLiveQa') || project.hasProperty('observationRegressionQa') || project.hasProperty('nativeDecisionQa') || project.hasProperty('combatQa') || project.hasProperty('stageDecisionLiveQa')) {
         tasks.matching { it.name == 'runGameTestServer' }.configureEach {
             doFirst {
                 def fixtureDirectory = file(chestQaDirectory)

@@ -23,7 +23,55 @@ import java.util.*;
 @GameTestHolder("aifun_gui_test")
 @PrefixGameTestTemplate(false)
 public final class AgentRuntimeGameTests {
-    @GameTest(template="empty",templateNamespace="aifun_gui_test")
+    @GameTest(batch="foregroundObservation",template="four_chests",templateNamespace="aifun_observation_regression_test",timeoutTicks=200)
+    public static void foregroundTextModelCanScanRealBlocksWithoutCreatingPhysicalTask(GameTestHelper helper) throws Exception {
+        boolean enabled=TouhouAIFunConfig.AGENT_RUNTIME.get(),vision=TouhouAIFunConfig.VISION_ENABLED.get();
+        TouhouAIFunConfig.AGENT_RUNTIME.set(true);TouhouAIFunConfig.VISION_ENABLED.set(false);
+        FourChestNavigationGameTests.prepareFloor(helper);var local=new BlockPos(2,1,2);helper.setBlock(local,Blocks.CHEST);
+        var chest=(ChestBlockEntity)helper.getBlockEntity(local);chest.setItem(0,new ItemStack(Items.IRON_INGOT,8));
+        var maid=helper.spawn(InitEntities.MAID.get(),new BlockPos(4,1,2));maid.setNoAi(true);var owner=UUID.randomUUID();maid.setOwnerUUID(owner);
+        var front=ownerTurn(maid,owner,"现在看一下箱子在哪里");AgentExecution.bind(front,0,null,0,AgentExecution.Purpose.CHAT);
+        try {
+            helper.assertTrue(AgentRuntime.enabled(maid),"Actual foreground runtime filtering must be enabled");
+            var ids=com.wjx.touhou_aifun.compat.ai.openai.ToolContextSelector.selected(maid,front).stream().map(com.wjx.touhou_aifun.compat.ai.openai.ToolCatalogSnapshot.Entry::id).toList();
+            helper.assertTrue(ids.contains("scan_surroundings") && !ids.contains("open_gui") && !ids.contains("gui_action"),"Block observation is directly advertised without GUI authority or a schema-loading round");
+            var client=new com.wjx.touhou_aifun.compat.ai.openai.AnthropicCompatLLMClient(null,null);var build=client.getClass().getDeclaredMethod("buildRequestBody",LLMCallback.class);build.setAccessible(true);
+            var body=(JsonObject)build.invoke(client,front);helper.assertTrue(body.getAsJsonArray("tools").asList().stream().anyMatch(v->v.getAsJsonObject().get("name").getAsString().equals("scan_surroundings")),"The real Anthropic adapter sends the observation schema");
+            int[] followups={0};front.onFunctionCall(menuCall("scan_surroundings","foreground_blocks",JsonParser.parseString("{\"mode\":\"blocks\",\"max_distance\":6,\"focus\":\"minecraft:chest\"}").getAsJsonObject()),ignored->followups[0]++);
+            helper.runAfterDelay(80,()-> {
+                try {
+                    helper.assertTrue(followups[0]==1,"One actual asynchronous scan returns directly to the foreground model");
+                    String result=front.getMessages().stream().filter(m->m.role()==Role.TOOL).map(LLMMessage::message).reduce("",(a,b)->a+b);
+                    helper.assertTrue(result.contains("minecraft:chest") && result.contains("observation_id"),"Actual current block evidence reaches the text-only foreground callback");
+                    helper.assertTrue(AgentRuntime.previewControl(maid,"status").getAsJsonArray("tasks").isEmpty() && chest.getItem(0).getCount()==8 && MaidGuiSessionManager.session(maid.getUUID())==null,"Observation creates no background job, opens no GUI and changes no items");helper.succeed();
+                } finally {AgentRuntime.stop(maid,true);ChatFlowManager.forgetMaid(maid.getUUID());maid.discard();TouhouAIFunConfig.AGENT_RUNTIME.set(enabled);TouhouAIFunConfig.VISION_ENABLED.set(vision);}
+            });
+        } catch(Throwable e) {AgentRuntime.stop(maid,true);maid.discard();TouhouAIFunConfig.AGENT_RUNTIME.set(enabled);TouhouAIFunConfig.VISION_ENABLED.set(vision);throw e;}
+    }
+
+    @GameTest(batch="observationReport",template="four_chests",templateNamespace="aifun_observation_regression_test",timeoutTicks=200)
+    public static void misroutedReadOnlyTaskRetainsReportWithoutFakingVerifiedCompletion(GameTestHelper helper) throws Exception {
+        boolean enabled=TouhouAIFunConfig.AGENT_RUNTIME.get();TouhouAIFunConfig.AGENT_RUNTIME.set(true);
+        FourChestNavigationGameTests.prepareFloor(helper);helper.setBlock(new BlockPos(2,1,2),Blocks.CHEST);
+        var player=helper.makeMockPlayer();var owner=player.getUUID();
+        var maid=new EntityMaid(InitEntities.MAID.get(),helper.getLevel()){@Override public net.minecraft.world.entity.LivingEntity getOwner(){return player;}};
+        var start=helper.absolutePos(new BlockPos(4,1,2));maid.setPos(start.getX()+.5,start.getY(),start.getZ()+.5);maid.setNoAi(true);maid.setOwnerUUID(owner);helper.getLevel().addFreshEntity(maid);
+        var caller=ownerTurn(maid,owner,"扫描周围方块");AgentRuntime.control(caller,command("enqueue","扫描周围方块"));
+        var entryMethod=AgentRuntime.class.getDeclaredMethod("entry",EntityMaid.class);entryMethod.setAccessible(true);var entry=entryMethod.invoke(null,maid);
+        var queueField=entry.getClass().getDeclaredField("queue");queueField.setAccessible(true);var queue=(AgentTaskQueue)queueField.get(entry);var state=queue.next();
+        var task=new TaskCallback(maid.getAiChatManager(),new ArrayList<>(List.of(LLMMessage.userChat(maid,state.goal))),state);
+        var callbackField=entry.getClass().getDeclaredField("callback");callbackField.setAccessible(true);callbackField.set(entry,task);
+        task.onFunctionCall(menuCall("scan_surroundings","misrouted_scan",JsonParser.parseString("{\"mode\":\"blocks\",\"max_distance\":6}").getAsJsonObject()),ignored->{});
+        helper.runAfterDelay(80,()-> {
+            try {
+                helper.assertTrue(task.decisionObservation("scan_surroundings")!=null,"The report follows a real successful scan");
+                task.onSuccess(new ResponseChat("现场扫描结果：看到了 minecraft:chest。"));
+                helper.assertTrue(state.status==AgentTaskState.Status.paused && state.completion==null && state.outcome.contains("现场扫描结果") && state.outcome.contains("未核验完成"),"Read-only results are visible while missing-contract task status remains honest");
+                helper.assertTrue(state.transfers.isEmpty() && state.actionFacts.isEmpty(),"Observation cannot invent operation receipts");helper.succeed();
+            } finally {AgentRuntime.stop(maid,true);ChatFlowManager.forgetMaid(maid.getUUID());maid.discard();TouhouAIFunConfig.AGENT_RUNTIME.set(enabled);}
+        });
+    }
+    @GameTest(batch="isolated_rejectShovelPreconditionAndPreserveTransferFactsAcrossBeefAmendment",template="empty",templateNamespace="aifun_gui_test")
     public static void rejectShovelPreconditionAndPreserveTransferFactsAcrossBeefAmendment(GameTestHelper helper) throws Exception {
         var maid=helper.spawn(InitEntities.MAID.get(),new BlockPos(2,1,2));maid.setNoAi(true);
         helper.setBlock(new BlockPos(1,1,2),Blocks.CHEST);var pos=helper.absolutePos(new BlockPos(1,1,2));
@@ -67,7 +115,7 @@ public final class AgentRuntimeGameTests {
         result=MaidGuiSessionManager.call(task,"gui_action","move_"+item,action).join();if(result.has("error") || result.get("moved_count").getAsInt()!=count) throw new IllegalStateException(result.toString());
         MaidGuiSessionManager.cancel(maid.getUUID(),"between_transfers");
     }
-    @GameTest(template="empty",templateNamespace="aifun_gui_test")
+    @GameTest(batch="isolated_ownerSupplementRetainsOriginalTextAndSupersedesOlderExclusions",template="empty",templateNamespace="aifun_gui_test")
     public static void ownerSupplementRetainsOriginalTextAndSupersedesOlderExclusions(GameTestHelper helper) throws Exception {
         boolean enabled=TouhouAIFunConfig.AGENT_RUNTIME.get();TouhouAIFunConfig.AGENT_RUNTIME.set(true);
         var maid=helper.spawn(InitEntities.MAID.get(),new BlockPos(2,1,2));maid.setNoAi(true);UUID owner=UUID.randomUUID();maid.setOwnerUUID(owner);
@@ -87,7 +135,7 @@ public final class AgentRuntimeGameTests {
             helper.assertTrue(called[0] && state.goalVersion==2 && state.constraints.equals(List.of(raw)) && state.transfers.size()==1,"Boundary update keeps versioned constraints and previous transfer facts");helper.succeed();
         } finally {AgentRuntime.stop(maid,true);ChatFlowManager.forgetMaid(maid.getUUID());maid.discard();TouhouAIFunConfig.AGENT_RUNTIME.set(enabled);}
     }
-    @GameTest(template="empty",templateNamespace="aifun_gui_test")
+    @GameTest(batch="isolated_foregroundStatusNeverAnnouncesUnverifiedTaskCompletion",template="empty",templateNamespace="aifun_observation_regression_test")
     public static void foregroundStatusNeverAnnouncesUnverifiedTaskCompletion(GameTestHelper helper) throws Exception {
         boolean enabled=TouhouAIFunConfig.AGENT_RUNTIME.get(),tts=com.github.tartaricacid.touhoulittlemaid.config.subconfig.AIConfig.TTS_ENABLED.get();
         TouhouAIFunConfig.AGENT_RUNTIME.set(true);com.github.tartaricacid.touhoulittlemaid.config.subconfig.AIConfig.TTS_ENABLED.set(false);
@@ -107,11 +155,16 @@ public final class AgentRuntimeGameTests {
             helper.assertTrue(AgentRuntime.guardForegroundReply(front,wrong).getChatText().contains("暂停"),"Paused task cannot be presented as successful");
             var casual=ownerTurn(maid,owner,"How is the weather?");casual.getMessages().add(LLMMessage.userChat(maid,"How is the weather?"));var chat=new ResponseChat("今天阳光不错。");
             helper.assertTrue(AgentRuntime.guardForegroundReply(casual,chat)==chat,"Ordinary conversation stays independent");
+            var observation=ownerTurn(maid,owner,"扫描周围方块");observation.getMessages().add(LLMMessage.userChat(maid,"扫描周围方块"));
+            var report=new ResponseChat("已经完成扫描，箱子在 [1,2,3]。");
+            helper.assertTrue(AgentRuntime.guardForegroundReply(observation,report)==report,"Finishing a new read-only scan does not hide its report behind the older paused task");
+            var physicalClaim=new ResponseChat("全部照着告示牌送进对应箱子了。","Everything is done.");
+            helper.assertTrue(AgentRuntime.guardForegroundReply(observation,physicalClaim)!=physicalClaim,"Physical completion claims remain guarded even during observation questions");
             state.status=AgentTaskState.Status.completed;AgentRuntime.save(maid);
             helper.assertTrue(AgentRuntime.guardForegroundReply(front,wrong).getChatText().contains("已通过"),"Only verified completed state permits the positive task status");helper.succeed();
         } finally {AgentRuntime.stop(maid,true);ChatFlowManager.forgetMaid(maid.getUUID());maid.discard();TouhouAIFunConfig.AGENT_RUNTIME.set(enabled);com.github.tartaricacid.touhoulittlemaid.config.subconfig.AIConfig.TTS_ENABLED.set(tts);}
     }
-    @GameTest(template="empty",templateNamespace="aifun_gui_test")
+    @GameTest(batch="isolated_missingCompletionRejectsLabelAndNeedsFreshObservation",template="empty",templateNamespace="aifun_gui_test")
     public static void missingCompletionRejectsLabelAndNeedsFreshObservation(GameTestHelper helper) throws Exception {
         var maid=helper.spawn(InitEntities.MAID.get(),new BlockPos(2,1,2));maid.setNoAi(true);
         helper.setBlock(new BlockPos(1,1,4),Blocks.CHEST);
@@ -131,9 +184,10 @@ public final class AgentRuntimeGameTests {
             helper.succeed();
         } finally {state.status=AgentTaskState.Status.cancelled;callback.archiveState();}
     }
-    @GameTest(template="empty",templateNamespace="aifun_gui_test")
+    @GameTest(batch="isolated_backgroundOutcomeNotifiesOwnerOnceAfterForegroundFinishes",template="empty",templateNamespace="aifun_gui_test")
     public static void backgroundOutcomeNotifiesOwnerOnceAfterForegroundFinishes(GameTestHelper helper) throws Exception {
         boolean enabled=TouhouAIFunConfig.AGENT_RUNTIME.get();TouhouAIFunConfig.AGENT_RUNTIME.set(true);
+        String announcement=TouhouAIFunConfig.AGENT_TASK_ANNOUNCEMENTS.get();TouhouAIFunConfig.AGENT_TASK_ANNOUNCEMENTS.set("detailed");
         int[] delivered={0};
         var owner=new net.minecraftforge.common.util.FakePlayer(helper.getLevel(),
                 new com.mojang.authlib.GameProfile(UUID.randomUUID(),"notification_owner")) {
@@ -157,9 +211,9 @@ public final class AgentRuntimeGameTests {
             AgentRuntime.tick(tick);helper.assertTrue(delivered[0]==1,"The bubble manager sends exactly one owner chat message");
             AgentRuntime.tick(tick);helper.assertTrue(delivered[0]==1,"Later ticks do not replay the completion notification");
             helper.succeed();
-        } finally {AgentRuntime.stop(maid,true);ChatFlowManager.forgetMaid(maid.getUUID());maid.discard();TouhouAIFunConfig.AGENT_RUNTIME.set(enabled);}
+        } finally {AgentRuntime.stop(maid,true);ChatFlowManager.forgetMaid(maid.getUUID());maid.discard();TouhouAIFunConfig.AGENT_RUNTIME.set(enabled);TouhouAIFunConfig.AGENT_TASK_ANNOUNCEMENTS.set(announcement);}
     }
-    @GameTest(template="empty",templateNamespace="aifun_gui_test")
+    @GameTest(batch="isolated_multipleChestsKeepSourceEvidenceSeparateAcrossArchiveReload",template="empty",templateNamespace="aifun_gui_test")
     public static void multipleChestsKeepSourceEvidenceSeparateAcrossArchiveReload(GameTestHelper helper) throws Exception {
         boolean enabled=TouhouAIFunConfig.AGENT_RUNTIME.get();TouhouAIFunConfig.AGENT_RUNTIME.set(true);
         for(var floor:BlockPos.betweenClosed(new BlockPos(0,0,0),new BlockPos(5,0,5))) helper.setBlock(floor,Blocks.STONE);
@@ -212,7 +266,7 @@ public final class AgentRuntimeGameTests {
             helper.succeed();
         } finally { MaidGuiSessionManager.cancel(maid.getUUID(),"qa_complete");state.status=AgentTaskState.Status.cancelled;callback.archiveState();AgentRuntime.stop(maid,true);TouhouAIFunConfig.AGENT_RUNTIME.set(enabled); }
     }
-    @GameTest(template="empty",templateNamespace="aifun_gui_test")
+    @GameTest(batch="isolated_auxiliaryOperationsIgnoreChatTakeoverButCancelOnUnload",template="empty",templateNamespace="aifun_gui_test")
     public static void auxiliaryOperationsIgnoreChatTakeoverButCancelOnUnload(GameTestHelper helper) {
         var maid=helper.spawn(InitEntities.MAID.get(),new BlockPos(2,1,2));maid.setNoAi(true);
         var first=new LLMCallback(maid.getAiChatManager(),new ArrayList<>(),true);
@@ -260,7 +314,7 @@ public final class AgentRuntimeGameTests {
             helper.succeed();
         } finally { TouhouAIFunConfig.CONTEXT_INPUT_BUDGET_TOKENS.set(chatBudget);TouhouAIFunConfig.AGENT_CONTEXT_INPUT_BUDGET_TOKENS.set(budget);state.status=AgentTaskState.Status.cancelled;task.archiveState(); }
     }
-    @GameTest(template="empty",templateNamespace="aifun_gui_test")
+    @GameTest(batch="isolated_foregroundQueueSwitchStopAndOwnerPermissions",template="empty",templateNamespace="aifun_gui_test")
     public static void foregroundQueueSwitchStopAndOwnerPermissions(GameTestHelper helper) throws Exception {
         boolean previous=TouhouAIFunConfig.AGENT_RUNTIME.get(); TouhouAIFunConfig.AGENT_RUNTIME.set(true);
         EntityMaid maid=helper.spawn(InitEntities.MAID.get(),new BlockPos(2,1,2)); maid.setNoAi(true);
@@ -297,8 +351,42 @@ public final class AgentRuntimeGameTests {
             helper.succeed();
         } finally { AgentRuntime.stop(maid,true); TouhouAIFunConfig.AGENT_RUNTIME.set(previous); }
     }
+    @GameTest(batch="isolated_emptyQueueIsNotLeftPausedAfterUnloadReload",template="empty",templateNamespace="aifun_gui_test")
+    public static void emptyQueueIsNotLeftPausedAfterUnloadReload(GameTestHelper helper) throws Exception {
+        boolean enabled=TouhouAIFunConfig.AGENT_RUNTIME.get();TouhouAIFunConfig.AGENT_RUNTIME.set(true);
+        var maid=helper.spawn(InitEntities.MAID.get(),new BlockPos(2,1,2));maid.setNoAi(true);
+        try {
+            var entryMethod=AgentRuntime.class.getDeclaredMethod("entry",EntityMaid.class);entryMethod.setAccessible(true);
+            var entry=entryMethod.invoke(null,maid);
+            var queueField=entry.getClass().getDeclaredField("queue");queueField.setAccessible(true);
+            var queue=(AgentTaskQueue)queueField.get(entry);
+            var finished=queue.enqueue("finished work");finished.status=AgentTaskState.Status.completed;
+            queue.paused=true;AgentRuntime.save(maid);
+            AgentRuntime.unloaded(new net.minecraftforge.event.entity.EntityLeaveLevelEvent(maid,maid.level()));
+            var reloaded=entryMethod.invoke(null,maid);
+            var reloadedQueue=(AgentTaskQueue)queueField.get(reloaded);
+            helper.assertTrue(!reloadedQueue.paused && reloadedQueue.tasks.stream().allMatch(AgentTaskState::terminal),
+                    "An empty queue is not restored paused after unload/reload, so the next instruction runs without a manual continue");
+            var unfinished=reloadedQueue.enqueue("unfinished work");unfinished.status=AgentTaskState.Status.paused;
+            AgentRuntime.save(maid);
+            AgentRuntime.unloaded(new net.minecraftforge.event.entity.EntityLeaveLevelEvent(maid,maid.level()));
+            var reloaded2=entryMethod.invoke(null,maid);
+            var queue2=(AgentTaskQueue)queueField.get(reloaded2);
+            var restored=queue2.tasks.stream().filter(t->t.goal.equals("unfinished work")).findFirst().orElseThrow();
+            helper.assertTrue(queue2.paused && restored.status==AgentTaskState.Status.paused
+                    && restored.outcome.contains("world_reloaded"),"Unfinished work still requires an explicit resume after reload");
+            helper.succeed();
+        } finally {AgentRuntime.stop(maid,true);maid.discard();TouhouAIFunConfig.AGENT_RUNTIME.set(enabled);}
+    }
     private static JsonObject command(String action,String goal) { JsonObject out=new JsonObject(); out.addProperty("action",action); if(goal!=null) out.addProperty("goal",goal); return out; }
-    @GameTest(template="empty",templateNamespace="aifun_gui_test")
+    private static void setTestTaskPhraser(java.util.function.Supplier<java.util.concurrent.CompletableFuture<String>> phraser) {
+        try {
+            var method=Class.forName("com.wjx.touhou_aifun.chat.agent.TaskAnnouncementPhrasing")
+                    .getDeclaredMethod("setTestPhraser", java.util.function.Supplier.class);
+            method.setAccessible(true);method.invoke(null,phraser);
+        } catch (ReflectiveOperationException error) { throw new IllegalStateException(error); }
+    }
+    @GameTest(batch="isolated_completionDeclarationFinishesAfterPairedBatchWithoutAnotherModelRequest",template="empty",templateNamespace="aifun_gui_test")
     public static void completionDeclarationFinishesAfterPairedBatchWithoutAnotherModelRequest(GameTestHelper helper) throws Exception {
         boolean previous=TouhouAIFunConfig.AGENT_RUNTIME.get();TouhouAIFunConfig.AGENT_RUNTIME.set(true);
         var owner=helper.makeMockPlayer();var maid=new EntityMaid(InitEntities.MAID.get(),helper.getLevel()) {
@@ -320,7 +408,7 @@ public final class AgentRuntimeGameTests {
             helper.assertTrue(callback.getMessages().stream().filter(m->m.role()==Role.TOOL).count()==2 && callback.getMessages().stream().anyMatch(m->"late_action".equals(m.toolCallId()) && m.message().contains("cancelled_before_start")),"Later accepted calls are cancelled with paired results instead of mutating after completion");helper.succeed();
         } finally {AgentRuntime.stop(maid,true);maid.discard();TouhouAIFunConfig.AGENT_RUNTIME.set(previous);}
     }
-    @GameTest(template="empty",templateNamespace="aifun_gui_test")
+    @GameTest(batch="isolated_completionDeclarationCannotOverrideMissingQuantityOrOpenMenu",template="empty",templateNamespace="aifun_gui_test")
     public static void completionDeclarationCannotOverrideMissingQuantityOrOpenMenu(GameTestHelper helper) throws Exception {
         boolean previous=TouhouAIFunConfig.AGENT_RUNTIME.get();TouhouAIFunConfig.AGENT_RUNTIME.set(true);
         var maid=helper.spawn(InitEntities.MAID.get(),new BlockPos(2,1,2));maid.setNoAi(true);
@@ -338,7 +426,7 @@ public final class AgentRuntimeGameTests {
             helper.assertTrue(state.status==AgentTaskState.Status.running,"Rejected declaration never marks completed");helper.succeed();
         } finally {MaidGuiSessionManager.cancel(maid.getUUID(),"qa_complete");state.status=AgentTaskState.Status.cancelled;callback.finishTiming(false);maid.discard();TouhouAIFunConfig.AGENT_RUNTIME.set(previous);}
     }
-    @GameTest(template="empty",templateNamespace="aifun_gui_test")
+    @GameTest(batch="isolated_liveCompletionEvidenceDoesNotInferUnknownOrDoubleContainersEmpty",template="empty",templateNamespace="aifun_gui_test")
     public static void liveCompletionEvidenceDoesNotInferUnknownOrDoubleContainersEmpty(GameTestHelper helper) {
         var maid=helper.spawn(InitEntities.MAID.get(),new BlockPos(2,1,2));maid.setNoAi(true);
         var local=new BlockPos(1,1,4);helper.setBlock(local,Blocks.CHEST);var pos=helper.absolutePos(local);
@@ -357,7 +445,7 @@ public final class AgentRuntimeGameTests {
         var unknown=AgentCompletion.snapshot(maid,state,true).getAsJsonArray("source_checks").get(0).getAsJsonObject();
         helper.assertTrue(!unknown.has("empty") && unknown.get("coverage").getAsString().equals("unknown"),"Unknown menus never imply an empty container");helper.succeed();
     }
-    @GameTest(template="empty",templateNamespace="aifun_gui_test")
+    @GameTest(batch="isolated_replacePausedCurrentPreservesQueueUnlessExplicitlyCleared",template="empty",templateNamespace="aifun_gui_test")
     public static void replacePausedCurrentPreservesQueueUnlessExplicitlyCleared(GameTestHelper helper) throws Exception {
         boolean previous=TouhouAIFunConfig.AGENT_RUNTIME.get();TouhouAIFunConfig.AGENT_RUNTIME.set(true);
         var maid=helper.spawn(InitEntities.MAID.get(),new BlockPos(2,1,2));maid.setNoAi(true);
@@ -375,7 +463,7 @@ public final class AgentRuntimeGameTests {
             helper.assertTrue(queue.next().goal.equals("replacement"),"Replacement starts first; paused old task cannot return");helper.succeed();
         } finally {AgentRuntime.stop(maid,true);TouhouAIFunConfig.AGENT_RUNTIME.set(previous);}
     }
-    @GameTest(template="empty",templateNamespace="aifun_gui_test")
+    @GameTest(batch="isolated_legacyPausedSortingBlocksNewRetrievalWithoutModelOrGuiWork",template="empty",templateNamespace="aifun_gui_test")
     public static void legacyPausedSortingBlocksNewRetrievalWithoutModelOrGuiWork(GameTestHelper helper) throws Exception {
         boolean previous=TouhouAIFunConfig.AGENT_RUNTIME.get();TouhouAIFunConfig.AGENT_RUNTIME.set(true);
         var maid=helper.spawn(InitEntities.MAID.get(),new BlockPos(2,1,2));maid.setNoAi(true);
@@ -413,9 +501,10 @@ public final class AgentRuntimeGameTests {
         AgentRuntime.speaker(maid,new ChatSpeakerContext.Snapshot(owner,"owner",owner,"owner","owner",true,false),message);
         return new LLMCallback(maid.getAiChatManager(),new ArrayList<>(),true);
     }
-    @GameTest(template="empty",templateNamespace="aifun_gui_test")
+    @GameTest(batch="isolated_foregroundQueueReceiptFinishesWithoutAnotherModelAndOnlyOnce",template="empty",templateNamespace="aifun_gui_test")
     public static void foregroundQueueReceiptFinishesWithoutAnotherModelAndOnlyOnce(GameTestHelper helper) {
         boolean enabled=TouhouAIFunConfig.AGENT_RUNTIME.get();TouhouAIFunConfig.AGENT_RUNTIME.set(true);
+        String announcement=TouhouAIFunConfig.AGENT_TASK_ANNOUNCEMENTS.get();TouhouAIFunConfig.AGENT_TASK_ANNOUNCEMENTS.set("detailed");
         var maid=helper.spawn(InitEntities.MAID.get(),new BlockPos(2,1,2));maid.setNoAi(true);
         UUID owner=UUID.randomUUID();maid.setOwnerUUID(owner);
         try {
@@ -424,16 +513,174 @@ public final class AgentRuntimeGameTests {
             helper.assertTrue(!AgentContext.prepare(caller),"Applied queue receipt short-circuits the next model request");
             helper.assertTrue(!ChatFlowManager.hasActiveRequest(maid.getUUID()),"Acknowledgement releases foreground so completion notices can be sent");
             var history=maid.getAiChatManager().getHistory().peek();
-            helper.assertTrue(history!=null && history.message().contains("receive iron"),"Acknowledgement names the accepted goal");
+            helper.assertTrue(history!=null && history.message().contains("receive iron"),"Detailed acknowledgement names the accepted goal");
             helper.assertTrue(!AgentContext.prepare(caller) && maid.getAiChatManager().getHistory().peek()==history,"Repeated continuation cannot emit another acknowledgement");
             var next=ownerTurn(maid,owner,"new user request");
             helper.assertTrue(!AgentRuntime.finishForegroundHandoff(next),"A new owner message still reaches the main model");
             AgentRuntime.control(next,command("enqueue","second goal"));
             helper.assertTrue(AgentRuntime.control(next,command("status",null)).getAsJsonArray("tasks").size()==2,"New messages enqueue normally; handoff does not duplicate tasks");
             helper.succeed();
-        } finally {AgentRuntime.stop(maid,true);ChatFlowManager.forgetMaid(maid.getUUID());TouhouAIFunConfig.AGENT_RUNTIME.set(enabled);}
+        } finally {AgentRuntime.stop(maid,true);ChatFlowManager.forgetMaid(maid.getUUID());TouhouAIFunConfig.AGENT_RUNTIME.set(enabled);TouhouAIFunConfig.AGENT_TASK_ANNOUNCEMENTS.set(announcement);}
     }
-    @GameTest(template="empty",templateNamespace="aifun_gui_test")
+    @GameTest(batch="isolated_taskAnnouncementModesKeepDetailsOutOfChatButAnswerFailureQuestions",template="empty",templateNamespace="aifun_gui_test")
+    public static void taskAnnouncementModesKeepDetailsOutOfChatButAnswerFailureQuestions(GameTestHelper helper) throws Exception {
+        boolean enabled=TouhouAIFunConfig.AGENT_RUNTIME.get();
+        String announcement=TouhouAIFunConfig.AGENT_TASK_ANNOUNCEMENTS.get();
+        TouhouAIFunConfig.AGENT_RUNTIME.set(true);
+        List<String> delivered=new ArrayList<>();
+        var owner=new net.minecraftforge.common.util.FakePlayer(helper.getLevel(),
+                new com.mojang.authlib.GameProfile(UUID.randomUUID(),"announcement_owner")) {
+            @Override public void sendSystemMessage(net.minecraft.network.chat.Component message) { delivered.add(message.getString()); }
+        };
+        var maid=new EntityMaid(InitEntities.MAID.get(),helper.getLevel()) {
+            @Override public net.minecraft.world.entity.LivingEntity getOwner(){return owner;}
+        };
+        var pos=helper.absolutePos(new BlockPos(2,1,2));maid.setPos(pos.getX()+.5,pos.getY(),pos.getZ()+.5);
+        maid.setNoAi(true);maid.setOwnerUUID(owner.getUUID());maid.getAiChatManager().chatLanguage="zh_cn";helper.getLevel().addFreshEntity(maid);
+        var tick=new net.minecraftforge.event.TickEvent.ServerTickEvent(net.minecraftforge.event.TickEvent.Phase.END,()->true,helper.getLevel().getServer());
+        try {
+            var method=AgentRuntime.class.getDeclaredMethod("entry",EntityMaid.class);method.setAccessible(true);
+            var entry=method.invoke(null,maid);
+            var queueField=entry.getClass().getDeclaredField("queue");queueField.setAccessible(true);
+            var queue=(AgentTaskQueue)queueField.get(entry);
+            var active=entry.getClass().getDeclaredField("callback");active.setAccessible(true);
+            // brief: the acknowledgement is left to the model, which receives the real dispatch state.
+            TouhouAIFunConfig.AGENT_TASK_ANNOUNCEMENTS.set("brief");
+            var front=ownerTurn(maid,owner.getUUID(),"receive iron");
+            var briefReceipt=AgentRuntime.control(front,command("enqueue","receive iron into the north chest"));
+            helper.assertTrue(!briefReceipt.has("error"),"Brief-mode receipt still accepts the task");
+            helper.assertTrue(briefReceipt.get("controlled_task_dispatch").getAsString().equals("starting_now"),
+                    "Idle executor tells the model the job starts right now, not that it is merely queued");
+            String briefNotice=briefReceipt.get("notice").getAsString();
+            helper.assertTrue(briefNotice.contains("dispatch=starting_now") && briefNotice.contains("STYLE HINTS, not scripts")
+                    && briefNotice.contains("好，我这就去") && !briefNotice.contains("好嘞，记下啦"),
+                    "Brief notice lets the model phrase a state-matched line instead of a fixed template");
+            helper.assertTrue(AgentContext.prepare(front),"Brief mode routes the acknowledgement through the model rather than a deterministic receipt");
+            ChatFlowManager.finishRequest(maid.getUUID(),front);
+            var state=queue.tasks.stream().filter(row->!row.terminal()).findFirst().orElseThrow();
+            var task=new TaskCallback(maid.getAiChatManager(),new ArrayList<>(),state);active.set(entry,task);
+            setTestTaskPhraser(()->java.util.concurrent.CompletableFuture.completedFuture(
+                    "{\"chat\":\"搞定啦，主人～\",\"tts\":\"搞定啦，主人～\"}"));
+            AgentRuntime.finished(task,"Verified iron received in the north chest.",true);
+            AgentRuntime.tick(tick);
+            helper.assertTrue(delivered.size()==1,"Brief mode still announces the outcome once");
+            String brief=delivered.get(0);
+            helper.assertTrue(brief.contains("搞定啦，主人～") && !brief.contains("Verified") && !brief.contains("north chest"),
+                    "The small background request phrases the completion line: "+brief);
+            // detailed: the failure announcement keeps the goal, outcome and waiting count.
+            TouhouAIFunConfig.AGENT_TASK_ANNOUNCEMENTS.set("detailed");
+            var front2=ownerTurn(maid,owner.getUUID(),"sort chests");
+            AgentRuntime.control(front2,command("enqueue","sort the four labelled chests"));
+            ChatFlowManager.finishRequest(maid.getUUID(),front2);
+            var waiting=ownerTurn(maid,owner.getUUID(),"one more");
+            var waitingReceipt=AgentRuntime.control(waiting,command("enqueue","collect the waiting iron"));
+            helper.assertTrue(waitingReceipt.get("controlled_task_dispatch").getAsString().equals("waiting"),
+                    "Earlier unfinished work makes the new task wait instead of starting now");
+            ChatFlowManager.finishRequest(maid.getUUID(),waiting);
+            var failedState=queue.tasks.stream().filter(row->!row.terminal() && row.goal.startsWith("sort")).findFirst().orElseThrow();
+            var failedTask=new TaskCallback(maid.getAiChatManager(),new ArrayList<>(),failedState);active.set(entry,failedTask);
+            AgentRuntime.finished(failedTask,"final_inventory_below_required_count",false);
+            AgentRuntime.tick(tick);
+            helper.assertTrue(delivered.size()==2,"Detailed failure announces once");
+            String failure=delivered.get(1);
+            helper.assertTrue(failure.contains("任务已暂停") && failure.contains("sort the four labelled chests")
+                    && failure.contains("final_inventory_below_required_count") && failure.contains("后续还有1个任务等待"),
+                    "Detailed failure keeps goal, reason and waiting count: "+failure);
+            helper.assertTrue(failedState.status==AgentTaskState.Status.paused && queue.paused,"Failed task is paused and the queue stops");
+            // silent: no owner-facing notification at all, while the recorded facts remain queryable.
+            TouhouAIFunConfig.AGENT_TASK_ANNOUNCEMENTS.set("silent");
+            var quietState=queue.enqueue("quiet task");var quietTask=new TaskCallback(maid.getAiChatManager(),new ArrayList<>(),quietState);active.set(entry,quietTask);
+            AgentRuntime.finished(quietTask,"Verified quiet completion.",true);
+            AgentRuntime.tick(tick);
+            helper.assertTrue(delivered.size()==2,"Silent mode sends no task notification");
+            var statusCaller=ownerTurn(maid,owner.getUUID(),"status");
+            helper.assertTrue(AgentRuntime.control(statusCaller,command("status",null)).toString().contains(failedState.goal),
+                    "Silent mode still exposes paused task facts through an explicit status request");
+            ChatFlowManager.finishRequest(maid.getUUID(),statusCaller);
+            // phrasing failure: the fixed short line is used instead, and any output is one safe line.
+            setTestTaskPhraser(()->java.util.concurrent.CompletableFuture.failedFuture(new IllegalStateException("offline")));
+            TouhouAIFunConfig.AGENT_TASK_ANNOUNCEMENTS.set("brief");
+            var fallbackState=queue.enqueue("fallback task");var fallbackTask=new TaskCallback(maid.getAiChatManager(),new ArrayList<>(),fallbackState);active.set(entry,fallbackTask);
+            AgentRuntime.finished(fallbackTask,"final_inventory_below_required_count",false);
+            AgentRuntime.tick(tick);
+            helper.assertTrue(delivered.size()==3,"A failed phrasing request still falls back to one short notification");
+            String fallbackLine=delivered.get(2);
+            helper.assertTrue(fallbackLine.contains("这个先卡住啦") && !fallbackLine.contains("final_inventory_below_required_count")
+                    && !fallbackLine.contains("fallback task"),"Fallback keeps the short fixed line without details: "+fallbackLine);
+            // Any announcement mode still answers "why did it fail" with the recorded reason.
+            var facts=new ForegroundTaskStatus(failedState.id,failedState.status,failedState.goal,failedState.verifiedCount,failedState.outcome);
+            helper.assertTrue(ForegroundTaskStatus.asksFailureReason("任务为什么失败了？"),"Failure-reason question is recognized");
+            String reason=facts.failureReply(false);
+            helper.assertTrue(reason.contains("sort the four labelled chests") && reason.contains("final_inventory_below_required_count"),
+                    "Failure question gets the explicit recorded reason: "+reason);
+            helper.succeed();
+        } finally {
+            setTestTaskPhraser(null);
+            AgentRuntime.stop(maid,true);ChatFlowManager.forgetMaid(maid.getUUID());maid.discard();
+            TouhouAIFunConfig.AGENT_TASK_ANNOUNCEMENTS.set(announcement);TouhouAIFunConfig.AGENT_RUNTIME.set(enabled);
+        }
+    }
+    @GameTest(batch="isolated_preparedAnnouncementWordingIsDeliveredWithoutAnotherRequest",template="empty",templateNamespace="aifun_gui_test")
+    public static void preparedAnnouncementWordingIsDeliveredWithoutAnotherRequest(GameTestHelper helper) throws Exception {
+        boolean enabled=TouhouAIFunConfig.AGENT_RUNTIME.get();
+        String announcement=TouhouAIFunConfig.AGENT_TASK_ANNOUNCEMENTS.get();
+        TouhouAIFunConfig.AGENT_RUNTIME.set(true);
+        TouhouAIFunConfig.AGENT_TASK_ANNOUNCEMENTS.set("brief");
+        List<String> delivered=new ArrayList<>();
+        var owner=new net.minecraftforge.common.util.FakePlayer(helper.getLevel(),
+                new com.mojang.authlib.GameProfile(UUID.randomUUID(),"prefetch_owner")) {
+            @Override public void sendSystemMessage(net.minecraft.network.chat.Component message) { delivered.add(message.getString()); }
+        };
+        var maid=new EntityMaid(InitEntities.MAID.get(),helper.getLevel()) {
+            @Override public net.minecraft.world.entity.LivingEntity getOwner(){return owner;}
+        };
+        var pos=helper.absolutePos(new BlockPos(2,1,2));maid.setPos(pos.getX()+.5,pos.getY(),pos.getZ()+.5);
+        maid.setNoAi(true);maid.setOwnerUUID(owner.getUUID());maid.getAiChatManager().chatLanguage="zh_cn";helper.getLevel().addFreshEntity(maid);
+        var tick=new net.minecraftforge.event.TickEvent.ServerTickEvent(net.minecraftforge.event.TickEvent.Phase.END,()->true,helper.getLevel().getServer());
+        try {
+            var method=AgentRuntime.class.getDeclaredMethod("entry",EntityMaid.class);method.setAccessible(true);
+            var entry=method.invoke(null,maid);
+            var queueField=entry.getClass().getDeclaredField("queue");queueField.setAccessible(true);
+            var queue=(AgentTaskQueue)queueField.get(entry);
+            var active=entry.getClass().getDeclaredField("callback");active.setAccessible(true);
+            var state=queue.enqueue("receive iron into the north chest");
+            var task=new TaskCallback(maid.getAiChatManager(),new ArrayList<>(),state);active.set(entry,task);
+            // The wording prepared while the task ran is used directly: an on-demand request would
+            // hang on the never-completing test phraser and deliver nothing in this tick.
+            setTestTaskPhraser(java.util.concurrent.CompletableFuture::new);
+            prepareTestTaskAnnouncement(maid.getUUID(),state,
+                    java.util.concurrent.CompletableFuture.completedFuture(
+                            "{\"chat\":\"早就准备好的台词\",\"tts\":\"早就准备好的台词\"}"));
+            AgentRuntime.finished(task,"Verified iron received in the north chest.",true);
+            AgentRuntime.tick(tick);
+            helper.assertTrue(delivered.size()==1 && delivered.get(0).contains("早就准备好的台词"),
+                    "The prepared completion wording is delivered without waiting for another model request: "+delivered);
+            helper.assertTrue(!delivered.get(0).contains("Verified") && !delivered.get(0).contains("north chest"),
+                    "Prepared wording still hides task details: "+delivered.get(0));
+            helper.succeed();
+        } finally {
+            setTestTaskPhraser(null);clearTestTaskAnnouncementPrefetches();
+            AgentRuntime.stop(maid,true);ChatFlowManager.forgetMaid(maid.getUUID());maid.discard();
+            TouhouAIFunConfig.AGENT_TASK_ANNOUNCEMENTS.set(announcement);TouhouAIFunConfig.AGENT_RUNTIME.set(enabled);
+        }
+    }
+    @SuppressWarnings("unchecked")
+    private static void prepareTestTaskAnnouncement(UUID maidId,AgentTaskState state,
+            java.util.concurrent.CompletableFuture<String> prepared) {
+        try {
+            var type=Class.forName("com.wjx.touhou_aifun.chat.agent.TaskAnnouncementPrefetch");
+            var method=type.getDeclaredMethod("prime",UUID.class,AgentTaskState.class,java.util.function.Supplier.class);
+            method.setAccessible(true);
+            method.invoke(null,maidId,state,(java.util.function.Supplier<java.util.concurrent.CompletableFuture<String>>)()->prepared);
+        } catch (ReflectiveOperationException error) { throw new IllegalStateException(error); }
+    }
+    private static void clearTestTaskAnnouncementPrefetches() {
+        try {
+            var type=Class.forName("com.wjx.touhou_aifun.chat.agent.TaskAnnouncementPrefetch");
+            var method=type.getDeclaredMethod("clearForTests");method.setAccessible(true);method.invoke(null);
+        } catch (ReflectiveOperationException error) { throw new IllegalStateException(error); }
+    }
+    @GameTest(batch="isolated_taskDecisionModelUsesSelectedProtocolModelWithoutChangingChat",template="empty",templateNamespace="aifun_gui_test")
     public static void taskDecisionModelUsesSelectedProtocolModelWithoutChangingChat(GameTestHelper helper) throws Exception {
         var maid=helper.spawn(InitEntities.MAID.get(),new BlockPos(2,1,2));maid.setNoAi(true);
         var manager=maid.getAiChatManager();String chatModel=manager.getLLMModel();var chatSite=manager.getLLMSite();
@@ -454,10 +701,12 @@ public final class AgentRuntimeGameTests {
             helper.succeed();
         } finally {task.operations.cancel();com.wjx.touhou_aifun.compat.ai.openai.ToolContextSelector.clearSnapshot(task);}
     }
-    @GameTest(template="empty",templateNamespace="aifun_gui_test")
+    @GameTest(batch="isolated_unavailableDecisionModelPausesBeforeStartingAnyModelOrAction",template="empty",templateNamespace="aifun_gui_test")
     public static void unavailableDecisionModelPausesBeforeStartingAnyModelOrAction(GameTestHelper helper) {
         boolean enabled=TouhouAIFunConfig.AGENT_RUNTIME.get();String selection=TouhouAIFunConfig.AGENT_DECISION_MODEL.get();
+        String announcement=TouhouAIFunConfig.AGENT_TASK_ANNOUNCEMENTS.get();
         TouhouAIFunConfig.AGENT_RUNTIME.set(true);TouhouAIFunConfig.AGENT_DECISION_MODEL.set("[\"missing-decision-site\",\"fast\"]");
+        TouhouAIFunConfig.AGENT_TASK_ANNOUNCEMENTS.set("detailed");
         var owner=helper.makeMockPlayer();
         var maid=new EntityMaid(InitEntities.MAID.get(),helper.getLevel()) {
             @Override public net.minecraft.world.entity.LivingEntity getOwner(){return owner;}
@@ -471,9 +720,9 @@ public final class AgentRuntimeGameTests {
             helper.assertTrue(status.get("paused").getAsBoolean() && row.get("status").getAsString().equals("paused"),"Invalid explicit selection pauses the queue rather than falling back to chat");
             helper.assertTrue(row.get("outcome").getAsString().contains("decision_model_unavailable"),"Pause identifies the model selection, not an archive or navigation failure");
             helper.succeed();
-        } finally {AgentRuntime.stop(maid,true);ChatFlowManager.forgetMaid(maid.getUUID());maid.discard();TouhouAIFunConfig.AGENT_DECISION_MODEL.set(selection);TouhouAIFunConfig.AGENT_RUNTIME.set(enabled);}
+        } finally {AgentRuntime.stop(maid,true);ChatFlowManager.forgetMaid(maid.getUUID());maid.discard();TouhouAIFunConfig.AGENT_DECISION_MODEL.set(selection);TouhouAIFunConfig.AGENT_RUNTIME.set(enabled);TouhouAIFunConfig.AGENT_TASK_ANNOUNCEMENTS.set(announcement);}
     }
-    @GameTest(template="empty",templateNamespace="aifun_gui_test")
+    @GameTest(batch="isolated_rewordedForegroundRetriesCannotCreateOrResumeDuplicateWork",template="empty",templateNamespace="aifun_gui_test")
     public static void rewordedForegroundRetriesCannotCreateOrResumeDuplicateWork(GameTestHelper helper) {
         boolean previous=TouhouAIFunConfig.AGENT_RUNTIME.get();TouhouAIFunConfig.AGENT_RUNTIME.set(true);
         var maid=helper.spawn(InitEntities.MAID.get(),new BlockPos(2,1,2));maid.setNoAi(true);UUID owner=UUID.randomUUID();maid.setOwnerUUID(owner);
@@ -493,7 +742,7 @@ public final class AgentRuntimeGameTests {
         } finally {AgentRuntime.stop(maid,true);TouhouAIFunConfig.AGENT_RUNTIME.set(previous);}
     }
 
-    @GameTest(template="empty",templateNamespace="aifun_gui_test")
+    @GameTest(batch="isolated_taskToolMenuTracksWorldPlanGuiAndVerificationAcrossProtocols",template="empty",templateNamespace="aifun_gui_test")
     public static void taskToolMenuTracksWorldPlanGuiAndVerificationAcrossProtocols(GameTestHelper helper) throws Exception {
         boolean enabled=TouhouAIFunConfig.AGENT_RUNTIME.get();TouhouAIFunConfig.AGENT_RUNTIME.set(true);
         var maid=helper.spawn(InitEntities.MAID.get(),new BlockPos(2,1,2));maid.setNoAi(true);
@@ -559,7 +808,7 @@ public final class AgentRuntimeGameTests {
         for(var body:List.of(anthropicBody,responseBody)) helper.assertTrue(body.getAsJsonArray("tools").asList().stream().map(value->value.getAsJsonObject().get("name").getAsString()).toList().equals(expected),"Protocol adapters use the same stage-specific schemas");
         helper.assertTrue(catalog.directory().contains("Stage: "+task.toolSelection().stage()) && catalog.directory().contains("Direct tools: "+expected),"Directory and token reservation describe the actual tools");
     }
-    @GameTest(template="empty",templateNamespace="aifun_gui_test")
+    @GameTest(batch="isolated_taskToolMenuAllowsExplicitExtrasWithoutRestoringWholeGuiGroup",template="empty",templateNamespace="aifun_gui_test")
     public static void taskToolMenuAllowsExplicitExtrasWithoutRestoringWholeGuiGroup(GameTestHelper helper) throws Exception {
         boolean enabled=TouhouAIFunConfig.AGENT_RUNTIME.get();TouhouAIFunConfig.AGENT_RUNTIME.set(true);
         var maid=helper.spawn(InitEntities.MAID.get(),new BlockPos(2,1,2));maid.setNoAi(true);
@@ -588,7 +837,7 @@ public final class AgentRuntimeGameTests {
         JsonObject call=new JsonObject();call.addProperty("id",id);call.add("function",function);JsonArray calls=new JsonArray();calls.add(call);
         JsonObject body=new JsonObject();body.add("tool_calls",calls);return new Gson().fromJson(body,Message.class);
     }
-    @GameTest(template="empty",templateNamespace="aifun_gui_test")
+    @GameTest(batch="isolated_prunedPlanningMenuKeepsMutationGuardRecoveryAndSameBatchFinish",template="empty",templateNamespace="aifun_gui_test")
     public static void prunedPlanningMenuKeepsMutationGuardRecoveryAndSameBatchFinish(GameTestHelper helper) throws Exception {
         boolean enabled=TouhouAIFunConfig.AGENT_RUNTIME.get();TouhouAIFunConfig.AGENT_RUNTIME.set(true);
         var maid=helper.spawn(InitEntities.MAID.get(),new BlockPos(2,1,2));maid.setNoAi(true);
@@ -619,7 +868,7 @@ public final class AgentRuntimeGameTests {
             helper.assertTrue(chest.getItem(0).isEmpty() && MaidGuiSessionManager.session(maid.getUUID())==null && state.transfers.values().stream().mapToLong(Long::longValue).sum()==2,"Two items moved exactly once and the menu settled");helper.succeed();
         } finally {AgentRuntime.stop(maid,true);com.wjx.touhou_aifun.compat.ai.openai.ToolContextSelector.clearSnapshot(task);TouhouAIFunConfig.AGENT_RUNTIME.set(enabled);}
     }
-    @GameTest(template="empty",templateNamespace="aifun_gui_test")
+    @GameTest(batch="isolated_schemaDependenciesInvalidateDefinitionsWithoutForgettingLoadedTools",template="empty",templateNamespace="aifun_gui_test")
     public static void schemaDependenciesInvalidateDefinitionsWithoutForgettingLoadedTools(GameTestHelper helper) {
         var maid=helper.spawn(InitEntities.MAID.get(),new BlockPos(2,1,2)); maid.setNoAi(true);
         var state=new AgentTaskState("test schema"); state.status=AgentTaskState.Status.running;
@@ -638,7 +887,7 @@ public final class AgentRuntimeGameTests {
             com.wjx.touhou_aifun.compat.ai.openai.ToolContextSelector.clearSnapshot(task); state.status=AgentTaskState.Status.cancelled; task.archiveState();
         }
     }
-    @GameTest(template="empty",templateNamespace="aifun_gui_test")
+    @GameTest(batch="isolated_resumedTaskCannotMutateUsingOnlyOldObservation",template="empty",templateNamespace="aifun_gui_test")
     public static void resumedTaskCannotMutateUsingOnlyOldObservation(GameTestHelper helper) {
         var maid=helper.spawn(InitEntities.MAID.get(),new BlockPos(2,1,2)); maid.setNoAi(true);
         var state=new AgentTaskState("resume"); state.status=AgentTaskState.Status.running; state.generation=2;
@@ -651,7 +900,7 @@ public final class AgentRuntimeGameTests {
             state.status=AgentTaskState.Status.cancelled; task.archiveState(); helper.succeed();
         });
     }
-    @GameTest(template="empty",templateNamespace="aifun_gui_test",timeoutTicks=300)
+    @GameTest(batch="isolated_fiftyWorldTransfersKeepConstraintsAndForegroundChatSeparate",template="empty",templateNamespace="aifun_gui_test",timeoutTicks=300)
     public static void fiftyWorldTransfersKeepConstraintsAndForegroundChatSeparate(GameTestHelper helper) throws Exception {
         boolean enabled=TouhouAIFunConfig.AGENT_RUNTIME.get(); TouhouAIFunConfig.AGENT_RUNTIME.set(true);
         for(var floor:BlockPos.betweenClosed(new BlockPos(0,0,0),new BlockPos(5,0,5))) helper.setBlock(floor,Blocks.STONE);
@@ -733,7 +982,7 @@ public final class AgentRuntimeGameTests {
         callback.next(scripted);
     }
 
-    @GameTest(template="empty",templateNamespace="aifun_gui_test")
+    @GameTest(batch="isolated_liveCompletionRequiresCurrentDimensionPositionAndInventory",template="empty",templateNamespace="aifun_gui_test")
     public static void liveCompletionRequiresCurrentDimensionPositionAndInventory(GameTestHelper helper) {
         var maid=helper.spawn(InitEntities.MAID.get(),new BlockPos(2,1,2)); maid.setNoAi(true);
         var task=new AgentTaskState("carry 5 iron");
