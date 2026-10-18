@@ -6,11 +6,12 @@ import com.github.tartaricacid.touhoulittlemaid.entity.passive.MaidPathFindingBF
 import com.google.gson.*;
 import com.wjx.touhou_aifun.TouhouAIFun;
 import com.wjx.touhou_aifun.chat.ChatFlowManager;
+import com.wjx.touhou_aifun.chat.context.AIFunMemoryManager;
 import com.wjx.touhou_aifun.config.TouhouAIFunConfig;
 import com.wjx.touhou_aifun.maid.action.MaidActionLease;
 import com.wjx.touhou_aifun.maid.action.MaidEatFoodActionManager;
+import com.wjx.touhou_aifun.maid.action.MaidBlockInteraction;
 import net.minecraft.core.BlockPos;
-import net.minecraft.core.Direction;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.InteractionHand;
@@ -80,6 +81,10 @@ public final class MaidGuiSessionManager {
             return CompletableFuture.completedFuture(error("wrong_thread"));
         }
         if (ChatFlowManager.isSuperseded(maid.getUUID(), callback)) return CompletableFuture.completedFuture(error("superseded"));
+        if (tool.equals("query_recipes")) {
+            try { return CompletableFuture.completedFuture(GuiCraftingService.query(maid, request)); }
+            catch (RuntimeException failure) { return CompletableFuture.completedFuture(error(failure.getMessage())); }
+        }
         Task task = TASKS.get(maid.getUUID());
         if (task != null && task.callback != callback) { cancel(maid.getUUID(), "superseded"); task = null; }
         if (task == null) { task = new Task(callback); TASKS.put(maid.getUUID(), task); }
@@ -98,7 +103,7 @@ public final class MaidGuiSessionManager {
                 if (session == null || !session.id.toString().equals(string(request, "session_id", ""))) {
                     return CompletableFuture.completedFuture(error("session_expired_or_mismatch"));
                 }
-                if (session.waitFuture != null || GuiClientBridge.busy(session)) return CompletableFuture.completedFuture(error("operation_in_progress"));
+                if (session.waitFuture != null || session.crafting != null || GuiClientBridge.busy(session)) return CompletableFuture.completedFuture(error("operation_in_progress"));
                 session.actor.align();
                 if (!session.menu().stillValid(session.actor)) { cancel(maid.getUUID(), "menu_invalid"); return CompletableFuture.completedFuture(error("menu_invalid")); }
                 if (tool.equals("gui_action")) reserveActions(session, 1);
@@ -109,7 +114,8 @@ public final class MaidGuiSessionManager {
                     }
                     case "gui_action" -> {
                         String action = string(request, "action", "");
-                        if (Set.of("click", "type", "scroll", "widget", "key").contains(action)) future = GuiClientBridge.request(session, "input", request);
+                        if (action.equals("craft_recipe")) future = GuiCraftingService.start(session, request);
+                        else if (Set.of("click", "type", "scroll", "widget", "key").contains(action)) future = GuiClientBridge.request(session, "input", request);
                         else future = CompletableFuture.completedFuture(action(session, request));
                     }
                     case "gui_batch" -> future = CompletableFuture.completedFuture(batch(session, request));
@@ -269,7 +275,7 @@ public final class MaidGuiSessionManager {
         } else if (!MaidGuiInventoryBinding.enabled(session.actor.getInventory(), itemSlot) || session.actor.getInventory().getItem(itemSlot).isEmpty()) {
             throw new IllegalArgumentException("item_slot_unavailable");
         }
-        BlockPos approach = itemSlot >= 0 ? maid.blockPosition() : selectedApproach != null ? selectedApproach : approach(maid, target, radius);
+        BlockPos approach = itemSlot >= 0 ? maid.blockPosition() : selectedApproach != null ? selectedApproach : approach(maid, target, radius, entityId == null);
         if (approach == null) throw new IllegalArgumentException("unreachable");
         selection.finish("ok",0);
         String blockId = target == null || entityId != null ? "" : BuiltInRegistries.BLOCK.getKey(level.getBlockState(target).getBlock()).toString();
@@ -291,7 +297,11 @@ public final class MaidGuiSessionManager {
         } finally {selection.finish("finished",0);}
     }
     private static BlockPos approach(EntityMaid maid, BlockPos target, int radius) {
-        if (maid.distanceToSqr(Vec3.atCenterOf(target)) <= 2.25 * 2.25) return maid.blockPosition();
+        return approach(maid, target, radius, true);
+    }
+    private static BlockPos approach(EntityMaid maid, BlockPos target, int radius, boolean block) {
+        if (block ? MaidBlockInteraction.hit(maid, target) != null
+                : maid.distanceToSqr(Vec3.atCenterOf(target)) <= 2.25 * 2.25) return maid.blockPosition();
         ServerLevel level = (ServerLevel) maid.level();
         // PathNavigationRegion calls getChunk while constructing its cache. Check the entire
         // cache area before either the shared BFS or vanilla navigation can request a chunk.
@@ -299,12 +309,11 @@ public final class MaidGuiSessionManager {
         if (!loadedRegion(level, maid.blockPosition(), pathRadius)) throw new IllegalArgumentException("path_region_not_loaded");
         MaidPathFindingBFS bfs = new MaidPathFindingBFS(maid.getNavigation().getNodeEvaluator(), (ServerLevel) maid.level(), maid, maid.blockPosition(), radius + 2F, 6);
         try {
-            // canPathReach also accepts the floor below a reachable node. Navigation needs
-            // the actual standing position, so select a visited node within interaction range.
-            // The current block's centre can be in range while the maid's exact feet
-            // are outside. Navigating back to that same node completes without moving.
+            // Select a real standing node with the same eye/surface/visibility rule used
+            // at interaction time. A nearby node behind a wall is not a valid approach.
             return bfs.find(pos -> !pos.equals(target) && !sameStandingColumn(maid,pos) && maid.isWithinRestriction(pos)
-                    && Vec3.atBottomCenterOf(pos).distanceToSqr(Vec3.atCenterOf(target)) <= 2.25 * 2.25)
+                    && (block ? MaidBlockInteraction.canInteractFrom(maid, target, pos)
+                    : Vec3.atBottomCenterOf(pos).distanceToSqr(Vec3.atCenterOf(target)) <= 2.25 * 2.25))
                     .map(BlockPos::immutable).orElse(null);
         } finally { bfs.finish(); }
     }
@@ -349,7 +358,9 @@ public final class MaidGuiSessionManager {
                 && !opening.blockId.equals(BuiltInRegistries.BLOCK.getKey(level.getBlockState(target).getBlock()).toString()))) {
             closeSession(maid.getUUID(), "target_changed"); return;
         }
-        if (opening.itemSlot < 0 && maid.distanceToSqr(Vec3.atCenterOf(target)) > 2.25 * 2.25) {
+        BlockHitResult blockHit = opening.itemSlot < 0 && opening.entity == null ? MaidBlockInteraction.hit(maid, target) : null;
+        if (opening.itemSlot < 0 && (opening.entity == null ? blockHit == null
+                : maid.distanceToSqr(Vec3.atCenterOf(target)) > 2.25 * 2.25)) {
             BlockPos walk = entity == null ? opening.approach : target;
             int pathRadius = (int) Math.ceil(maid.getAttributeValue(net.minecraft.world.entity.ai.attributes.Attributes.FOLLOW_RANGE)) + 8;
             if (!loadedRegion(level, maid.blockPosition(), pathRadius)) { closeSession(maid.getUUID(), "path_region_not_loaded"); return; }
@@ -376,8 +387,9 @@ public final class MaidGuiSessionManager {
             // A partial path may already end inside the container's interaction range.
             // Rejecting it solely on canReach can leave a maid motionless for 400 ticks
             // even when the returned endpoint is the requested standing position.
-            if (!path.canReach() && Vec3.atBottomCenterOf(path.getEndNode().asBlockPos())
-                    .distanceToSqr(Vec3.atCenterOf(target)) > 2.25 * 2.25) return;
+            if (!path.canReach() && (entity == null
+                    ? !MaidBlockInteraction.canInteractFrom(maid, target, path.getEndNode().asBlockPos())
+                    : Vec3.atBottomCenterOf(path.getEndNode().asBlockPos()).distanceToSqr(Vec3.atCenterOf(target)) > 2.25 * 2.25)) return;
             for (int i = 0; i < path.getNodeCount(); i++) if (!maid.isWithinRestriction(path.getNode(i).asBlockPos())) {
                 closeSession(maid.getUUID(), "path_outside_restriction"); return;
             }
@@ -408,8 +420,7 @@ public final class MaidGuiSessionManager {
             if (level.getBlockState(target).is(net.minecraft.world.level.block.Blocks.ENDER_CHEST)) {
                 closeSession(maid.getUUID(), "player_storage_not_bridged"); return;
             }
-            BlockHitResult hit = new BlockHitResult(Vec3.atCenterOf(target), Direction.UP, target, false);
-            var interaction = session.actor.gameMode.useItemOn(session.actor, level, session.actor.getMainHandItem(), InteractionHand.MAIN_HAND, hit);
+            var interaction = session.actor.gameMode.useItemOn(session.actor, level, session.actor.getMainHandItem(), InteractionHand.MAIN_HAND, blockHit);
             if (session.menu() == session.actor.inventoryMenu) {
                 JsonObject failure = openingError(session, "no_server_menu");
                 failure.addProperty("interaction_result", interaction.name().toLowerCase(Locale.ROOT));
@@ -422,6 +433,11 @@ public final class MaidGuiSessionManager {
         }
         if (session.menu() == session.actor.inventoryMenu) { closeSession(maid.getUUID(), "no_server_menu"); return; }
         OPENING.remove(maid.getUUID()); session.lastAction = "opened";
+        // Remember actually used workstations/containers so later chats and tasks can reuse the
+        // verified absolute position instead of rescanning for "the nearest furnace" every time.
+        if (opening.itemSlot < 0 && opening.entity == null && opening.target != null) {
+            AIFunMemoryManager.rememberLandmark(maid, "gui_open", opening.target);
+        }
         opening.future.complete(session.snapshot("opened"));
         } finally {interactionTiming.finish("finished",0);}
     }
@@ -444,7 +460,14 @@ public final class MaidGuiSessionManager {
     }
     public static JsonObject action(MaidGuiSession session, JsonObject request) {
         String kind = string(request,"action","");
-        if (kind.equals("transfer") || kind.equals("quick_move") || kind.equals("close_menu")) return actionInternal(session,request);
+        if (session.unfamiliarMenu() && session.visuallyObservedMenu != session.menu() && !kind.equals("close_menu"))
+            return error("unfamiliar_machine_inspect_gui_visual_first");
+        for (MaidGuiAdapter adapter : MaidGuiAdapters.gui()) if (adapter.supports(session.menu())) {
+            adapter.validateAction(session, request);
+            JsonObject result = adapter.execute(session, request);
+            if (result != null) return result;
+        }
+        if (kind.equals("transfer") || kind.equals("quick_move") || kind.equals("close_menu") || kind.equals("fill_recipe")) return actionInternal(session,request);
         var menu = session.menu();
         var external = externalItems(session,menu);var inventory = maidItems(session);
         try { return actionInternal(session,request); }
@@ -457,16 +480,26 @@ public final class MaidGuiSessionManager {
     }
     private static Map<String,Integer> externalItems(MaidGuiSession session,AbstractContainerMenu menu) {
         Map<String,Integer> counts=new HashMap<>();
-        Map<net.minecraft.world.Container,Set<Integer>> seen=new IdentityHashMap<>();
-        for(Slot slot:menu.slots) if(slot.container!=session.actor.getInventory()
-                && seen.computeIfAbsent(slot.container,k->new HashSet<>()).add(slot.getContainerSlot())) {
+        Map<Object,Set<Integer>> seen=new IdentityHashMap<>();
+        for(Slot slot:menu.slots) if(!MaidGuiSlots.belongsTo(slot,session.actor.getInventory())
+                && seen.computeIfAbsent(MaidGuiSlots.storage(slot),k->new HashSet<>()).add(slot.getContainerSlot())) {
             var stack=slot.getItem();if(!stack.isEmpty()) counts.merge(MaidGuiSession.itemId(stack),stack.getCount(),Integer::sum);
         }
         return counts;
     }
     private static void recordLedger(MaidGuiSession session,AbstractContainerMenu menu,Map<String,Integer> external,Map<String,Integer> inventory) {
-        for(var transfer:session.transferLedger.observe(external,externalItems(session,menu),inventory,maidItems(session)))
+        recordLedger(session, menu, external, inventory, false);
+    }
+    private static void recordLedger(MaidGuiSession session,AbstractContainerMenu menu,Map<String,Integer> external,Map<String,Integer> inventory, boolean creditDelivery) {
+        for(var transfer:session.transferLedger.observe(external,externalItems(session,menu),inventory,maidItems(session))) {
+            if (creditDelivery && transfer.toMaid()) session.delivered.merge(transfer.item(), transfer.count(), Integer::sum);
             recordTaskTransfer(session,transfer.item(),transfer.count(),!transfer.toMaid(),transfer.toMaid());
+        }
+        if (creditDelivery) { Task task = TASKS.get(session.maid.getUUID()); if (task != null) task.delivered.putAll(session.delivered); }
+    }
+    static Runnable protocolSettlement(MaidGuiSession session) {
+        var menu = session.menu(); var external = externalItems(session, menu); var inventory = maidItems(session);
+        return () -> recordLedger(session, menu, external, inventory, true);
     }
     private static JsonObject actionInternal(MaidGuiSession session, JsonObject request) {
         if (!session.maid.isAlive() || session.maid.isRemoved()) return error("maid_unavailable");
@@ -476,6 +509,7 @@ public final class MaidGuiSessionManager {
         String kind = string(request, "action", "");
         session.lastAction = kind;
         switch (kind) {
+            case "fill_recipe" -> { return GuiCraftingService.fill(session, request); }
             case "close_menu" -> {
                 JsonObject result = session.snapshot("closed"); closeSession(session.maid.getUUID(), "closed");
                 result.addProperty("dropped_count", session.droppedCount + session.actor.droppedCount); return result;
@@ -485,8 +519,8 @@ public final class MaidGuiSessionManager {
                 int to = number(request, "to_slot", -1, 0, session.menu().slots.size() - 1);
                 int count = number(request, "count", 64, 1, 64);
                 String movedItem = MaidGuiSession.itemId(session.menu().getSlot(from).getItem());
-                boolean toMaid = session.menu().getSlot(to).container == session.actor.getInventory();
-                boolean fromMaid = session.menu().getSlot(from).container == session.actor.getInventory();
+                boolean toMaid = MaidGuiSlots.belongsTo(session.menu().getSlot(to), session.actor.getInventory());
+                boolean fromMaid = MaidGuiSlots.belongsTo(session.menu().getSlot(from), session.actor.getInventory());
                 int moved = transfer(session, from, to, count, true);
                 JsonObject result = session.snapshot(moved > 0 ? "ok" : "no_change"); result.addProperty("external_transfer", fromMaid != toMaid); result.addProperty("moved_item", movedItem); result.addProperty("to_maid", toMaid); result.addProperty("moved_count", moved); return result;
             }
@@ -494,13 +528,16 @@ public final class MaidGuiSessionManager {
                 int slot = sourceSlot(request, session.menu().slots.size() - 1);
                 checkObserved(session, slot);
                 ItemStack source = session.menu().getSlot(slot).getItem().copy();
+                if (kind.equals("quick_move")) checkTaskTransferAllowance(session,MaidGuiSession.itemId(source),source.getCount(),
+                        !MaidGuiSlots.belongsTo(session.menu().getSlot(slot),session.actor.getInventory()),
+                        !session.menu().getSlot(slot).mayPlace(source) && !(session.menu().getSlot(slot) instanceof FurnaceResultSlot));
                 int before = inventoryCount(session, MaidGuiSession.itemId(source));
                 session.menu().clicked(slot, number(request, "button", 0, 0, 1),
                         kind.equals("quick_move") ? ClickType.QUICK_MOVE : ClickType.PICKUP, session.actor);
                 int delta = inventoryCount(session, MaidGuiSession.itemId(source)) - before;
                 if (kind.equals("quick_move") && delta != 0) recordTaskTransfer(session,MaidGuiSession.itemId(source),Math.abs(delta),delta < 0,delta > 0);
                 int moved = Math.max(0, delta);
-                if (session.menu().getSlot(slot).container != session.actor.getInventory()) session.delivered.merge(MaidGuiSession.itemId(source), moved, Integer::sum);
+                if (!MaidGuiSlots.belongsTo(session.menu().getSlot(slot), session.actor.getInventory())) session.delivered.merge(MaidGuiSession.itemId(source), moved, Integer::sum);
             }
             case "button" -> {
                 if (!session.menu().clickMenuButton(session.actor, number(request, "button_id", -1, 0, 65535))) return error("button_rejected_or_requires_adapter");
@@ -565,6 +602,9 @@ public final class MaidGuiSessionManager {
         if (!destination.isEmpty() && !ItemStack.isSameItemSameTags(stack, destination)) return 0;
         int amount = Math.min(count, Math.min(stack.getCount(), target.getMaxStackSize(stack) - destination.getCount()));
         if (amount <= 0) return 0;
+        if (MaidGuiSlots.belongsTo(source,session.actor.getInventory()) != MaidGuiSlots.belongsTo(target,session.actor.getInventory()))
+            checkTaskTransferAllowance(session,MaidGuiSession.itemId(stack),amount,
+                    MaidGuiSlots.belongsTo(target,session.actor.getInventory()),!source.mayPlace(stack) && !(source instanceof FurnaceResultSlot));
         boolean partialFurnace = source instanceof FurnaceResultSlot && amount < stack.getCount();
         if (amount < stack.getCount() && !source.mayPlace(stack) && !partialFurnace) throw new IllegalArgumentException("indivisible_output_stack");
         int before = destination.getCount();
@@ -580,18 +620,29 @@ public final class MaidGuiSessionManager {
             }
         }
         int moved = Math.max(0, target.getItem().getCount() - before);
-        if (source.container != session.actor.getInventory() && target.container == session.actor.getInventory()) session.delivered.merge(MaidGuiSession.itemId(stack), moved, Integer::sum);
-        if (source.container != target.container && moved > 0) recordTaskTransfer(session, MaidGuiSession.itemId(stack), moved,
-                source.container == session.actor.getInventory(), target.container == session.actor.getInventory());
+        if (!MaidGuiSlots.belongsTo(source, session.actor.getInventory()) && MaidGuiSlots.belongsTo(target, session.actor.getInventory())) session.delivered.merge(MaidGuiSession.itemId(stack), moved, Integer::sum);
+        if (MaidGuiSlots.storage(source) != MaidGuiSlots.storage(target) && moved > 0) recordTaskTransfer(session, MaidGuiSession.itemId(stack), moved,
+                MaidGuiSlots.belongsTo(source, session.actor.getInventory()), MaidGuiSlots.belongsTo(target, session.actor.getInventory()));
         session.menu().broadcastChanges(); return moved;
     }
-    private static void recordTaskTransfer(MaidGuiSession session, String item, int count, boolean fromMaid, boolean toMaid) {
+    static void recordTaskTransfer(MaidGuiSession session, String item, int count, boolean fromMaid, boolean toMaid) {
         if (!(session.callback instanceof com.wjx.touhou_aifun.chat.agent.TaskCallback task) || fromMaid == toMaid || session.targetPosition == null) return;
         JsonObject fact = new JsonObject(); fact.addProperty("external_transfer",true); fact.addProperty("moved_item",item);
         fact.addProperty("moved_count",count); fact.addProperty("to_maid",toMaid);
         fact.addProperty("dimension",session.maid.level().dimension().location().toString());
         JsonArray pos = new JsonArray(); pos.add(session.targetPosition.getX()); pos.add(session.targetPosition.getY()); pos.add(session.targetPosition.getZ());
         fact.add("target_position",pos); task.recordMutation(fact);
+    }
+    static void checkTaskTransferAllowance(MaidGuiSession session,String item,int count,boolean receive,boolean nativeBatch) {
+        if (!(session.callback instanceof com.wjx.touhou_aifun.chat.agent.TaskCallback task) || session.targetPosition==null) return;
+        JsonArray pos=new JsonArray();pos.add(session.targetPosition.getX());pos.add(session.targetPosition.getY());pos.add(session.targetPosition.getZ());
+        task.task.checkTransferAllowance(session.maid.level().dimension().location().toString(),pos,item,receive,count,nativeBatch);
+    }
+    static void recordCraftedOutput(MaidGuiSession session, String item, int count) {
+        session.delivered.merge(item, count, Integer::sum);
+        recordTaskTransfer(session, item, count, false, true);
+        Task task = TASKS.get(session.maid.getUUID());
+        if (task != null) task.delivered.putAll(session.delivered);
     }
     private static CompletableFuture<JsonObject> waitFor(MaidGuiSession session, JsonObject request) {
         String goalItem = string(request, "item", session.goalItem);
@@ -626,7 +677,7 @@ public final class MaidGuiSessionManager {
         if (outstanding <= 0) return;
         for (int from = 0; from < session.menu().slots.size(); from++) {
             Slot output = session.menu().getSlot(from);
-            if (session.goalOutputSlot >= 0 ? from != session.goalOutputSlot : output.container == session.actor.getInventory()
+            if (session.goalOutputSlot >= 0 ? from != session.goalOutputSlot : MaidGuiSlots.belongsTo(output, session.actor.getInventory())
                     || output.mayPlace(output.getItem())) continue;
             if (!MaidGuiSession.itemId(output.getItem()).equals(session.goalItem)) continue;
             // Do not split an indivisible crafting output. Report actual delivery, including a
@@ -635,7 +686,7 @@ public final class MaidGuiSessionManager {
             int requested = Math.max(outstanding, indivisible ? output.getItem().getCount() : outstanding);
             for (int to = 0; to < session.menu().slots.size() && outstanding > 0; to++) {
                 Slot slot = session.menu().getSlot(to);
-                if (slot.container != session.actor.getInventory() || slot.getContainerSlot() == 0) continue;
+                if (!MaidGuiSlots.belongsTo(slot, session.actor.getInventory()) || MaidGuiSlots.inventorySlot(slot, session.actor.getInventory()) == 0) continue;
                 if (indivisible && slot.getMaxStackSize(output.getItem()) - slot.getItem().getCount() < output.getItem().getCount()) continue;
                 int moved = transfer(session, from, to, Math.min(64, requested), false);
                 outstanding -= moved; requested -= moved;
@@ -654,7 +705,7 @@ public final class MaidGuiSessionManager {
                 if (!session.maid.isAlive() || session.maid.isRemoved() || ChatFlowManager.isSuperseded(session.maid.getUUID(), session.callback)
                         || !Objects.equals(session.owner, session.maid.getOwnerUUID())) { cancel(session.maid.getUUID(), "cancelled"); continue; }
                 if(session.callback instanceof com.wjx.touhou_aifun.chat.agent.TaskCallback execution && !execution.task.pendingAmendment.isBlank()
-                        && (session.waitFuture!=null || OPENING.containsKey(session.maid.getUUID()))) {
+                        && (session.waitFuture!=null || session.crafting!=null || OPENING.containsKey(session.maid.getUUID()))) {
                     cancel(session.maid.getUUID(),"goal_updated_before_next_atomic_action"); continue;
                 }
                 if (task != null && task.activeTicks >= 6000) { cancel(session.maid.getUUID(), "active_time_limit"); continue; }
@@ -663,6 +714,7 @@ public final class MaidGuiSessionManager {
                 session.actor.align();
                 if (!session.menu().stillValid(session.actor)) { cancel(session.maid.getUUID(), "menu_invalid"); continue; }
                 session.menu().broadcastChanges();
+                if (session.crafting != null) { session.crafting.tick(session); continue; }
                 if (session.waitFuture != null && now % 20 == 0) {
                     if (session.waitFuture.isDone()) { closeSession(session.maid.getUUID(), "cancelled"); continue; }
                     if (session.startOnly) {
@@ -733,7 +785,7 @@ public final class MaidGuiSessionManager {
         try {
             if (session.menu() != session.actor.inventoryMenu) {
                 var menu=session.menu();var external=externalItems(session,menu);var inventory=maidItems(session);
-                try { session.actor.closeContainer(); }
+                try { try { GuiClientBridge.settle(session); } finally { session.actor.closeContainer(); } }
                 finally { recordLedger(session,menu,external,inventory); }
             }
             if (session.borrowedItemSlot > 0) {
@@ -745,8 +797,10 @@ public final class MaidGuiSessionManager {
         } finally {
             session.maid.getNavigation().stop(); session.maid.getBrain().eraseMemory(MemoryModuleType.WALK_TARGET);
             MaidActionLease.release(maid, session); GuiClientBridge.cancel(session);
+            session.actor.protocol.close();
             if (opening != null && !opening.future.isDone()) opening.future.complete(openingFailure == null ? error(reason) : openingFailure);
             if (session.waitFuture != null && !session.waitFuture.isDone()) session.waitFuture.complete(error(reason));
+            if (session.crafting != null) session.crafting.cancel(session, reason);
         }
     }
     public static void clearAll() { for (UUID maid : List.copyOf(SESSIONS.keySet())) cancel(maid, "server_stopped"); TASKS.clear(); }

@@ -66,18 +66,10 @@ public final class ToolCatalogSnapshot {
                 ObjectParameter root = ObjectParameter.create();
                 Parameter parameter = tool instanceof com.wjx.touhou_aifun.chat.agent.TaskPlanningTool planner
                         && callback instanceof com.wjx.touhou_aifun.chat.agent.TaskCallback executor
-                        ? planner.parameters(root,maid,executor.decisionServiceEnabled() && executor.task.loadedTools.contains("group:task_actions"))
+                        ? planner.parameters(root,maid,executor.decisionServiceEnabled() && executor.task.loadedTools.contains("group:task_actions"),executor.task.completion!=null)
                         : tool instanceof com.wjx.touhou_aifun.compat.ai.action.GuiTool gui
-                            ? gui.parameters(root, maid, taskExecutor) : tool.parameters(root, maid);
-                Tool openAI = FunctionTool.create().setName(id).setDescription(summary)
-                        .setParameters(parameter).build();
-                JsonObject anthropic = new JsonObject();
-                anthropic.addProperty("name", id);
-                anthropic.addProperty("description", summary);
-                anthropic.add("input_schema", GSON.toJsonTree(parameter));
-                int schemaTokens = Math.max(ContextTokenEstimator.estimate(GSON.toJson(openAI)),
-                        ContextTokenEstimator.estimate(GSON.toJson(anthropic)));
-                entries.put(id, new Entry(id, tool, summary, openAI, anthropic, schemaTokens));
+                            ? gui.parameters(root, maid, taskExecutor,callback instanceof com.wjx.touhou_aifun.chat.agent.TaskCallback selectedTask && selectedTask.allowedTools()!=null) : tool.parameters(root, maid);
+                entries.put(id, entry(id,tool,summary,parameter));
                 if (!ToolContextSelector.isCore(id)) {
                     optional.add(id);
                     directory.append("- ").append(id).append(": ").append(compact(summary, 180)).append('\n');
@@ -87,8 +79,21 @@ public final class ToolCatalogSnapshot {
                         id, e.getMessage());
             }
         });
+        if(callback instanceof com.wjx.touhou_aifun.chat.agent.TaskCallback executor && entries.containsKey(ToolContextSelector.LOAD_SCHEMA_TOOL)
+                && entries.get(ToolContextSelector.LOAD_SCHEMA_TOOL).implementation() instanceof LoadToolSchemaTool) {
+            var loader=entries.get(ToolContextSelector.LOAD_SCHEMA_TOOL);
+            var ids=new java.util.TreeSet<>(entries.keySet());ids.add("group:gui");
+            if(executor.decisionServiceEnabled())ids.add("group:task_actions");
+            entries.put(loader.id(),entry(loader.id(),loader.implementation(),loader.summary(),LoadToolSchemaTool.taskParameters(ids)));
+        }
         return new ToolCatalogSnapshot(entries, optional, directory.toString().trim(),
                 callback instanceof com.wjx.touhou_aifun.chat.agent.TaskCallback task ? task : null);
+    }
+    private static Entry entry(String id,ITool<?> tool,String summary,Parameter parameter) {
+        Tool openAI=FunctionTool.create().setName(id).setDescription(summary).setParameters(parameter).build();
+        var anthropic=new JsonObject();anthropic.addProperty("name",id);anthropic.addProperty("description",summary);anthropic.add("input_schema",GSON.toJsonTree(parameter));
+        int tokens=Math.max(ContextTokenEstimator.estimate(GSON.toJson(openAI)),ContextTokenEstimator.estimate(GSON.toJson(anthropic)));
+        return new Entry(id,tool,summary,openAI,anthropic,tokens);
     }
 
     public String directory() {
@@ -97,9 +102,11 @@ public final class ToolCatalogSnapshot {
             var direct = selected(task.task.loadedTools).stream().map(Entry::id).toList();
             StringBuilder out = new StringBuilder("## Task tool menu\nStage: ").append(context.stage())
                     .append(". Direct tools: ").append(direct).append(".\n")
-                    .append("World/GUI schemas change automatically after observations, plans and menu changes; do not load tools already present. ")
+                    .append("Tools follow the current stage and active selection; do not load tools already present. ")
                     .append("If an additional owner requirement needs a missing tool, load its exact id using load_tool_schema. ")
                     .append("Verification is a tool-selection stage, not a completion declaration.\n");
+            if(task.allowedTools()!=null) out.append("Step allowed_tools active.\n");
+            if(!context.guiOpen())out.append("Menu closed: open_gui first, then use its NEW session_id/revision. Listed GUI actions do not imply an open session; old ids are invalid. Craft with gui_action(action=craft_recipe,recipe_id,count); craft_recipe is not a standalone tool.\n");
             var deferred = new java.util.TreeMap<>(entries);
             direct.forEach(deferred::remove);
             var phaseIds = deferred.keySet().stream()
@@ -132,12 +139,35 @@ public final class ToolCatalogSnapshot {
         return task != null ? entries.containsKey(id) : optionalIds.contains(id);
     }
 
+    /** Compare frozen definitions only; never rerun extension hooks to evaluate a hint. */
+    public boolean restrictionSavesSchema(Set<String> ids) {
+        if(task==null)return false;
+        var current=task.toolSelection();
+        // Opening a menu reveals its schemas without another selection call. Account for that
+        // when evaluating a hint on an action which has just closed/opened a menu.
+        for(boolean guiOpen:new boolean[]{current.guiOpen(),true}) {
+            var context=new com.wjx.touhou_aifun.chat.agent.TaskToolSelection.Context(current.freshWorld(),
+                    task.task.completion!=null,current.conditionsMet(),guiOpen,current.recovering(),current.requested());
+            var all=com.wjx.touhou_aifun.chat.agent.TaskToolSelection.select(context,task.task.loadedTools,entries.keySet());
+            var narrowed=com.wjx.touhou_aifun.chat.agent.TaskToolSelection.select(context,task.task.loadedTools,entries.keySet(),ids);
+            int before=all.stream().mapToInt(id->entries.get(id).schemaTokens()).sum();
+            int after=narrowed.stream().mapToInt(id->entries.get(id).schemaTokens()).sum();
+            if(before-after>=512 && (long)(before-after)*5>=before)return true;
+        }
+        return false;
+    }
+
     public List<Entry> selected(Set<String> requestedIds) {
         List<Entry> selected = new ArrayList<>();
         var ids = task != null
-                ? com.wjx.touhou_aifun.chat.agent.TaskToolSelection.select(task.toolSelection(), requestedIds, entries.keySet())
+                ? com.wjx.touhou_aifun.chat.agent.TaskToolSelection.select(task.toolSelection(), requestedIds, entries.keySet(),task.allowedTools())
                 : ToolSelectionPolicy.select(ToolContextSelector.coreToolIds(), optionalIds, requestedIds, entries.keySet());
         ids.forEach(id -> selected.add(entries.get(id)));
+        if(task!=null)selected.sort(java.util.Comparator.comparingInt((Entry entry)->switch(entry.id()) {
+            // The planner changes shape on owner amendments. Keep it after stable operation
+            // definitions so its full/registered variants do not split their common prefix.
+            case "load_tool_schema" -> 0;case "open_gui" -> 1;case "read_task_result" -> 2;case "update_task_plan" -> 4;default -> 3;
+        }).thenComparing(Entry::id));
         return List.copyOf(selected);
     }
 
@@ -146,6 +176,8 @@ public final class ToolCatalogSnapshot {
         int tokens = ContextTokenEstimator.estimate(directory())
                 + ADJACENT_PROMPT_RESERVE;
         for (Entry entry : selected(requestedIds)) tokens += entry.schemaTokens();
+        if(task!=null && task.allowedTools()!=null)
+            tokens+=AllowedToolsRequestPolicy.reserve(selected(requestedIds).stream().map(Entry::id).toList());
         return Math.max(512, tokens);
     }
 

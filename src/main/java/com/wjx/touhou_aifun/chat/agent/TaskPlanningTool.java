@@ -10,17 +10,24 @@ import com.mojang.serialization.Codec;
 import java.util.*;
 
 /** Plans may define a missing completion before transfers, but cannot weaken an existing contract. */
-public final class TaskPlanningTool implements ITool<JsonObject> {
+public class TaskPlanningTool implements ITool<JsonObject> {
     @Override public String id() { return "update_task_plan"; }
     @Override public boolean trigger(EntityMaid maid,ChatCompletion request) { return AgentRuntime.enabled(maid); }
-    @Override public String summary(EntityMaid maid) { return "Record a short task plan/current step. Define missing completion from fresh observations BEFORE transfers, covering every user requirement. When all steps and requirements are finished, set complete=true with current_step at the last step; the runtime verifies live facts and closes the task without another model request. Can follow close_gui in the same ordered batch. Existing conditions cannot be weakened."; }
+    @Override public String summary(EntityMaid maid) { return "Register a short plan and the FULL missing completion contract before mutations, covering every owner requirement. Once registered, execute actions directly; progress/tool selection alone does not need another planning call. GUI calls accept optional next_step/next_allowed_tools. complete=true at the final index requests live verification. Existing conditions cannot be weakened."; }
     @Override public Parameter parameters(ObjectParameter root,EntityMaid maid) {
         return parameters(root,maid,false);
     }
     public Parameter parameters(ObjectParameter root,EntityMaid maid,boolean decisionEnabled) {
+        return parameters(root,maid,decisionEnabled,false);
+    }
+    /** Once registered, the immutable contract stays in the checkpoint, not a repeated definition schema. */
+    public Parameter parameters(ObjectParameter root,EntityMaid maid,boolean decisionEnabled,boolean completionDefined) {
         root.addProperties("steps",ArrayParameter.create().setItems(StringParameter.create().setMaxLength(256)).setMinItems(1).setMaxItems(32),true);
         root.addProperties("current_step",IntegerParameter.create().setMinimum(0).setMaximum(31),true);
-        root.addProperties("completion",AgentTool.completionParameter(),false);
+        if(!completionDefined)root.addProperties("completion",AgentTool.completionParameter(),false);
+        else root.setDescription("Completion is already registered and immutable; use the full checkpoint conditions and recorded receipts. Omit completion here. Owner amendments restore its definition schema automatically. Update only the plan/step/tool selection or declare verified completion.");
+        root.addProperties("allowed_tools",ArrayParameter.create().setItems(StringParameter.create().setMaxLength(128)).setRange(0,64)
+                .setDescription("Small tool set for a repeatedly executed phase; omit for short/mixed phases. Prefer inline selection on open_gui; [] restores stage menus. Never plan solely for selection."),false);
         if (decisionEnabled) {
             ObjectParameter action=ObjectParameter.create();
             action.addProperties("tool",StringParameter.create().setDescription("Exact eligible tool id; queue management and nested planning are excluded."),true);
@@ -46,13 +53,22 @@ public final class TaskPlanningTool implements ITool<JsonObject> {
         try {
             var values=args.getAsJsonArray("steps"); int step=args.get("current_step").getAsInt();
             if(values==null || values.isEmpty() || values.size()>32 || step<0 || step>=values.size()) throw new IllegalArgumentException();
-            List<String> plan=new ArrayList<>(); for(var value:values) { String text=value.getAsString(); if(text.isBlank() || text.codePointCount(0,text.length())>256) throw new IllegalArgumentException(); plan.add(text); }
+            List<String> plan=new ArrayList<>(); for(var value:values) {
+                String text=value.getAsString();
+                if(text.isBlank())throw new IllegalArgumentException("plan_step_empty: index="+plan.size());
+                if(text.codePointCount(0,text.length())>256)throw new IllegalArgumentException("plan_step_too_long: index="+plan.size()+"; limit=256 characters. Abbreviate ONLY descriptive steps; keep the FULL completion contract and every owner requirement. Do not split a repeated owner phase into per-container phases. No plan or completion was registered.");
+                plan.add(text);
+            }
             boolean complete=false;
             if(args.has("complete")) {
                 if(!args.get("complete").isJsonPrimitive() || !args.getAsJsonPrimitive("complete").isBoolean()) throw new IllegalArgumentException("complete_must_be_boolean");
                 complete=args.get("complete").getAsBoolean();
             }
             if(complete && step!=values.size()-1) throw new IllegalArgumentException("unfinished_plan_steps");
+            Set<String> allowed=null;
+            if(args.has("allowed_tools")) {
+                allowed=TaskActionHints.toolIds(task,args.get("allowed_tools"));
+            }
             JsonArray executable=args.has("action_steps")?com.wjx.touhou_aifun.chat.agent.decision.ActionPlan.validate(args.getAsJsonArray("action_steps")):null;
             if(executable!=null && !task.standalonePlanCall()) throw new IllegalArgumentException("action_plan_requires_standalone_call");
             if(executable!=null && complete) throw new IllegalArgumentException("cannot_complete_new_action_plan");
@@ -60,6 +76,7 @@ public final class TaskPlanningTool implements ITool<JsonObject> {
             if(executable!=null && task.task.completion==null) throw new IllegalArgumentException("completion_required_for_action_plan");
             if(complete) task.requestCompletion();
             task.task.steps=plan; task.task.currentStep=step;
+            if(allowed!=null)task.selectTools(allowed);
             task.task.clearActionPlan();
             if(executable!=null) {task.task.actionSteps=executable;task.task.actionPlanGoalVersion=task.task.goalVersion;}
             AgentRuntime.save(callback.getMaid());

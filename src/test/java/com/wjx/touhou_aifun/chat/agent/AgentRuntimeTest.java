@@ -88,7 +88,7 @@ class AgentRuntimeTest {
         messages.add(new LLMMessage(Role.USER,"Do not touch gold",0));
         for(int i=0;i<6;i++) calls.add(new ToolCall("g"+i,new FunctionToolCall("gui_action","{}")));
         messages.add(new LLMMessage(Role.ASSISTANT,"",0,calls,null));
-        for(int i=0;i<6;i++) messages.add(new LLMMessage(Role.TOOL,"{\"snapshot_kind\":\"full\",\"result_ref\":\"r"+i+"\",\"moved_count\":2,\"slots\":[{\"slot\":1,\"label\":\""+"x".repeat(12000)+"\"}]}",0,null,"g"+i));
+        for(int i=0;i<6;i++) messages.add(new LLMMessage(Role.TOOL,"{\"snapshot_kind\":\"full\",\"session_id\":\"observed_gui\",\"result_ref\":\"r"+i+"\",\"moved_count\":2,\"slots\":[{\"slot\":1,\"label\":\""+"x".repeat(12000)+"\"}]}",0,null,"g"+i));
         var compact=AgentContext.compact(messages,16384,new TaskResultStore());
         assertTrue(ContextTokenEstimator.estimate(compact)<16384);assertEquals(6,compact.stream().filter(m->m.role()==Role.TOOL).count());
         assertEquals(calls,compact.get(1).toolCalls());

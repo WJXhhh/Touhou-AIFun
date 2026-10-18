@@ -57,16 +57,6 @@ public final class OpenAIResponsesCompatLLMClient extends ReasoningCompatOpenAIC
                 && ChatFlowManager.isSuperseded(maid.getUUID(), callback)) return;
 
         ToolCatalogSnapshot snapshot = ToolContextSelector.snapshot(maid, callback);
-        if (com.wjx.touhou_aifun.chat.agent.AgentExecution.managed(callback)) {
-            var planned = ContextBudgetPlanner.trim(callback.getMessages(),
-                    TouhouAIFunConfig.CONTEXT_INPUT_BUDGET_TOKENS.get(),
-                    snapshot.schemaBudget(ChatFlowManager.requestedToolIds(maid.getUUID(), callback))
-                            + com.wjx.touhou_aifun.vision.MultimodalTurnContext.inputReserve(callback),
-                    AIFunMemoryManager.calibratedEstimate(maid.getAiChatManager(), callback.getMessages())
-                            / (double) Math.max(1, ContextTokenEstimator.estimate(callback.getMessages())));
-            callback.getMessages().clear();
-            callback.getMessages().addAll(planned);
-        }
 
         var preparation=AgentTelemetry.root(callback,"model_prepare");
         JsonObject body = buildRequest(callback, snapshot);
@@ -130,6 +120,8 @@ public final class OpenAIResponsesCompatLLMClient extends ReasoningCompatOpenAIC
             }
             body.add("tools", tools);
         }
+        if(callback instanceof com.wjx.touhou_aifun.chat.agent.TaskCallback task && task.allowedTools()!=null && responsesSite!=null)
+            AllowedToolsRequestPolicy.apply(body,responsesSite.url(),true);
         return body;
     }
 

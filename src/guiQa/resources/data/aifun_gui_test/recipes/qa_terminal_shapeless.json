@@ -1,0 +1,5 @@
+{
+  "type": "minecraft:crafting_shapeless",
+  "ingredients": [{"item": "aifun_gui_test:machine"}, {"item": "minecraft:redstone"}],
+  "result": {"item": "aifun_gui_test:terminal"}
+}

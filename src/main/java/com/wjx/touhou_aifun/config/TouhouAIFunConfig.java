@@ -6,6 +6,8 @@ public final class TouhouAIFunConfig {
     public static final ForgeConfigSpec SPEC;
     public static final ForgeConfigSpec.BooleanValue AGENT_RUNTIME;
     public static final ForgeConfigSpec.BooleanValue AGENT_DIAGNOSTICS;
+    public static final ForgeConfigSpec.BooleanValue AGENT_AUTOMATIC_TOOL_SELECTION;
+    public static final ForgeConfigSpec.IntValue AGENT_CONTEXT_INPUT_BUDGET_TOKENS;
     public static final ForgeConfigSpec.ConfigValue<String> AGENT_DECISION_MODEL;
     public static final ForgeConfigSpec.ConfigValue<String> AGENT_DEEPSEEK_EFFORT;
     public static final ForgeConfigSpec.BooleanValue DECISION_STARTUP_TEMPLATES;
@@ -24,6 +26,7 @@ public final class TouhouAIFunConfig {
     public static final ForgeConfigSpec.IntValue LLM_MAX_REPEAT_TOOL_BATCHES;
     public static final ForgeConfigSpec.IntValue LLM_REQUEST_TIMEOUT_SECONDS;
     public static final ForgeConfigSpec.IntValue CONTEXT_INPUT_BUDGET_TOKENS;
+    public static final ForgeConfigSpec.IntValue MEMORY_COMPRESSION_TARGET_TOKENS;
     public static final ForgeConfigSpec.IntValue MEMORY_RECENT_TURNS;
     public static final ForgeConfigSpec.BooleanValue BACKGROUND_MEMORY_EXTRACTION;
     public static final ForgeConfigSpec.ConfigValue<String> STT_SELECTED_SITE;
@@ -32,12 +35,22 @@ public final class TouhouAIFunConfig {
     public static final ForgeConfigSpec.IntValue VISION_SNAPSHOT_MEMORY_MIB;
     public static final ForgeConfigSpec.BooleanValue SHALLOW_SCAN_ENABLED;
     public static final ForgeConfigSpec.IntValue GUI_MAX_WAIT_SECONDS;
+    public static final ForgeConfigSpec.DoubleValue BLOCK_INTERACTION_REACH;
 
     static {
         ForgeConfigSpec.Builder builder = new ForgeConfigSpec.Builder();
         builder.push("agentRuntimeV1");
         AGENT_RUNTIME = builder.comment("Experimental independent task runtime. Resume saved tasks explicitly after reload.").define("enabled", false);
         AGENT_DIAGNOSTICS = builder.comment("Log stage timings and sizes, never arguments or dialogue.").define("diagnostics", false);
+        AGENT_AUTOMATIC_TOOL_SELECTION = builder.comment("Automatically narrow repeated native container work after two completed targets and at least four outstanding targets. Does not change requirements or authorize actions.").define("automaticToolSelection", true);
+        AGENT_CONTEXT_INPUT_BUDGET_TOKENS = builder
+                .comment("Input-context budget for the background task executor only; ordinary chat keeps",
+                        "[llm].contextInputBudgetTokens. Completed tool batches are compacted at 80% and trimmed",
+                        "towards 60% of this value. Defaults to 475000 to retain more task history before compression.",
+                        "Lower values reduce per-round replay cost; too low may pause long tasks with",
+                        "context_budget_exceeded_after_compaction. Match this budget to the execution model's",
+                        "actual context capacity, leaving room for output; model capacity is not detected automatically.")
+                .defineInRange("executionContextBudgetTokens", 475000, 4096, 2_097_152);
         AGENT_DEEPSEEK_EFFORT = builder.comment("DeepSeek official endpoint background execution effort: low/high/max, or provider to keep the provider default. Ordinary chat is unchanged.")
                 .define("deepseekExecutionEffort", "low", v -> v instanceof String s && java.util.Set.of("low","high","max","provider").contains(s));
         AGENT_DECISION_MODEL = builder.comment("Background EXECUTION LLM as [siteId,modelId]; legacy key kept for compatibility. This is not the typed decision service.",
@@ -81,8 +94,17 @@ public final class TouhouAIFunConfig {
                         "completed sentences are forwarded to TTS as soon as they arrive.")
                 .define("streaming", true);
         CONTEXT_INPUT_BUDGET_TOKENS = builder
-                .comment("Target input-context budget for AIFun's layered memory planner.")
-                .defineInRange("contextInputBudgetTokens", 98304, 4096, 131072);
+                .comment("Target input-context budget for AIFun's layered memory planner.",
+                        "Large-context models (1M class) should keep this near 475000 so verbatim history is",
+                        "only compressed when the budget is actually under pressure instead of after a fixed",
+                        "number of turns. Compression starts at 70% (judged, task/budget dependent) and is",
+                        "forced at 90%; see CompressionPolicy.")
+                .defineInRange("contextInputBudgetTokens", 475000, 8192, 2_097_152);
+        MEMORY_COMPRESSION_TARGET_TOKENS = builder
+                .comment("Maximum estimated tokens of memory content kept visible immediately after one",
+                        "compression pass. Rich game notes are allowed, but the post-compression context",
+                        "must stay under this so the next turns start cheap again.")
+                .defineInRange("compressionTargetTokens", 15000, 2048, 262144);
         LLM_OUTPUT_BUDGET_TOKENS = builder
                 .comment("Maximum generated tokens per request, including reasoning and answer. Provider/model limits still apply.",
                         "ChatGPT subscription controls its own output limit and does not accept this API parameter.")
@@ -97,8 +119,9 @@ public final class TouhouAIFunConfig {
                 .comment("Timeout for each model request, including consumption of the streamed body; not a total task deadline.")
                 .defineInRange("requestTimeoutSeconds", 600, 10, 3600);
         MEMORY_RECENT_TURNS = builder
-                .comment("Number of completed conversation turns kept verbatim in the visible context.")
-                .defineInRange("recentTurns", 8, 2, 32);
+                .comment("Completed turns kept verbatim after a compression pass (not a compression trigger;",
+                        "compression is driven by the context budget and CompressionPolicy).")
+                .defineInRange("recentTurns", 8, 2, 64);
         BACKGROUND_MEMORY_EXTRACTION = builder
                 .comment("Extract durable facts and older episodes asynchronously after long conversations.")
                 .define("backgroundMemoryExtraction", true);
@@ -125,6 +148,9 @@ public final class TouhouAIFunConfig {
                 .define("shallowScanEnabled", true);
         builder.pop();
         builder.push("guiAutomation");
+        BLOCK_INTERACTION_REACH = builder.comment("Maximum maid eye-to-clickable-surface distance in blocks for GUI and edible-block actions.",
+                        "Walking and interaction share this limit and require an unobstructed block hit.")
+                .defineInRange("blockInteractionReach", 3.0, 1.0, 6.0);
         GUI_MAX_WAIT_SECONDS = builder.comment("Maximum cumulative UNTIL_GOAL processing wait per user task, in simulation seconds.")
                 .defineInRange("maxWaitSeconds", 900, 1, 86400);
         builder.pop();

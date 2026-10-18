@@ -1,6 +1,8 @@
 package com.wjx.touhou_aifun.chat.context;
 
 import com.github.tartaricacid.touhoulittlemaid.ai.service.llm.LLMMessage;
+import com.github.tartaricacid.touhoulittlemaid.ai.service.llm.Role;
+import com.wjx.touhou_aifun.compat.ai.openai.ReasoningContentCodec;
 import com.github.tartaricacid.touhoulittlemaid.ai.service.llm.openai.response.FunctionToolCall;
 import com.github.tartaricacid.touhoulittlemaid.ai.service.llm.openai.response.ToolCall;
 
@@ -8,6 +10,7 @@ import java.util.List;
 
 /** Conservative, dependency-free token estimate used before provider tokenizers run. */
 public final class ContextTokenEstimator {
+    public static final int VERSION = 2;
     private ContextTokenEstimator() {
     }
 
@@ -43,7 +46,14 @@ public final class ContextTokenEstimator {
     public static int estimate(List<LLMMessage> messages) {
         int total = 0;
         for (LLMMessage message : messages) {
-            total += estimate(message.message());
+            // The storage envelope is not sent to the provider. Count the decoded fields just as
+            // protocol adapters serialize them, retaining reasoning rather than pretending it is free.
+            if (message.role() == Role.ASSISTANT) {
+                var decoded = ReasoningContentCodec.decode(message.message());
+                total += estimate(decoded.content());
+                if (decoded.reasoningContent() != null && !decoded.reasoningContent().isBlank())
+                    total += estimate(decoded.reasoningContent());
+            } else total += estimate(message.message());
             if (message.toolCallId() != null && !message.toolCallId().isBlank()) {
                 total += estimate(message.toolCallId());
             }

@@ -35,14 +35,14 @@ public final class ChatGPTSubscriptionScreen extends Screen {
     private JsonObject metadata = new JsonObject();
     private final List<JsonObject> accounts = new ArrayList<>();
     private final List<Map.Entry<String, String>> models = new ArrayList<>();
-    private boolean initialized, editable, busy, draftEnabled, dirtyEnabled, serverHelp;
+    private boolean initialized, editable, busy, draftEnabled, dirtyEnabled, serverHelp, crossDevice;
     private boolean draftSummary = true, dirtyReasoning;
     private boolean draftWebSearch = true, dirtyWebSearch;
     private boolean draftFastMode, dirtyFastMode;
     private String draftEffort = "default";
     private int ticks, modelOffset, accountIndex;
-    private String status = "", authorizationUrl = "", callbackPort = "1455", sshTarget = "";
-    private EditBox portInput, hostInput;
+    private String status = "", authorizationUrl = "", callbackPort = "1455", sshTarget = "", registrationId = "";
+    private EditBox portInput, hostInput, registrationInput;
 
     public ChatGPTSubscriptionScreen(AIChatSettingsLLMSiteScreen parent) {
         super(Component.translatable("ai.touhou_little_maid.chat.site.chatgpt_subscription.name"));
@@ -59,7 +59,25 @@ public final class ChatGPTSubscriptionScreen extends Screen {
         int x = left() + 12, y = top();
         button(x + 250, y + 31, 126, draftEnabled ? "enabled" : "disabled", editable && !busy,
                 () -> { draftEnabled = !draftEnabled; dirtyEnabled = true; init(); });
-        if (!serverHelp) {
+        if (crossDevice) {
+            button(x, y + 68, 144, "copy_registration", editable && !string(metadata, "client_id").isBlank(), () -> {
+                minecraft.keyboardHandler.setClipboard(string(metadata, "client_id"));
+                status = text("registration_copied").getString();
+            });
+            button(x + 150, y + 68, 126, flag("pending") ? "open_auth" : "reuse_registration", editable && !busy, () -> {
+                if (flag("pending")) {
+                    if (!authorizationUrl.isBlank()) openAuthorization(); else action(Action.LOGIN);
+                    return;
+                }
+                if (registrationId.isBlank()) { status = text("registration_empty").getString(); return; }
+                action(Action.LOGIN, registrationId);
+            });
+            button(x + 282, y + 68, 94, "cancel", editable && !busy && flag("pending"), () -> action(Action.CANCEL));
+            registrationInput = new EditBox(font, x + 4, y + 163, 368, 20, text("registration_id"));
+            registrationInput.setMaxLength(256); registrationInput.setValue(registrationId);
+            registrationInput.setEditable(editable && !busy && !flag("pending"));
+            registrationInput.setResponder(value -> registrationId = value); addRenderableWidget(registrationInput);
+        } else if (!serverHelp) {
             button(x, y + 68, 154, flag("pending") ? "open_auth" : "login", editable && !busy,
                     () -> { if (flag("pending") && !authorizationUrl.isBlank()) openAuthorization(); else action(Action.LOGIN); });
             button(x + 160, y + 68, 112, "models", editable && !busy && flag("sharing"), () -> action(Action.MODELS));
@@ -103,9 +121,12 @@ public final class ChatGPTSubscriptionScreen extends Screen {
             hostInput = new EditBox(font, x + 92, y + 168, 274, 20, text("ssh_target"));
             hostInput.setMaxLength(128); hostInput.setValue(sshTarget); hostInput.setResponder(value -> sshTarget = value); addRenderableWidget(hostInput);
         }
-        button(x, y + 224, 132, serverHelp ? "settings" : "server_help", true, () -> { serverHelp = !serverHelp; init(); });
-        button(x + 180, y + 224, 92, "save", editable && !busy, () -> action(Action.SAVE));
-        button(x + 280, y + 224, 96, "back", true, this::onClose);
+        button(x, y + 224, 92, serverHelp ? "settings" : "server_help", true,
+                () -> { serverHelp = !serverHelp; crossDevice = false; init(); });
+        button(x + 98, y + 224, 92, crossDevice ? "settings" : "cross_device", true,
+                () -> { crossDevice = !crossDevice; serverHelp = false; init(); });
+        button(x + 196, y + 224, 84, "save", editable && !busy, () -> action(Action.SAVE));
+        button(x + 286, y + 224, 90, "back", true, this::onClose);
         if (!initialized) { initialized = true; requestStatus(); }
     }
 
@@ -130,9 +151,13 @@ public final class ChatGPTSubscriptionScreen extends Screen {
     }
 
     private void action(Action action) {
+        String clientId = action == Action.SELECT && !accounts.isEmpty() ? string(accounts.get(accountIndex), "client_id") : "";
+        action(action, clientId);
+    }
+
+    private void action(Action action, String clientId) {
         if (minecraft == null || minecraft.player == null) return;
         int port = port(); if (port < 0) return;
-        String clientId = action == Action.SELECT && !accounts.isEmpty() ? string(accounts.get(accountIndex), "client_id") : "";
         busy = true; status = text(action == Action.MODELS ? "checking_models" : "working").getString();
         AIFunNetwork.sendChatGPTAction(new AIFunChatGPTActionMessage(screenId, action, port, draftEnabled, clientId, draftSummary, draftEffort, draftWebSearch, draftFastMode)); init();
     }
@@ -168,9 +193,11 @@ public final class ChatGPTSubscriptionScreen extends Screen {
         if (rebuild) {
             boolean focusPort = getFocused() == portInput && portInput != null;
             boolean focusHost = getFocused() == hostInput && hostInput != null;
+            boolean focusRegistration = getFocused() == registrationInput && registrationInput != null;
             init();
             if (serverHelp && focusPort) setFocused(portInput);
             if (serverHelp && focusHost) setFocused(hostInput);
+            if (crossDevice && focusRegistration) setFocused(registrationInput);
         }
         if (message.saved()) { dirtyEnabled = false; dirtyReasoning = false; dirtyWebSearch = false; dirtyFastMode = false; onClose(); }
         else if (open) openAuthorization();
@@ -195,11 +222,12 @@ public final class ChatGPTSubscriptionScreen extends Screen {
     @Override public void tick() {
         super.tick();
         if (serverHelp) { if (portInput != null) portInput.tick(); if (hostInput != null) hostInput.tick(); }
+        if (crossDevice && registrationInput != null) registrationInput.tick();
         if (++ticks % 40 == 0) requestStatus();
     }
 
     @Override public boolean mouseScrolled(double mouseX, double mouseY, double delta) {
-        if (!serverHelp && mouseX >= left() + 12 && mouseX < left() + 388 && mouseY >= top() + 162 && mouseY < top() + 203) {
+        if (!serverHelp && !crossDevice && mouseX >= left() + 12 && mouseX < left() + 388 && mouseY >= top() + 162 && mouseY < top() + 203) {
             modelOffset = Math.max(0, Math.min(Math.max(0, models.size() - VISIBLE_MODELS), modelOffset - (int) Math.signum(delta))); return true;
         }
         return super.mouseScrolled(mouseX, mouseY, delta);
@@ -214,8 +242,12 @@ public final class ChatGPTSubscriptionScreen extends Screen {
         String email = string(metadata, "email");
         graphics.drawString(font, font.plainSubstrByWidth(text("account", email.isBlank() ? text("none").getString() : email).getString(), 240), x, y + 33, 0xffffff);
         String state = flag("pending") ? "waiting" : flag("sharing") ? "connected" : flag("connected") ? "identity_only" : "signed_out";
+        if ("signed_out".equals(state) && string(metadata, "client_id").isBlank()) state = "new_device";
         graphics.drawString(font, text(state), x, y + 49, flag("sharing") ? 0x8fdfb0 : 0xd8c39e);
-        if (!serverHelp) {
+        if (crossDevice) {
+            graphics.drawWordWrap(font, text("cross_device_help"), x, y + 97, 376, 0xdddddd);
+            graphics.drawString(font, text("registration_id"), x, y + 149, 0xffffff);
+        } else if (!serverHelp) {
             String selected = accounts.isEmpty() ? text("no_accounts").getString() : string(accounts.get(accountIndex), "email");
             graphics.drawString(font, font.plainSubstrByWidth(selected, 166), x + 32, y + 100, 0xdddddd);
             graphics.drawString(font, font.plainSubstrByWidth(text("model_count", models.size()).getString(), 100), x, y + 147, 0xffffff);
@@ -240,7 +272,7 @@ public final class ChatGPTSubscriptionScreen extends Screen {
         super.render(graphics, mouseX, mouseY, partialTick);
         if (mouseX >= x && mouseX < x + 376 && mouseY >= y + 205 && mouseY < y + 219)
             graphics.renderTooltip(font, font.split(Component.literal(note), 360), mouseX, mouseY);
-        else if (!serverHelp && mouseX >= x && mouseX < x + 100 && mouseY >= y + 143 && mouseY < y + 160) {
+        else if (!serverHelp && !crossDevice && mouseX >= x && mouseX < x + 100 && mouseY >= y + 143 && mouseY < y + 160) {
             StringBuilder details = new StringBuilder(text("discovery_help").getString());
             if (metadata.has("model_checks")) metadata.getAsJsonObject("model_checks").entrySet().forEach(entry ->
                     details.append('\n').append(entry.getKey()).append(": ").append(string(entry.getValue().getAsJsonObject(), "detail")));

@@ -45,14 +45,6 @@ public final class ChatGPTResponsesClient extends ReasoningCompatOpenAIClient {
         String question = ChatGPTSearchSourceMemory.latestQuestion(callback.getMessages());
         boolean sourcesRequested = com.wjx.touhou_aifun.chat.agent.AgentExecution.managed(callback) && ChatGPTSearchSourceMemory.requested(question);
         ToolCatalogSnapshot snapshot = ToolContextSelector.snapshot(maid, callback);
-        if (com.wjx.touhou_aifun.chat.agent.AgentExecution.managed(callback)) {
-            var planned = ContextBudgetPlanner.trim(callback.getMessages(), TouhouAIFunConfig.CONTEXT_INPUT_BUDGET_TOKENS.get(),
-                    snapshot.schemaBudget(ChatFlowManager.requestedToolIds(maid.getUUID(), callback))
-                            + com.wjx.touhou_aifun.vision.MultimodalTurnContext.inputReserve(callback),
-                    AIFunMemoryManager.calibratedEstimate(maid.getAiChatManager(), callback.getMessages())
-                            / (double) Math.max(1, ContextTokenEstimator.estimate(callback.getMessages())));
-            callback.getMessages().clear(); callback.getMessages().addAll(planned);
-        }
         ArrayList<String> reminders = new ArrayList<>();
         if (com.wjx.touhou_aifun.chat.agent.AgentExecution.managed(callback)) {
             reminders.add(snapshot.directory());

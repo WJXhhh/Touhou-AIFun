@@ -30,14 +30,15 @@ public final class ToolContextSelector {
     private static final Gson GSON = new Gson();
     public static final String LOAD_SCHEMA_TOOL = "load_tool_schema";
     private static final List<String> CORE_TOOLS = List.of(
-            "task_control", "read_task_result", "update_task_plan", "use_skill", "query_minecraft_wiki", "query_game_context",
+            "task_control", "read_task_result", "read_tool_history", "update_task_plan", "use_skill", "query_minecraft_wiki", "query_game_context", "query_recipes",
             "switch_follow_state", "switch_work_task", "switch_schedule", "switch_sit",
             EatFoodBlockTool.TOOL_ID,
             LOAD_SCHEMA_TOOL, WebSearchTool.TOOL_ID, WebFetchTool.TOOL_ID, CurrentDateTimeTool.TOOL_ID);
     private static final Set<String> CORE_TOOL_SET = Set.copyOf(CORE_TOOLS);
     private static final Map<Object, ToolCatalogSnapshot> SNAPSHOTS = new ConcurrentHashMap<>();
 
-    private record DefinitionVersion(Map<String,ITool<?>> tools, Object skills, String dependencies) { }
+    private record DefinitionVersion(Map<String,ITool<?>> tools, Object skills, String dependencies,
+                                     boolean registeredCompletion,boolean activeSelection) { }
     private static final Map<Object, DefinitionVersion> VERSIONS = new ConcurrentHashMap<>();
 
     private ToolContextSelector() {
@@ -45,7 +46,9 @@ public final class ToolContextSelector {
 
     public static ToolCatalogSnapshot snapshot(EntityMaid maid, Object callback) {
         DefinitionVersion stamp = new DefinitionVersion(Map.copyOf(ToolRegister.getAllTools()),
-                Map.copyOf(com.github.tartaricacid.touhoulittlemaid.ai.agent.skill.SkillLoader.getAllSkills()), ToolSchemaDependencies.version(maid));
+                Map.copyOf(com.github.tartaricacid.touhoulittlemaid.ai.agent.skill.SkillLoader.getAllSkills()), ToolSchemaDependencies.version(maid),
+                callback instanceof com.wjx.touhou_aifun.chat.agent.TaskCallback task && task.task.completion!=null,
+                callback instanceof com.wjx.touhou_aifun.chat.agent.TaskCallback selectedTask && selectedTask.allowedTools()!=null);
         DefinitionVersion previous = VERSIONS.put(callback, stamp);
         if (previous != null && !previous.equals(stamp)) SNAPSHOTS.remove(callback);
         return SNAPSHOTS.computeIfAbsent(callback,
@@ -77,6 +80,7 @@ public final class ToolContextSelector {
     }
 
     public static String compactDirectory(EntityMaid maid, Object callback) {
+        if(callback instanceof com.wjx.touhou_aifun.chat.agent.TaskCallback)return snapshot(maid,callback).directory();
         return loadedNotice(maid, callback) + "\n" + snapshot(maid, callback).directory();
     }
 

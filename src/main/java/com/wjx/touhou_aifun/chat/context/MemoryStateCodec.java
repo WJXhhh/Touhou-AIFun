@@ -77,7 +77,9 @@ public final class MemoryStateCodec {
             MaidMemoryState state = GSON.fromJson(value, MaidMemoryState.class);
             if (state == null || state.schemaVersion() != MaidMemoryState.SCHEMA_VERSION
                     || state.turns() == null || state.facts() == null || state.openLoops() == null
-                    || state.episodes() == null || state.tokenCalibrations() == null) {
+                    || state.episodes() == null || state.landmarks() == null
+                    || state.toolCalls() == null
+                    || state.tokenCalibrations() == null) {
                 return corrupt("memory JSON is missing required collections", null);
             }
             return new DecodeResult(state, DecodeStatus.VALID);

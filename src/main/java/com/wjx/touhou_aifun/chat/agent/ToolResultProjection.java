@@ -10,9 +10,14 @@ public final class ToolResultProjection {
     public static String project(String raw, String reference) {
         try {
             JsonObject value=JsonParser.parseString(raw).getAsJsonObject();
-            if(value.has("important_blocks") && value.has("maid_position_at_scan_start")) {
+            if (value.has("recipes") && value.has("source") && value.get("source").getAsString().equals("live_server_recipe_manager")) {
+                value.addProperty("result_ref", reference); return value.toString();
+            }
+            if((value.has("important_blocks") || value.has("observed_blocks")) && value.has("maid_position_at_scan_start")) {
                 JsonObject scan=new JsonObject();
-                for(String key:List.of("status","error","game_tick","completed_tick","dimension","intent","coverage","coordinate_space","maid_position_at_scan_start","coordinate_notice","important_blocks","entities","sign_texts","truncated","omitted_sign_texts","omitted_important_target_details","omitted","unprocessed_primary_rays"))
+                for(String key:List.of("status","error","game_tick","completed_tick","dimension","intent","coverage","coordinate_space","maid_position_at_scan_start","coordinate_notice","important_blocks","important_targets","entities","entity_targets","sign_texts","truncated","omitted_sign_texts","omitted_important_target_details","omitted","unprocessed_primary_rays",
+                        "observed_blocks","observation_id","observed_cell_count","block_page_notice","offset","has_more","next_offset",
+                        "area","area_requested_cells","area_processed_cells","area_enumeration_complete","area_visibility_complete"))
                     if(value.has(key))scan.add(key,value.get(key));
                 if(value.has("surface_blocks")) {
                     JsonArray surfaces=new JsonArray();for(var block:value.getAsJsonArray("surface_blocks")) {
@@ -21,15 +26,11 @@ public final class ToolResultProjection {
                     }scan.add("surface_summary",surfaces);
                 }
                 scan.addProperty("result_ref",reference);
-                scan.addProperty("terrain_details_omitted",true);scan.addProperty("notice","Important target coordinates, signs and entities are retained. Read result_ref only when omitted terrain samples are needed; target coordinates above can be used directly.");
+                scan.addProperty("terrain_details_omitted",true);scan.addProperty("notice","Page via observation_id/next_offset. Missing cells are unknown; terrain details: result_ref.");
                 return scan.toString();
             }
-            if(value.has("snapshot_kind") && (!value.has("layout") || value.get("layout").getAsString().isBlank())) {
+            if(value.has("snapshot_kind")) {
                 JsonObject compact=compactMenu(value);compact.addProperty("result_ref",reference);return compact.toString();
-            }
-            if(value.has("snapshot_kind") && Set.of("full","container_inspection").contains(value.get("snapshot_kind").getAsString()) && raw.length()<=65536
-                    && com.wjx.touhou_aifun.chat.context.ContextTokenEstimator.estimate(raw)<=16384) {
-                value.addProperty("result_ref",reference);return value.toString();
             }
         } catch(RuntimeException ignored) { }
         if (raw.length() <= 8192) {
@@ -74,9 +75,6 @@ public final class ToolResultProjection {
             }out.add("backpack_slots",backpack);
         }
         for(String key:List.of("data","controls"))if(out.has(key) && out.get(key).isJsonArray() && out.getAsJsonArray(key).isEmpty())out.remove(key);
-        if(out.has("process") && "UNKNOWN".equals(out.getAsJsonObject("process").get("status").getAsString())) {
-            var process=new JsonObject();process.addProperty("status","UNKNOWN");process.addProperty("reliable",false);out.add("process",process);
-        }
         return out;
     }
     public static String progress(String raw) {
@@ -90,8 +88,9 @@ public final class ToolResultProjection {
             for (String key : List.of("status", "error", "result_ref", "source_result_ref", "details_omitted", "truncated",
                     "dimension", "target_position", "maid_position_at_scan_start", "coordinate_space", "coverage",
                     "external_transfer", "moved_item", "moved_count", "to_maid", "delivered_count", "dropped_count",
-                    "goal_item", "goal_count", "item", "count", "position", "distance", "completion_verified",
-                    "verified_net_count", "kind", "menu", "last_action", "executed_count", "failed_index", "carried", "containers", "completion_requested", "completion_error"))
+                    "goal_item", "goal_count", "item", "count", "recipe_id", "requested_count", "crafted_count", "crafts_executed", "crafted_item", "surplus_count", "crafts_filled", "adapter_state", "deposited_item", "deposited_count", "learned", "emc_before", "emc_after", "emc_gained", "exchanged_item", "exchanged_count", "emc_spent", "selection", "position", "distance", "completion_verified",
+                    "verified_net_count", "kind", "success", "block_id", "servings_consumed", "finished", "menu", "last_action", "executed_count", "failed_index", "carried", "containers", "completion_requested", "completion_error",
+                    "observation_source", "visual_inspection_required", "result_verification"))
                 if (value.has(key)) out.add(key, value.get(key));
             if (value.has("action_results")) {
                 JsonArray actions = new JsonArray();
@@ -101,7 +100,7 @@ public final class ToolResultProjection {
                 }
                 out.add("action_results", actions);
             }
-            out.addProperty("snapshot_details", "Historical summary only. Read the result reference for omitted evidence; observe again before mutations.");
+            out.addProperty("snapshot_details", "Historical only; details: result_ref. Reobserve before mutations.");
             return out.toString();
         } catch (RuntimeException ignored) { return AgentTaskState.bounded(raw, 512); }
     }

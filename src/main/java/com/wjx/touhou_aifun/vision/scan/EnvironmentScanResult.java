@@ -21,6 +21,8 @@ public final class EnvironmentScanResult {
     private final long gameTick;
     private int[] origin=new int[0];
     public EnvironmentScanResult origin(int x,int y,int z) { origin=new int[]{x,y,z}; return this; }
+    /** Defensive copy of the scan origin (maid block position when the scan started). */
+    public int[] originSnapshot() { return origin.clone(); }
     private long completedTick;
     private final String intent;
     private final String detail;
@@ -53,6 +55,23 @@ public final class EnvironmentScanResult {
     private final boolean truncated;
     private final List<String> truncationReasons;
     private final String focus;
+    private final EnvironmentScanRequest request;
+    private List<ScannedBlock> observedBlocks = List.of();
+    private String observationId = java.util.UUID.randomUUID().toString();
+
+    EnvironmentScanResult observedBlocks(List<ScannedBlock> blocks) {
+        var ordered = new ArrayList<>(blocks);
+        // Fixed order across all pages/projections. Mod blocks come first without needing tags.
+        ordered.sort(java.util.Comparator.comparing((ScannedBlock block) -> !block.status().equals("block"))
+                .thenComparing(block -> block.registryId().startsWith("minecraft:"))
+                .thenComparingDouble(ScannedBlock::distance)
+                .thenComparingInt(ScannedBlock::dx).thenComparingInt(ScannedBlock::dy).thenComparingInt(ScannedBlock::dz));
+        observedBlocks = List.copyOf(ordered);
+        return this;
+    }
+
+    public List<ScannedBlock> observedBlocks() { return observedBlocks; }
+    public String observationId() { return observationId; }
 
     public EnvironmentScanResult(long gameTick, String dimension, EnvironmentScanRequest request,
                                  int primaryRays, int ddaVisits, int importantSections,
@@ -100,6 +119,7 @@ public final class EnvironmentScanResult {
                                  double[] entityBounds, boolean truncated, List<String> truncationReasons,
                                  List<ScannedSign> signTexts, int omittedSignTexts) {
         this.gameTick = gameTick;
+        this.request = request;
         this.completedTick = gameTick;
         this.intent = request.intent();
         this.detail = request.detail();
@@ -145,8 +165,13 @@ public final class EnvironmentScanResult {
     }
     /** Reorder already observed geometry without spending additional ray casts. */
     public EnvironmentScanResult project(EnvironmentScanRequest request) {
-        if (focus.equals(request.focus()) && detail.equals(request.detail())) return this;
-        java.util.Comparator<String> order=java.util.Comparator.comparing(id -> !VisionFocusMatcher.matches(request.focus(),id));
+        if (focus.equals(request.focus()) && detail.equals(request.detail())
+                && this.request.offset() == request.offset() && this.request.limit() == request.limit()) return this;
+        // Projections and saved-page reads may change presentation, never the captured geometry.
+        request = new EnvironmentScanRequest(this.request.mode(), this.request.direction(), maxDistance,
+                request.focus(), intent, request.detail(), this.request.area(), request.offset(), request.limit(), "");
+        String projectedFocus = request.focus();
+        java.util.Comparator<String> order=java.util.Comparator.comparing(id -> !VisionFocusMatcher.matches(projectedFocus,id));
         var projectedSurfaces=new ArrayList<>(surfaces);
         var projectedBlocks=new ArrayList<>(importantBlocks);
         var projectedEntities=new ArrayList<>(entities);
@@ -158,7 +183,10 @@ public final class EnvironmentScanResult {
                 omittedEntityGroups,surfaceHitSamples,surfaceRaysWithHits,surfaceDirectionSamples,surfaceBounds,
                 importantDirectionCounts,importantBounds,entityDirectionCounts,entityBounds,truncated,truncationReasons,
                 signTexts,omittedSignTexts).completedAt(completedTick);
-        projected.origin=origin.clone(); return projected;
+        projected.origin=origin.clone();
+        projected.observedBlocks = observedBlocks;
+        projected.observationId = observationId;
+        return projected;
     }
 
     public long gameTick() {
@@ -188,7 +216,8 @@ public final class EnvironmentScanResult {
         root.addProperty("game_tick", gameTick);
         root.addProperty("completed_tick", completedTick);
         root.addProperty("intent", intent);
-        root.addProperty("coverage", intent.equals("overview") ? "panorama" : "visible_candidates_only");
+        root.addProperty("coverage", request.area() != null ? "enumerated_area_with_visibility_checks"
+                : intent.equals("read_signs") ? "visible_candidates_only" : "sampled_panorama");
         root.addProperty("dimension", dimension);
         addOrigin(root);
         root.addProperty("mode", mode);
@@ -292,6 +321,7 @@ public final class EnvironmentScanResult {
         root.addProperty("truncated", truncated);
         addReasons(root);
         addSignTexts(root);
+        addObservedBlocks(root);
         if (omittedSurfaceGroups > 0 || omittedImportantBlocks > 0 || omittedEntities > 0) {
             JsonObject omitted = new JsonObject();
             omitted.addProperty("surface_groups", omittedSurfaceGroups);
@@ -319,7 +349,7 @@ public final class EnvironmentScanResult {
         JsonObject compact = new JsonObject();
         compact.addProperty("status", "ok");
         compact.addProperty("truncated", true);
-        compact.addProperty("reason", "compact scan summary; non-sign detailed entries were omitted");
+        compact.addProperty("reason", "compact scan summary; block and entity details are sampled, not exhaustive");
         compact.addProperty("game_tick", gameTick);
         compact.addProperty("completed_tick", completedTick);
         compact.addProperty("intent", intent);
@@ -365,6 +395,7 @@ public final class EnvironmentScanResult {
             compact.add("omitted_entity_groups", groups);
         }
         addSignTexts(compact);
+        addObservedBlocks(compact);
         String json = GSON.toJson(compact);
         if (json.getBytes(StandardCharsets.UTF_8).length <= MAX_COMPACT_BYTES) return json;
 
@@ -390,6 +421,7 @@ public final class EnvironmentScanResult {
         emergency.addProperty("important_blocks", importantBlocks.size() + omittedImportantBlocks);
         emergency.addProperty("entities", entities.size() + omittedEntities);
         addSignTexts(emergency);
+        addObservedBlocks(emergency);
         JsonArray signReasons = new JsonArray();
         truncationReasons.stream().filter(reason -> List.of("sign_count_limit", "sign_line_limit",
                 "sign_text_byte_limit").contains(reason)).forEach(signReasons::add);
@@ -403,6 +435,53 @@ public final class EnvironmentScanResult {
         root.add("sign_texts", array);
         root.addProperty("omitted_sign_texts", omittedSignTexts);
     }
+
+    /** Lossless paging of captured cells, independent of the old top-k important/surface lists. */
+    private void addObservedBlocks(JsonObject root) {
+        root.addProperty("observation_id", observationId);
+        root.addProperty("block_page_notice", "observed_blocks is one page of captured cells, not an exhaustive world map. "
+                + "Read next_offset using this observation_id without rescanning. Only status=air proves a sampled cell is air; "
+                + "occluded/unloaded/out_of_range/out_of_world are unknown. Mod blocks need no important tag.");
+        JsonArray page = new JsonArray();
+        int start = Math.min(request.offset(), observedBlocks.size());
+        int end = start;
+        while (end < observedBlocks.size() && end - start < request.limit()) {
+            ScannedBlock block = observedBlocks.get(end);
+            JsonObject row = new JsonObject();
+            addPosition(row, block.dx(), block.dy(), block.dz());
+            row.addProperty("status", block.status());
+            if (!block.registryId().isBlank()) row.addProperty("registry_id", block.registryId());
+            row.addProperty("distance", round(block.distance()));
+            if (!block.properties().isEmpty()) row.add("state", GSON.toJsonTree(block.properties()));
+            if (GSON.toJson(row).getBytes(StandardCharsets.UTF_8).length > 2048) {
+                row.remove("state");
+                row.addProperty("state_omitted", true);
+                if (block.registryId().length() > 256) {
+                    row.addProperty("registry_id", block.registryId().substring(0, 256));
+                    row.addProperty("registry_id_truncated", true);
+                }
+            }
+            page.add(row);
+            if (GSON.toJson(page).getBytes(StandardCharsets.UTF_8).length > 4096) {
+                page.remove(page.size() - 1);
+                break;
+            }
+            end++;
+        }
+        root.add("observed_blocks", page);
+        root.addProperty("observed_cell_count", observedBlocks.size());
+        root.addProperty("offset", start);
+        root.addProperty("has_more", end < observedBlocks.size());
+        if (end < observedBlocks.size()) root.addProperty("next_offset", end);
+        if (request.area() != null) {
+            root.add("area", ScanArea.CODEC.encodeStart(com.mojang.serialization.JsonOps.INSTANCE, request.area()).result().orElseThrow());
+            root.addProperty("area_requested_cells", request.area().volume());
+            root.addProperty("area_processed_cells", observedBlocks.size());
+            root.addProperty("area_enumeration_complete", observedBlocks.size() == request.area().volume());
+            root.addProperty("area_visibility_complete", observedBlocks.size() == request.area().volume()
+                    && observedBlocks.stream().allMatch(block -> block.status().equals("block") || block.status().equals("air")));
+        }
+    }
     private void addOrigin(JsonObject root) {
         root.addProperty("coordinate_space","relative_to_maid_block_at_scan_start");
         if(origin.length==3) root.add("maid_position_at_scan_start",GSON.toJsonTree(origin));
@@ -410,7 +489,7 @@ public final class EnvironmentScanResult {
     }
 
     private int expectedPrimaryRays() {
-        if (!"overview".equals(intent) || "entities".equals(mode) || "none".equals(mode)) return 0;
+        if ("read_signs".equals(intent) || "inspect_area".equals(intent) || "entities".equals(mode) || "none".equals(mode)) return 0;
         return "all".equals(direction) ? 6 * 40 * 40 : 40 * 40;
     }
 

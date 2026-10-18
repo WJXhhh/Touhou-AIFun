@@ -28,6 +28,9 @@ public final class AgentTaskState {
     public com.google.gson.JsonObject amendmentBaseCompletion;
     public int amendmentBaseVersion;
     public String amendmentBaseText="";
+    public int amendmentBaseStage = -1;
+    public Map<String,Long> amendmentBaseTransferBase = new LinkedHashMap<>();
+    public com.google.gson.JsonArray amendmentCompletedPhases = new com.google.gson.JsonArray();
     public long verifiedCount;
     public long appliedMutationVersion;
     public Map<String, Long> transfers = new LinkedHashMap<>();
@@ -38,6 +41,10 @@ public final class AgentTaskState {
         int stages=completion!=null && completionKind(completion).equals("sequence")?completion.getAsJsonArray("phases").size():1;
         if(completionStage<0 || completionStage>=stages || completionTransferBase==null || completionTransferBase.size()>512
                 || completionTransferBase.values().stream().anyMatch(Objects::isNull) || initialContainerSnapshots==null || initialContainerSnapshots.size()>128
+                || amendmentBaseStage < -1 || amendmentBaseStage > 7 || amendmentBaseTransferBase==null || amendmentBaseTransferBase.size()>512
+                || amendmentBaseTransferBase.values().stream().anyMatch(Objects::isNull)
+                || amendmentCompletedPhases==null || amendmentCompletedPhases.size()>7
+                || amendmentBaseStage>=0 && amendmentCompletedPhases.size()!=amendmentBaseStage
                 || initialContainerSnapshots.values().stream().anyMatch(v->v==null || !v.matches("[0-9a-f]{64}")))
             throw new IllegalArgumentException("invalid_task_phase_checkpoint");
     }
@@ -62,7 +69,10 @@ public final class AgentTaskState {
             if(previous.isPresent()) {
                 var fact=previous.get();fact.addProperty("servings_consumed",fact.get("servings_consumed").getAsLong()+value.get("servings_consumed").getAsLong());
                 fact.addProperty("finished",fact.get("finished").getAsBoolean() || value.get("finished").getAsBoolean());
-            }else {actionFacts.add(value.deepCopy());while(actionFacts.size()>256) actionFacts.remove(0);}
+            }else {
+                if(actionFacts.size()>=256) throw new IllegalStateException("task_action_fact_limit");
+                actionFacts.add(value.deepCopy());
+            }
         }
         if (value.has("action_results")) {
             for (var item : value.getAsJsonArray("action_results")) {
@@ -97,7 +107,29 @@ public final class AgentTaskState {
         }
         if(goalVersion==1 && (!transfers.isEmpty() || appliedMutationVersion>0))
             throw new IllegalArgumentException("completion_must_precede_transfers_owner_review_required");
-        completion=validated;completionStage=0;completionTransferBase=new LinkedHashMap<>(transfers);initialContainerSnapshots.clear();refreshTransferProgress();
+        var progress=amendedProgress(validated,amendmentBaseStage,amendmentBaseTransferBase,amendmentCompletedPhases);
+        completion=validated;completionStage=progress.stage();completionTransferBase=progress.base();initialContainerSnapshots.clear();refreshTransferProgress();
+    }
+    private record PhaseProgress(int stage,Map<String,Long> base) { }
+    /** An amendment edits this task, so its current phase keeps its original receipt origin. */
+    private PhaseProgress amendedProgress(com.google.gson.JsonObject next,int stage,Map<String,Long> base,com.google.gson.JsonArray prefix) {
+        // Starting a newly ordered job from a non-sequence still starts a new receipt scope.
+        if(stage<0)return new PhaseProgress(0,completionKind(next).equals("sequence")?new LinkedHashMap<>(transfers):new LinkedHashMap<>());
+        if(base==null || prefix==null)throw new IllegalArgumentException("sequence_amendment_progress_unavailable: retained receipts require owner review; no actions started");
+        if(!completionKind(next).equals("sequence")) {
+            if(stage==0)return new PhaseProgress(0,new LinkedHashMap<>());
+            throw new IllegalArgumentException("sequence_amendment_must_keep_completed_phases: retain the verified prefix and add changes to the active or future phase");
+        }
+        var phases=next.getAsJsonArray("phases");
+        if(stage>=phases.size())throw new IllegalArgumentException("sequence_amendment_must_keep_completed_phases");
+        for(int i=0;i<stage;i++)if(!prefix.get(i).equals(phases.get(i)))
+            throw new IllegalArgumentException("sequence_amendment_must_keep_completed_phases: retain the verified prefix and add changes to the active or future phase");
+        return new PhaseProgress(stage,new LinkedHashMap<>(base));
+    }
+    private com.google.gson.JsonArray completedPhasePrefix() {
+        var prefix=new com.google.gson.JsonArray();
+        if(completion!=null && completionKind(completion).equals("sequence"))for(int i=0;i<completionStage;i++)prefix.add(completion.getAsJsonArray("phases").get(i).deepCopy());
+        return prefix;
     }
     private long transferProgress(com.google.gson.JsonObject condition) {
         if(completionKind(condition).equals("all")) return condition.getAsJsonArray("conditions").asList().stream().mapToLong(c->transferProgress(c.getAsJsonObject())).sum();
@@ -113,6 +145,17 @@ public final class AgentTaskState {
         if (spec == null) return null;
         try {
             String kind=completionKind(spec);
+            if(!spec.has("kind") && (spec.has("conditions") || spec.has("phases")))
+                throw new IllegalArgumentException("invalid_completion_condition: composite requires explicit kind=all or kind=sequence; keep every owner requirement and fill missing leaf fields");
+            var required=new ArrayList<String>();
+            if(!Set.of("all","sequence").contains(kind))required.add("dimension");
+            if(Set.of("transfer","inventory").contains(kind))required.addAll(List.of("item","count"));
+            if(Set.of("transfer","position","container_unchanged").contains(kind))required.add("position");
+            if(kind.equals("transfer"))required.add("to_maid");
+            if(kind.equals("maid_state"))required.addAll(List.of("state","value"));
+            if(kind.equals("eat_food"))required.addAll(List.of("food","count"));
+            var missing=required.stream().filter(key->!spec.has(key) || spec.get(key).isJsonNull()).toList();
+            if(!missing.isEmpty())throw new IllegalArgumentException("invalid_completion_condition: "+kind+" missing "+missing+"; EVERY transfer needs dimension,item,count,to_maid,position=[observed container x,y,z]. Keep ALL owner requirements; repair fields, never remove conditions");
             if(kind.equals("sequence")) {
                 var phases=spec.getAsJsonArray("phases");
                 if(phases==null || phases.size()<2 || phases.size()>8) throw new IllegalArgumentException();
@@ -160,11 +203,74 @@ public final class AgentTaskState {
             if(kind.equals("transfer") && !spec.get("to_maid").getAsJsonPrimitive().isBoolean()) throw new IllegalArgumentException();
             if(kind.equals("position") && spec.has("radius") && !(spec.get("radius").getAsDouble()>=0 && spec.get("radius").getAsDouble()<=8)) throw new IllegalArgumentException();
             return spec.deepCopy();
-        } catch (RuntimeException invalid) { throw new IllegalArgumentException("invalid_completion_condition"); }
+        } catch (RuntimeException invalid) {
+            if(invalid instanceof IllegalArgumentException && invalid.getMessage()!=null && invalid.getMessage().startsWith("invalid_completion_condition:"))throw invalid;
+            throw new IllegalArgumentException("invalid_completion_condition");
+        }
     }
     public static String completionKind(com.google.gson.JsonObject spec) { return spec.has("kind") ? spec.get("kind").getAsString() : "transfer"; }
     public AgentTaskState() { }
-    public AgentTaskState(String goal) { this.goal = bounded(goal, 4096); }
+    public AgentTaskState(String goal) {
+        if (goal == null || goal.isBlank()) throw new IllegalArgumentException("goal_required");
+        if (goal.codePointCount(0, goal.length()) > 4096) throw new IllegalArgumentException("task_goal_limit: complete owner requirements exceed 4096 characters; no task was accepted");
+        this.goal = goal;
+    }
+
+    /** Guard matching transfer requirements using durable facts, independent of model history/call IDs. */
+    public void checkTransferAllowance(String dimension, com.google.gson.JsonArray position, String item,
+                                       boolean receive, long amount, boolean nativeBatch) {
+        if (amount <= 0) return;
+        long required = -1;
+        String key = dimension + ":" + position + ":" + item;
+        for (var condition : AgentCompletionRules.leaves(activeCompletion())) {
+            if (completionKind(condition).equals("transfer") && AgentCompletionRules.transferKey(condition).equals(key)
+                    && condition.get("to_maid").getAsBoolean() == receive)
+                required = Math.max(required, condition.get("count").getAsLong());
+        }
+        // Intermediate inputs and other actions may have a different completion predicate.
+        if (required < 0) {
+            if(completion!=null && completionKind(completion).equals("sequence")) {
+                for(int i=0;i<completionStage;i++)for(var prior:AgentCompletionRules.leaves(completion.getAsJsonArray("phases").get(i).getAsJsonObject()))
+                    if(completionKind(prior).equals("transfer") && AgentCompletionRules.transferKey(prior).equals(key)
+                            && prior.get("to_maid").getAsBoolean()==receive)
+                        throw new IllegalArgumentException("task_transfer_exceeds_remaining: completed_phase; recorded transfers must not be replayed");
+            }
+            return;
+        }
+        long remaining = Math.max(0, required - activeTransfers().getOrDefault(key, 0L) * (receive ? 1 : -1));
+        if (remaining == 0 || !nativeBatch && amount > remaining)
+            throw new IllegalArgumentException("task_transfer_exceeds_remaining: remaining=" + remaining + "; recorded transfers must not be replayed");
+    }
+
+    public void checkConsumptionAllowance(String dimension, String food, com.google.gson.JsonArray position) {
+        boolean recorded=actionFacts.stream().anyMatch(f -> f.has("dimension") && f.get("dimension").getAsString().equals(dimension)
+                && f.has("block_id") && f.get("block_id").getAsString().equals(food) && f.has("position")
+                && f.getAsJsonObject("position").get("x").getAsInt()==position.get(0).getAsInt()
+                && f.getAsJsonObject("position").get("y").getAsInt()==position.get(1).getAsInt()
+                && f.getAsJsonObject("position").get("z").getAsInt()==position.get(2).getAsInt());
+        if(!recorded && actionFacts.size()>=256) throw new IllegalArgumentException("task_action_fact_limit: no new consumption started; existing receipts retained");
+        boolean matched=false;
+        for (var condition : AgentCompletionRules.leaves(activeCompletion())) {
+            if (!completionKind(condition).equals("eat_food") || !condition.get("dimension").getAsString().equals(dimension)
+                    || !condition.get("food").getAsString().equals(food)
+                    || condition.has("position") && !condition.get("position").equals(position)) continue;
+            matched=true;
+            if(condition.has("finished") && condition.get("finished").getAsBoolean()) return;
+            long consumed=0;
+            for (var fact : actionFacts) {
+                if (!Objects.equals(fact.get("dimension"),condition.get("dimension")) || !fact.has("block_id")
+                        || !fact.get("block_id").getAsString().equals(food)) continue;
+                if (condition.has("position")) {
+                    var actual=fact.getAsJsonObject("position");var expected=condition.getAsJsonArray("position");
+                    if(actual==null || actual.get("x").getAsInt()!=expected.get(0).getAsInt() || actual.get("y").getAsInt()!=expected.get(1).getAsInt()
+                            || actual.get("z").getAsInt()!=expected.get(2).getAsInt()) continue;
+                }
+                consumed+=fact.get("servings_consumed").getAsLong();
+            }
+            if (consumed<condition.get("count").getAsLong()) return;
+        }
+        if(matched) throw new IllegalArgumentException("task_consumption_already_recorded: completed servings must not be replayed");
+    }
     public boolean terminal() { return status == Status.completed || status == Status.failed || status == Status.cancelled; }
     public void pause(String reason) { if (!terminal()) { status = Status.paused; generation++; outcome = bounded(reason, 1024); } }
     public void checkpoint(String fact) {
@@ -175,15 +281,23 @@ public final class AgentTaskState {
     public void amend(String text, com.google.gson.JsonObject spec) {
         if (constraints.size() >= 64) throw new IllegalArgumentException("task_constraint_limit");
         var validated = validateCompletion(spec);
+        if(validated!=null)amendedProgress(validated,completion==null?amendmentBaseStage:completionKind(completion).equals("sequence")?completionStage:-1,
+                completion==null?amendmentBaseTransferBase:completionTransferBase,completion==null?amendmentCompletedPhases:completedPhasePrefix());
         String combined = pendingAmendment.isBlank() ? text : pendingAmendment + "\n" + text;
         if (combined == null || combined.length() > 4096) throw new IllegalArgumentException("pending_constraint_limit");
         pendingAmendment = combined; pendingCompletion = validated;
     }
     public void applyAmendment() {
-        if (!pendingAmendment.isBlank()) { amendmentBaseCompletion=completion==null?null:completion.deepCopy();amendmentBaseVersion=goalVersion;amendmentBaseText=pendingAmendment;
+        if (!pendingAmendment.isBlank()) {
+            if(completion!=null) {
+                amendmentBaseStage=completionKind(completion).equals("sequence")?completionStage:-1;
+                amendmentCompletedPhases=completedPhasePrefix();amendmentBaseTransferBase=new LinkedHashMap<>(completionTransferBase);}
+            amendmentBaseCompletion=completion==null?null:completion.deepCopy();amendmentBaseVersion=goalVersion;amendmentBaseText=pendingAmendment;
+            var progress=pendingCompletion==null?new PhaseProgress(0,new LinkedHashMap<String,Long>())
+                    :amendedProgress(pendingCompletion,amendmentBaseStage,amendmentBaseTransferBase,amendmentCompletedPhases);
             constraints.add(pendingAmendment); pendingAmendment = ""; goalVersion++; completion = pendingCompletion; pendingCompletion = null;
             clearActionPlan();
-            completionStage=0;completionTransferBase=new LinkedHashMap<>(transfers);initialContainerSnapshots.clear();
+            completionStage=progress.stage();completionTransferBase=progress.base();initialContainerSnapshots.clear();
             refreshTransferProgress(); }
     }
     public void clearActionPlan() { actionSteps=new com.google.gson.JsonArray();actionStep=0;actionPlanGoalVersion=0; }

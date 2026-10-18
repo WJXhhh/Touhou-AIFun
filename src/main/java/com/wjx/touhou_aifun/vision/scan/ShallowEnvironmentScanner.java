@@ -154,6 +154,7 @@ public final class ShallowEnvironmentScanner {
         private boolean importantDone;
         private boolean entitiesDone;
         private boolean finished;
+        private int areaIndex;
 
         private ScanJob(EntityMaid maid, EnvironmentScanRequest request) {
             this.maid = maid;
@@ -162,8 +163,8 @@ public final class ShallowEnvironmentScanner {
             BlockPos maidPos = maid.blockPosition();
             this.accumulator = new ScanAccumulator(maid, request, maid.getEyePosition(1.0F), maidPos);
             this.faces = request.mode().includesBlocks() ? faces(request.direction()) : List.of();
-            this.surfaceDone = faces.isEmpty() || !request.intent().equals("overview");
-            this.sections = request.mode().includesBlocks() ? discoverSections() : List.of();
+            this.surfaceDone = faces.isEmpty() || request.intent().equals("read_signs") || request.area() != null;
+            this.sections = request.mode().includesBlocks() && request.area() == null ? discoverSections() : List.of();
             this.blockEntityWork = blockEntityCandidates.stream().sorted(Comparator.comparingDouble(packed -> {
                 BlockPos pos = BlockPos.of(packed);
                 double dx = pos.getX() + 0.5 - accumulator.originX;
@@ -191,6 +192,38 @@ public final class ShallowEnvironmentScanner {
             int safeDdaBudget = Math.max(0, ddaBudget);
             int safeSectionBudget = Math.max(0, sectionBudget);
             int primaryRayReserve = maxDdaVisitsPerRay(request.maxDistance());
+            if (request.area() != null) {
+                int reserve = 1 + 7 * maxDdaVisitsPerRay(request.maxDistance() + 2);
+                int processed = 0;
+                while (areaIndex < request.area().volume() && processed < 64
+                        && accumulator.ddaVisits - startVisits + reserve <= safeDdaBudget) {
+                    BlockPos pos = request.area().position(areaIndex++, accumulator.maidPos);
+                    accumulator.ddaVisits++; // Even empty/unknown cells consume the shared work budget.
+                    processed++;
+                    double distance = accumulator.eye.distanceTo(center(pos));
+                    long dx = (long) pos.getX() - accumulator.maidPos.getX();
+                    long dy = (long) pos.getY() - accumulator.maidPos.getY();
+                    long dz = (long) pos.getZ() - accumulator.maidPos.getZ();
+                    String unknown = dx * dx + dy * dy + dz * dz > (long) request.maxDistance() * request.maxDistance()
+                            ? "out_of_range" : level.isOutsideBuildHeight(pos) ? "out_of_world"
+                            : !level.hasChunkAt(pos) ? "unloaded" : "";
+                    if (!unknown.isEmpty()) {
+                        accumulator.observe(null, pos, distance, unknown);
+                        continue;
+                    }
+                    BlockState state = level.getBlockState(pos);
+                    if (!blockVisibility(level, accumulator.eye, pos, accumulator).visible) {
+                        accumulator.observe(null, pos, distance, "occluded");
+                        continue;
+                    }
+                    accumulator.observe(state, pos, distance, state.isAir() ? "air" : "block");
+                    if (!state.isAir() && isImportant(level, pos, state)) {
+                        accumulator.addImportant(state, pos, distance, directionFor(accumulator, center(pos)), level.getBlockEntity(pos));
+                    }
+                }
+                finished = areaIndex >= request.area().volume();
+                return finished;
+            }
 
             while (!surfaceDone && faceIndex < faces.size() && rays < safeRayBudget
                     && accumulator.ddaVisits - startVisits + primaryRayReserve <= safeDdaBudget) {
@@ -244,6 +277,10 @@ public final class ShallowEnvironmentScanner {
                 if (processSectionPosition(section, startVisits, safeDdaBudget)) {
                     sectionIndex++;
                     sectionLocalX = sectionLocalY = sectionLocalZ = 0;
+                } else {
+                    // A candidate may need more than the remaining allowance, without spending
+                    // it all. Retain the cursor and yield instead of retrying forever this tick.
+                    break;
                 }
                 if (accumulator.ddaVisits - startVisits >= safeDdaBudget) {
                     break;
@@ -873,6 +910,8 @@ public final class ShallowEnvironmentScanner {
         private final Map<String, Integer> surfaceDirectionSamples = new LinkedHashMap<>();
         private final Map<BlockState, OpacityClass> opacityByState = new HashMap<>();
         private final List<ImportantBlockHit> importantBlocks = new ArrayList<>();
+        private final Map<Long, ScannedBlock> observedBlocks = new LinkedHashMap<>();
+        private final Map<BlockState, Map<String, String>> observedStates = new HashMap<>();
         private final SignTextCollector signTexts;
         private final List<ScannedEntity> entities = new ArrayList<>();
         private final Set<Long> importantSectionKeys = new HashSet<>();
@@ -940,6 +979,7 @@ public final class ShallowEnvironmentScanner {
             if (!matchesDirection(request.direction(), direction)) {
                 return;
             }
+            observe(state, pos, eye.distanceTo(center(pos)), "block");
             int dx = pos.getX() - maidPos.getX();
             int dy = pos.getY() - maidPos.getY();
             int dz = pos.getZ() - maidPos.getZ();
@@ -975,6 +1015,7 @@ public final class ShallowEnvironmentScanner {
 
         private void addImportant(BlockState state, BlockPos pos, double distance, String direction,
                                   net.minecraft.world.level.block.entity.BlockEntity blockEntity) {
+            observe(state, pos, distance, "block");
             ResourceLocation id = ForgeRegistries.BLOCKS.getKey(state.getBlock());
             if (id == null) {
                 return;
@@ -1009,6 +1050,19 @@ public final class ShallowEnvironmentScanner {
             }
             importantBlocks.add(new ImportantBlockHit(id.toString(), dx, dy, dz, distance, direction,
                     properties, blockEntityType));
+        }
+
+        private void observe(BlockState state, BlockPos pos, double distance, String status) {
+            if (observedBlocks.containsKey(pos.asLong())) return;
+            ResourceLocation id = state == null ? null : ForgeRegistries.BLOCKS.getKey(state.getBlock());
+            Map<String, String> properties = state == null ? Map.of() : observedStates.computeIfAbsent(state, value -> {
+                Map<String, String> entries = new LinkedHashMap<>();
+                value.getValues().forEach((property, entry) -> entries.put(property.getName(), String.valueOf(entry)));
+                return Map.copyOf(entries);
+            });
+            observedBlocks.put(pos.asLong(), new ScannedBlock(id == null ? "" : id.toString(),
+                    pos.getX() - maidPos.getX(), pos.getY() - maidPos.getY(), pos.getZ() - maidPos.getZ(),
+                    distance, status, properties));
         }
 
         private void addEntity(Entity entity, Vec3 center, Visibility visibility) {
@@ -1118,7 +1172,8 @@ public final class ShallowEnvironmentScanner {
                     omittedImportantBlocks, omittedEntities, omittedEntityGroups, surfaceHitSamples,
                     surfaceRaysWithHits, surfaceDirectionSamples, surfaceBounds(), importantDirectionCounts,
                     importantBounds(), entityDirectionCounts, entityBounds(), truncated,
-                    List.copyOf(truncationReasons), signs.signs(), signs.omitted()).origin(maidPos.getX(),maidPos.getY(),maidPos.getZ());
+                    List.copyOf(truncationReasons), signs.signs(), signs.omitted()).origin(maidPos.getX(),maidPos.getY(),maidPos.getZ())
+                    .observedBlocks(new ArrayList<>(observedBlocks.values()));
         }
 
         private void markTruncated(String reason) {

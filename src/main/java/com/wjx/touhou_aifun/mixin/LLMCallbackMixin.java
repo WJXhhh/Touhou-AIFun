@@ -294,6 +294,7 @@ public abstract class LLMCallbackMixin {
                 || !ChatFlowManager.isSuperseded(callback.getMaid().getUUID(), callback)) touhouAIFun$toolProgress.result(result);
         if (!com.wjx.touhou_aifun.chat.agent.AgentExecution.foreground(((Object) this))) return;
         AIFunMemoryManager.addToolOutcome(callback, result);
+        AIFunMemoryManager.recordToolCall(callback, toolId, result);
         if (!ToolContextSelector.usesAIFunClient(callback.getMaid())
                 && !ChatFlowManager.isSuperseded(callback.getMaid().getUUID(), callback)) {
             int schemaBudget = ChatFlowManager.rememberedSchemaBudget(callback);

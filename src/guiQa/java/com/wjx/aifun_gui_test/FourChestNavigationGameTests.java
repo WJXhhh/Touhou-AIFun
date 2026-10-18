@@ -19,6 +19,25 @@ import java.util.concurrent.CompletableFuture;
 @GameTestHolder("aifun_four_chest_test")
 @PrefixGameTestTemplate(false)
 public final class FourChestNavigationGameTests {
+    private static final net.minecraft.server.level.TicketType<net.minecraft.world.level.ChunkPos> NAVIGATION_QA =
+            net.minecraft.server.level.TicketType.create("aifun_navigation_qa",
+                    java.util.Comparator.comparingLong(net.minecraft.world.level.ChunkPos::toLong),3000);
+    static void prepareNavigationChunks(EntityMaid maid) {
+        // Real players keep the navigation cache loaded. Isolated GameTest structures near
+        // the spawn boundary do not: explicitly load the cache plus this fixture's walk radius.
+        // Production must continue rejecting unavailable regions rather than loading them.
+        int radius=(int)Math.ceil(maid.getAttributeValue(net.minecraft.world.entity.ai.attributes.Attributes.FOLLOW_RANGE))+8+16;
+        var center=maid.blockPosition();
+        var level=(net.minecraft.server.level.ServerLevel)maid.level();
+        for(int x=(center.getX()-radius)>>4;x<=(center.getX()+radius)>>4;x++)
+            for(int z=(center.getZ()-radius)>>4;z<=(center.getZ()+radius)>>4;z++) {
+                var pos=new net.minecraft.world.level.ChunkPos(x,z);
+                // A plain getChunk ticket expires after one tick without real players.
+                // Retain only this isolated QA cache for the longest navigation fixture.
+                level.getChunkSource().addRegionTicket(NAVIGATION_QA,pos,0,pos);
+                level.getChunk(x,z);
+            }
+    }
     static void prepareFloor(GameTestHelper helper) {
         // GameTest placement clears terrain around templates. Establish the walking
         // surface explicitly, as the other movement fixtures do, before spawning.
@@ -133,6 +152,7 @@ public final class FourChestNavigationGameTests {
                     };
                     var start=helper.absolutePos(new BlockPos(4,1,2));maid.setPos(start.getX()+offsets[sample],start.getY(),start.getZ()+.5);
                     maid.setOwnerUUID(owner.getUUID());maid.setInvulnerable(true);maid.setNoAi(false);helper.getLevel().addFreshEntity(maid);
+                    prepareNavigationChunks(maid);
                     callback=new LLMCallback(maid.getAiChatManager(),new ArrayList<>(),true);index=0;open();
                 } catch(Throwable failure) { clean();helper.fail(failure.toString()); }
             }
@@ -180,15 +200,16 @@ public final class FourChestNavigationGameTests {
     }
     @GameTest(template="four_chests",templateNamespace="aifun_gui_test",timeoutTicks=120)
     public static void finishedApproachOutsideInteractionRangeIsReplanned(GameTestHelper helper) throws Exception {
-        prepareFloor(helper);var chest=new BlockPos(2,1,2);helper.setBlock(chest,Blocks.CHEST);
+        prepareFloor(helper);var chest=new BlockPos(0,1,2);helper.setBlock(chest,Blocks.CHEST);
         var maid=helper.spawn(InitEntities.MAID.get(),new BlockPos(4,1,2));maid.setNoAi(false);maid.setInvulnerable(true);
         var origin=helper.absolutePos(new BlockPos(4,1,2));maid.setPos(origin.getX()+.78062448884627,origin.getY(),origin.getZ()+.82681780989083);
+        prepareNavigationChunks(maid);
         var callback=new LLMCallback(maid.getAiChatManager(),new ArrayList<>(),true);var target=helper.absolutePos(chest);
         var request=new JsonObject();request.addProperty("target","minecraft:chest");request.addProperty("x",target.getX());request.addProperty("y",target.getY());request.addProperty("z",target.getZ());
         var future=MaidGuiSessionManager.call(callback,"open_gui","stale_arrival",request);
         helper.assertTrue(!future.isDone(),"Observed real position is outside interaction range");
-        // Recreate the recorded navigation arrival: the selected standing block has
-        // been reached, but exact feet are still 2.35755 blocks from the container.
+        // Recreate navigation reporting arrival at the current node while the actual
+        // eye-to-surface distance remains outside the configured interaction range.
         var field=MaidGuiSessionManager.class.getDeclaredField("OPENING");field.setAccessible(true);
         var map=(java.util.Map)field.get(null);Object opening=map.get(maid.getUUID());
         var parts=opening.getClass().getRecordComponents();Object[] values=new Object[parts.length];Class<?>[] types=new Class<?>[parts.length];
@@ -207,11 +228,12 @@ public final class FourChestNavigationGameTests {
     }
     @GameTest(template="four_chests",templateNamespace="aifun_gui_test",timeoutTicks=120)
     public static void fractionalChestTopStandingHeightCannotLoopOnFinishedApproach(GameTestHelper helper) throws Exception {
-        prepareFloor(helper);var chest=new BlockPos(2,1,2);helper.setBlock(chest,Blocks.CHEST);
+        prepareFloor(helper);var chest=new BlockPos(2,1,1);helper.setBlock(chest,Blocks.CHEST);
         helper.setBlock(new BlockPos(2,1,4),Blocks.CHEST);
         var maid=helper.spawn(InitEntities.MAID.get(),new BlockPos(2,2,4));maid.setNoAi(false);maid.setInvulnerable(true);
         var origin=helper.absolutePos(new BlockPos(2,1,4));maid.setPos(origin.getX()+.50320361153984,origin.getY()+.875,origin.getZ()+.95349986141977);
-        var target=helper.absolutePos(chest);helper.assertTrue(maid.distanceToSqr(net.minecraft.world.phys.Vec3.atCenterOf(target))>2.25*2.25,"Recorded chest-top feet are outside interaction range");
+        prepareNavigationChunks(maid);
+        var target=helper.absolutePos(chest);helper.assertTrue(com.wjx.touhou_aifun.maid.action.MaidBlockInteraction.hit(maid,target)==null,"Chest-top eyes are outside visible surface interaction range");
         var callback=new LLMCallback(maid.getAiChatManager(),new ArrayList<>(),true);var args=new JsonObject();args.addProperty("target","minecraft:chest");args.addProperty("x",target.getX());args.addProperty("y",target.getY());args.addProperty("z",target.getZ());args.addProperty("wait_policy","NO_WAIT");
         var future=MaidGuiSessionManager.call(callback,"open_gui","chest_top",args);
         var field=MaidGuiSessionManager.class.getDeclaredField("OPENING");field.setAccessible(true);var map=(java.util.Map)field.get(null);Object opening=map.get(maid.getUUID());

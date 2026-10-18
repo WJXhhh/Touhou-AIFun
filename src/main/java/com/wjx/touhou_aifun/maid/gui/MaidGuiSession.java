@@ -38,6 +38,8 @@ public final class MaidGuiSession {
     public long frame;
     public String clientLayout = "";
     public JsonArray clientControls = new JsonArray();
+    public BitSet clientActiveSlots;
+    public boolean clientControlsTruncated;
     public GuiProcessState process = GuiProcessState.unknown();
     public GuiWaitTracker waiting;
     public boolean startOnly;
@@ -45,6 +47,15 @@ public final class MaidGuiSession {
     public String startBlocked = "";
     public int startBlockedSamples;
     public java.util.concurrent.CompletableFuture<JsonObject> waitFuture;
+    public GuiCraftingService.CraftJob crafting;
+    public AbstractContainerMenu visuallyObservedMenu;
+    public boolean unfamiliarMenu() {
+        try {
+            var type = BuiltInRegistries.MENU.getKey(menu().getType());
+            return type != null && !type.getNamespace().equals("minecraft")
+                    && MaidGuiAdapters.gui().stream().noneMatch(adapter -> adapter.supports(menu()));
+        } catch (UnsupportedOperationException unavailable) { return true; }
+    }
     public String goalItem = "";
     public int goalCount;
     public int goalOutputSlot = -1;
@@ -103,27 +114,39 @@ public final class MaidGuiSession {
         result.add("process", new Gson().toJsonTree(process));
         JsonObject compatibility = new JsonObject(); compatibility.addProperty("slots", "standard_menu");
         compatibility.addProperty("rendering", frame > 0 ? "captured" : "requires_owner_client");
-        compatibility.addProperty("buttons", "standard_protocol_or_adapter");
+        compatibility.addProperty("buttons", "standard_or_native_forge_play_or_adapter");
         compatibility.addProperty("processing", MaidGuiAdapters.processSupported(menu()) ? "adapter" : "unknown");
         result.add("compatibility", compatibility);
+        result.addProperty("observation_source", "authoritative_server_menu_and_maid_inventory");
+        result.addProperty("visual_inspection_required", unfamiliarMenu() && visuallyObservedMenu != menu());
+        if (unfamiliarMenu()) result.addProperty("operation_guidance", "Inspect this unfamiliar GUI with visual=true before moving items. Identify native controls and input/output slots from the image and slot permissions. Native Forge play packets are bridged as the maid. After actions verify current server slots and actual maid inventory; a button click or empty input never proves output delivery. Unknown progress remains unknown; use wait_gui with the observed output slot and exact item/count.");
         JsonArray slots = new JsonArray(); if (remember) observedSlots.clear();
         for (int i = 0; i < Math.min(512, menu().slots.size()); i++) {
             Slot slot = menu().getSlot(i); ItemStack contents = slot.getItem();
             if (remember) observedSlots.put(i, contents.copy());
             JsonObject value = stack(contents); value.addProperty("slot", i);
             value.addProperty("x", slot.x); value.addProperty("y", slot.y);
-            value.addProperty("maid_inventory", slot.container == actor.getInventory());
-            if (slot.container == actor.getInventory()) {
-                int inventorySlot = slot.getContainerSlot();
+            if (frame > 0 && clientActiveSlots != null) value.addProperty("client_active", clientActiveSlots.get(i));
+            value.addProperty("maid_inventory", MaidGuiSlots.belongsTo(slot, actor.getInventory()));
+            if (MaidGuiSlots.belongsTo(slot, actor.getInventory())) {
+                int inventorySlot = MaidGuiSlots.inventorySlot(slot, actor.getInventory());
                 value.addProperty("inventory_slot", inventorySlot);
                 value.addProperty("maid_storage", inventorySlot == 0 ? "main_hand" : inventorySlot == 40 ? "offhand"
                         : inventorySlot > 0 && inventorySlot < 36 && MaidGuiInventoryBinding.enabled(actor.getInventory(), inventorySlot) ? "backpack" : "unavailable");
                 if (inventorySlot > 0 && inventorySlot < 36 && MaidGuiInventoryBinding.enabled(actor.getInventory(), inventorySlot))
                     value.addProperty("backpack_slot", inventorySlot - 1);
             }
-            value.addProperty("enabled", !(slot.container instanceof Inventory inventory)
-                    || MaidGuiInventoryBinding.enabled(inventory, slot.getContainerSlot()));
+            value.addProperty("enabled", MaidGuiSlots.enabled(slot));
             value.addProperty("may_take", slot.mayPickup(actor));
+            if (unfamiliarMenu() && !MaidGuiSlots.belongsTo(slot, actor.getInventory())) {
+                JsonArray accepted = new JsonArray(); Set<String> seen = new HashSet<>();
+                var bag = maid.getAvailableBackpackInv();
+                for (int n = 0; n < bag.getSlots() && accepted.size() < 8; n++) {
+                    ItemStack candidate = bag.getStackInSlot(n);
+                    if (!candidate.isEmpty() && seen.add(itemId(candidate)) && slot.mayPlace(candidate)) accepted.add(itemId(candidate));
+                }
+                value.add("accepted_backpack_items", accepted);
+            }
             slots.add(value);
         }
         result.add("slots", slots); if (remember) observedCarried = menu().getCarried().copy();
@@ -150,6 +173,10 @@ public final class MaidGuiSession {
         }
         for (MaidGuiAdapter adapter : MaidGuiAdapters.gui()) if (adapter.supports(menu())) controls.addAll(adapter.controls(this));
         result.add("controls", controls);
+        if (clientControlsTruncated) result.addProperty("controls_truncated", true);
+        for (MaidGuiAdapter adapter : MaidGuiAdapters.gui()) if (adapter.supports(menu())) {
+            result.add("adapter_state", adapter.state(this)); break;
+        }
         return result;
     }
     private static JsonObject control(String id, String kind, String label) {
@@ -168,6 +195,14 @@ public final class MaidGuiSession {
             }
             if (opening.length > 32600) throw new IllegalArgumentException("opening_data_too_large");
             buffer.writeByteArray(opening);
+            var tile = targetPosition == null ? null : maid.level().getBlockEntity(targetPosition);
+            buffer.writeBoolean(tile != null);
+            if (tile != null) {
+                buffer.writeBlockPos(targetPosition);
+                var tag = tile.getUpdateTag().copy();
+                tag.putString("id", BuiltInRegistries.BLOCK_ENTITY_TYPE.getKey(tile.getType()).toString());
+                buffer.writeNbt(tag);
+            }
             buffer.writeVarInt(menu().slots.size());
             if (menu().slots.size() > 512) throw new IllegalArgumentException("menu_too_large");
             for (Slot slot : menu().slots) buffer.writeItem(slot.getItem());
@@ -178,6 +213,7 @@ public final class MaidGuiSession {
             buffer.writeBoolean(actor.offers() != null);
             if (actor.offers() != null) buffer.writeNbt(actor.offers().createTag());
             buffer.writeUtf(customState.toString(), 16384);
+            actor.protocol.write(buffer);
             if (buffer.readableBytes() > 900 * 1024) throw new IllegalArgumentException("mirror_too_large");
             byte[] bytes = new byte[buffer.readableBytes()]; buffer.readBytes(bytes); return bytes;
         } finally { buffer.release(); }

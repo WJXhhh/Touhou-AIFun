@@ -64,16 +64,6 @@ public class ReasoningCompatOpenAIClient extends LLMOpenAIClient {
         ToolCatalogSnapshot toolSnapshot = com.wjx.touhou_aifun.chat.agent.AgentExecution.managed(callback)
                 ? ToolContextSelector.snapshot(maid, callback) : null;
 
-        if (com.wjx.touhou_aifun.chat.agent.AgentExecution.managed(callback)) {
-            var planned = ContextBudgetPlanner.trim(callback.getMessages(),
-                    TouhouAIFunConfig.CONTEXT_INPUT_BUDGET_TOKENS.get(),
-                    toolSnapshot.schemaBudget(ChatFlowManager.requestedToolIds(maid.getUUID(), callback))
-                            + com.wjx.touhou_aifun.vision.MultimodalTurnContext.inputReserve(callback),
-                    AIFunMemoryManager.calibratedEstimate(maid.getAiChatManager(), callback.getMessages())
-                            / (double) Math.max(1, com.wjx.touhou_aifun.chat.context.ContextTokenEstimator.estimate(callback.getMessages())));
-            callback.getMessages().clear();
-            callback.getMessages().addAll(planned);
-        }
 
         var preparation=AgentTelemetry.root(callback,"model_prepare");
         ReasoningChatCompletion chatCompletion = ReasoningChatCompletion.create()
@@ -148,6 +138,8 @@ public class ReasoningCompatOpenAIClient extends LLMOpenAIClient {
         }
 
         com.google.gson.JsonObject requestBody = GSON.toJsonTree(chatCompletion).getAsJsonObject();
+        if(callback instanceof com.wjx.touhou_aifun.chat.agent.TaskCallback task && task.allowedTools()!=null)
+            AllowedToolsRequestPolicy.apply(requestBody,site.url(),false);
         com.wjx.touhou_aifun.chat.agent.DeepSeekTaskRequestPolicy.apply(requestBody, site.url(), model,
                 callback instanceof com.wjx.touhou_aifun.chat.agent.TaskCallback, false, TouhouAIFunConfig.AGENT_DEEPSEEK_EFFORT.get());
         com.wjx.touhou_aifun.vision.MultimodalTurnContext.append(callback,

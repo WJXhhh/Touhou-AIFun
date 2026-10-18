@@ -41,8 +41,8 @@ import java.util.Optional;
 import java.util.UUID;
 
 public final class AIFunNetwork {
-    // Version 17 adds native JEV/Perplexity decision settings without synchronizing secrets.
-    private static final String VERSION = "17";
+    // Version 19 adds detached block-entity and native Forge protocol state to GUI mirrors.
+    private static final String VERSION = "19";
     private static final SimpleChannel CHANNEL = NetworkRegistry.newSimpleChannel(
             new ResourceLocation(TouhouAIFun.MOD_ID, "network"),
             () -> VERSION, VERSION::equals, VERSION::equals);

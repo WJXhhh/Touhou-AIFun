@@ -230,9 +230,10 @@ public final class AgentRuntimeGameTests {
         ChatFlowManager.forgetMaid(maid.getUUID());helper.assertTrue(auxiliaryFuture.isCancelled(),"Unload also cancels independent auxiliary operations");
         state.status=AgentTaskState.Status.cancelled;task.archiveState();helper.succeed();
     }
-    @GameTest(template="empty",templateNamespace="aifun_gui_test")
+    @GameTest(batch="contextCompaction",template="empty",templateNamespace="aifun_gui_test")
     public static void modelCompactionOnlySummarizesClosedEvidenceAndKeepsLatestPairs(GameTestHelper helper) {
-        int budget=TouhouAIFunConfig.CONTEXT_INPUT_BUDGET_TOKENS.get(); TouhouAIFunConfig.CONTEXT_INPUT_BUDGET_TOKENS.set(16384);
+        int budget=TouhouAIFunConfig.AGENT_CONTEXT_INPUT_BUDGET_TOKENS.get(); TouhouAIFunConfig.AGENT_CONTEXT_INPUT_BUDGET_TOKENS.set(16384);
+        int chatBudget=TouhouAIFunConfig.CONTEXT_INPUT_BUDGET_TOKENS.get();
         var maid=helper.spawn(InitEntities.MAID.get(),new BlockPos(2,1,2));maid.setNoAi(true);
         var state=new AgentTaskState("keep gold untouched");state.status=AgentTaskState.Status.running;
         var source=new ArrayList<LLMMessage>();source.add(LLMMessage.userChat(maid,"Keep gold untouched; deliver only 3 iron."));
@@ -241,6 +242,13 @@ public final class AgentRuntimeGameTests {
         source.add(new LLMMessage(Role.ASSISTANT,"",0,List.of(latest),null));source.add(new LLMMessage(Role.TOOL,"Latest authoritative transfer: 3 iron",0,null,"latest"));
         var task=new TaskCallback(maid.getAiChatManager(),source,state); int[] calls={0};
         try {
+            TouhouAIFunConfig.CONTEXT_INPUT_BUDGET_TOKENS.set(8192);
+            TouhouAIFunConfig.AGENT_CONTEXT_INPUT_BUDGET_TOKENS.set(65536);
+            helper.assertTrue(AgentContext.prepareTask(task, auxiliary -> {
+                throw new AssertionError("Roomy task budget must not inherit the smaller ordinary-chat budget");
+            }).join(), "Task and ordinary-chat budgets are independent");
+            TouhouAIFunConfig.CONTEXT_INPUT_BUDGET_TOKENS.set(chatBudget);
+            TouhouAIFunConfig.AGENT_CONTEXT_INPUT_BUDGET_TOKENS.set(16384);
             boolean ready=AgentContext.prepareTask(task,auxiliary->{
                 calls[0]++;helper.assertTrue(AgentExecution.context(auxiliary).purpose()==AgentExecution.Purpose.KNOWLEDGE_EXTRACTION && !auxiliary.needAddTools,"Compaction side request is explicitly typed and has no action tools");
                 auxiliary.onSuccess(new ResponseChat("Old inventory inspected. Historical evidence is not current slot authorization."));
@@ -250,7 +258,7 @@ public final class AgentRuntimeGameTests {
             helper.assertTrue(task.getMessages().stream().anyMatch(m->m.role()==Role.TOOL && "latest".equals(m.toolCallId())),"Latest tool batch stays paired");
             helper.assertTrue(task.getMessages().stream().anyMatch(m->m.message()!=null && m.message().contains("Model summary of completed data")),"Only archived closed evidence is replaced by model summary");
             helper.succeed();
-        } finally { TouhouAIFunConfig.CONTEXT_INPUT_BUDGET_TOKENS.set(budget);state.status=AgentTaskState.Status.cancelled;task.archiveState(); }
+        } finally { TouhouAIFunConfig.CONTEXT_INPUT_BUDGET_TOKENS.set(chatBudget);TouhouAIFunConfig.AGENT_CONTEXT_INPUT_BUDGET_TOKENS.set(budget);state.status=AgentTaskState.Status.cancelled;task.archiveState(); }
     }
     @GameTest(template="empty",templateNamespace="aifun_gui_test")
     public static void foregroundQueueSwitchStopAndOwnerPermissions(GameTestHelper helper) throws Exception {
@@ -496,19 +504,23 @@ public final class AgentRuntimeGameTests {
         try {
             task.next(ignored->{});
             var catalog=com.wjx.touhou_aifun.compat.ai.openai.ToolContextSelector.snapshot(maid,task);
-            helper.assertTrue(task.toolSelection().stage()==TaskToolSelection.Stage.observe && menuIds(maid,task).size()==4,"Even restored GUI schemas yield only four initial tools");
+            helper.assertTrue(task.toolSelection().stage()==TaskToolSelection.Stage.observe && menuIds(maid,task).size()==5
+                    && menuIds(maid,task).contains("query_recipes"),"Initial tools include read-only live recipe lookup without restoring GUI mutations");
             assertMenuProtocols(helper,maid,task);
             var fresh=TaskCallback.class.getDeclaredField("freshWorld");fresh.setAccessible(true);fresh.setBoolean(task,true);
             task.next(ignored->{});
-            helper.assertTrue(menuIds(maid,task).size()==6 && menuIds(maid,task).containsAll(List.of("open_gui","inspect_containers","update_task_plan")),"Normal planning tools appear without any schema-loading request");
+            helper.assertTrue(menuIds(maid,task).size()==7 && menuIds(maid,task).containsAll(List.of("open_gui","inspect_containers","query_recipes","update_task_plan")),"Normal planning tools include live recipes without any schema-loading request");
             helper.assertTrue(!menuIds(maid,task).contains("gui_action"),"Planning still withholds item mutations until completion is defined");
+            helper.assertTrue(catalog==com.wjx.touhou_aifun.compat.ai.openai.ToolContextSelector.snapshot(maid,task),"Observation and planning reuse unchanged frozen definitions");
             task.defineCompletion(JsonParser.parseString("{\"kind\":\"inventory\",\"item\":\"minecraft:iron_ingot\",\"count\":3,\"dimension\":\"minecraft:overworld\"}").getAsJsonObject());
             task.next(ignored->{});
-            helper.assertTrue(menuIds(maid,task).size()==5 && task.toolSelection().stage()==TaskToolSelection.Stage.execute,"A closed menu has five execution choices");
+            var registered=com.wjx.touhou_aifun.compat.ai.openai.ToolContextSelector.snapshot(maid,task);
+            helper.assertTrue(registered!=catalog,"Registering completion refreshes its now smaller planner schema");catalog=registered;
+            helper.assertTrue(menuIds(maid,task).size()==9 && task.toolSelection().stage()==TaskToolSelection.Stage.execute,"A closed menu retains the same executable schemas as an open menu");
             JsonObject open=new JsonObject();open.addProperty("target","minecraft:chest");open.addProperty("x",pos.getX());open.addProperty("y",pos.getY());open.addProperty("z",pos.getZ());
             var result=MaidGuiSessionManager.call(task,"open_gui","menu_qa_open",open).join();helper.assertTrue(!result.has("error"),"Real menu opens");
             task.next(ignored->{});
-            var executing=menuIds(maid,task);helper.assertTrue(executing.size()==8 && executing.containsAll(List.of("gui_action","gui_batch","wait_gui","close_gui","open_gui")),"Eight execution tools retain final-action and next-container batching");
+            var executing=menuIds(maid,task);helper.assertTrue(executing.size()==9 && executing.containsAll(List.of("gui_action","gui_batch","wait_gui","close_gui","open_gui","query_recipes")),"Execution tools retain final-action batching and live recipe lookup");
             helper.assertTrue(!executing.contains("web_search") && !executing.contains("get_current_datetime") && !executing.contains("switch_sit"),"Unrelated core schemas are deferred");
             assertMenuProtocols(helper,maid,task);
             var entriesField=catalog.getClass().getDeclaredField("entries");entriesField.setAccessible(true);
@@ -526,9 +538,11 @@ public final class AgentRuntimeGameTests {
             assertMenuProtocols(helper,maid,task);
             maid.getAvailableBackpackInv().setStackInSlot(0,new ItemStack(Items.IRON_INGOT,2));task.next(ignored->{});
             helper.assertTrue(task.toolSelection().stage()==TaskToolSelection.Stage.execute,"Live inventory loss restores execution choices");
+            helper.assertTrue(catalog==com.wjx.touhou_aifun.compat.ai.openai.ToolContextSelector.snapshot(maid,task),"GUI/execution/verification changes reuse the same definitions while registration state is unchanged");
             state.amend("Also receive two diamonds");task.next(ignored->{});
             helper.assertTrue(task.toolSelection().stage()==TaskToolSelection.Stage.plan && menuIds(maid,task).contains("inspect_containers") && !menuIds(maid,task).contains("gui_action"),"Owner amendment restores planning and mutation guard");
-            helper.assertTrue(catalog==com.wjx.touhou_aifun.compat.ai.openai.ToolContextSelector.snapshot(maid,task),"Phase changes reuse frozen definitions");helper.succeed();
+            var amended=com.wjx.touhou_aifun.compat.ai.openai.ToolContextSelector.snapshot(maid,task);
+            helper.assertTrue(catalog!=amended && amended==com.wjx.touhou_aifun.compat.ai.openai.ToolContextSelector.snapshot(maid,task),"Amendment refreshes definition syntax exactly once, then reuses the frozen catalogue");helper.succeed();
         } finally {MaidGuiSessionManager.cancel(maid.getUUID(),"qa_complete");task.operations.cancel();state.status=AgentTaskState.Status.cancelled;task.archiveState();com.wjx.touhou_aifun.compat.ai.openai.ToolContextSelector.clearSnapshot(task);TouhouAIFunConfig.AGENT_RUNTIME.set(enabled);}
     }
     private static List<String> menuIds(EntityMaid maid,TaskCallback task) {
@@ -565,7 +579,7 @@ public final class AgentRuntimeGameTests {
             helper.assertTrue(menuIds(maid,task).contains("get_current_datetime"),"Former core utilities can be loaded when needed");task.next(ignored->{});
             helper.assertTrue(menuIds(maid,task).contains("get_current_datetime"),"Explicitly loaded utility remains available for its task");
             maid.getAvailableBackpackInv().setStackInSlot(0,ItemStack.EMPTY);task.next(ignored->{});
-            helper.assertTrue(task.toolSelection().stage()==TaskToolSelection.Stage.execute && !menuIds(maid,task).contains("gui_action"),"A stage transition clears manual world/GUI expansion");
+            helper.assertTrue(task.toolSelection().stage()==TaskToolSelection.Stage.execute && task.toolSelection().requested().isEmpty() && menuIds(maid,task).contains("gui_action"),"A stage transition clears manual expansion while preserving ordinary execution schemas");
             helper.succeed();
         } finally {task.operations.cancel();state.status=AgentTaskState.Status.cancelled;task.archiveState();com.wjx.touhou_aifun.compat.ai.openai.ToolContextSelector.clearSnapshot(task);TouhouAIFunConfig.AGENT_RUNTIME.set(enabled);}
     }
@@ -589,7 +603,7 @@ public final class AgentRuntimeGameTests {
             var fresh=TaskCallback.class.getDeclaredField("freshWorld");fresh.setAccessible(true);fresh.setBoolean(task,true);
             JsonObject open=new JsonObject();open.addProperty("target","minecraft:chest");open.addProperty("x",pos.getX());open.addProperty("y",pos.getY());open.addProperty("z",pos.getZ());
             helper.assertTrue(!MaidGuiSessionManager.call(task,"open_gui","batch_qa_open",open).join().has("error"),"Real observed chest opens before planning");task.next(ignored->{});
-            helper.assertTrue(menuIds(maid,task).size()==9 && menuIds(maid,task).containsAll(List.of("update_task_plan","gui_action")),"Nine planning choices allow registration and first action together");
+            helper.assertTrue(menuIds(maid,task).size()==10 && menuIds(maid,task).containsAll(List.of("update_task_plan","gui_action","query_recipes")),"Planning choices allow recipe lookup, registration and first action together");
             var session=MaidGuiSessionManager.session(maid.getUUID());int destination=-1;
             for(var slot:session.menu().slots) if(slot.container==session.actor.getInventory() && slot.mayPlace(new ItemStack(Items.IRON_INGOT))) {destination=slot.index;break;}
             helper.assertTrue(destination>=0,"Observed backpack slot exists");

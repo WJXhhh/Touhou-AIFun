@@ -9,6 +9,16 @@ import java.util.UUID;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
 class AIFunChatGPTActionMessageTest {
+    @Test void crossDeviceLoginTransmitsRegistrationId() {
+        var message = new AIFunChatGPTActionMessage(UUID.randomUUID(), AIFunChatGPTActionMessage.Action.LOGIN, 1455,
+                false, "oaiapp_existing_device_registration", true, "default", true, false);
+        var buffer = new FriendlyByteBuf(Unpooled.buffer());
+        try {
+            AIFunChatGPTActionMessage.encode(message, buffer);
+            assertEquals(message, AIFunChatGPTActionMessage.decode(buffer));
+        } finally { buffer.release(); }
+    }
+
     @Test void savedReasoningPreferencesReachServerWithoutLosingExistingSettings() {
         var message = new AIFunChatGPTActionMessage(UUID.randomUUID(), AIFunChatGPTActionMessage.Action.SAVE, 1456,
                 true, "account", false, "xhigh", false, true);

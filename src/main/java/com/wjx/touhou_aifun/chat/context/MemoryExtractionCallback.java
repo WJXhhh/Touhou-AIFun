@@ -39,9 +39,25 @@ public final class MemoryExtractionCallback extends LLMCallback {
         try {
             MemoryExtractionDelta delta = parseDelta(response.getChatText());
             if (delta == null) throw new IllegalArgumentException("empty or invalid memory delta");
+            if (!delta.hasChanges()) {
+                // Structurally valid JSON that reports no durable change is not a failure: keep the
+                // raw turns (nothing was compressed) but clear the retry backoff so the next batch
+                // is not blocked forever by a false failure streak.
+                this.runOnServerThread(() -> {
+                    try {
+                        AIFunMemoryManager.acknowledgeNoopExtraction(manager);
+                    } finally {
+                        AIFunMemoryManager.finishExtraction(manager.getMaid().getUUID());
+                    }
+                });
+                return;
+            }
             this.runOnServerThread(() -> {
                 boolean applied = AIFunMemoryManager.applyExtraction(manager, batchIds, delta);
                 if (!applied && AIFunMemoryManager.extractionBatchStillPresent(manager, batchIds)) {
+                    TouhouLittleMaid.LOGGER.warn(
+                            "Rejecting AIFun memory extraction delta for maid {} (batch still present); raw turns are retained",
+                            manager.getMaid().getUUID());
                     AIFunMemoryManager.extractionFailed(manager);
                 }
                 AIFunMemoryManager.finishExtraction(manager.getMaid().getUUID());
@@ -88,26 +104,88 @@ public final class MemoryExtractionCallback extends LLMCallback {
             return null;
         }
         if (!parsed.isJsonObject()) return null;
-        JsonObject root = parsed.getAsJsonObject();
-        if (!isArray(root, "facts_upsert") || !isArray(root, "facts_delete")
-                || !isArray(root, "open_loops_upsert") || !isArray(root, "open_loops_close")
-                || !root.has("episode") || !root.get("episode").isJsonObject()) return null;
+        JsonObject root = normalizeRequiredFields(parsed.getAsJsonObject());
+        if (root == null) return null;
         JsonObject episodeObject = root.getAsJsonObject("episode");
-        if (!episodeObject.has("summary") || !episodeObject.get("summary").isJsonPrimitive()
-                || !episodeObject.getAsJsonPrimitive("summary").isString()
-                || !isArray(episodeObject, "keywords") || !episodeObject.has("importance")
-                || !episodeObject.get("importance").isJsonPrimitive()
-                || !episodeObject.getAsJsonPrimitive("importance").isNumber()) return null;
         MemoryExtractionDelta delta = new MemoryExtractionDelta();
         if (!readFacts(root.getAsJsonArray("facts_upsert"), delta)
                 || !readStrings(root.getAsJsonArray("facts_delete"), delta.factDeletes())
                 || !readLoops(root.getAsJsonArray("open_loops_upsert"), delta)
                 || !readStrings(root.getAsJsonArray("open_loops_close"), delta.loopCloses())) return null;
-        JsonObject episode = root.getAsJsonObject("episode");
-        delta.setEpisode(episode.has("summary") ? episode.get("summary").getAsString() : "",
-                readStringList(episode.getAsJsonArray("keywords")),
-                episode.has("importance") ? episode.get("importance").getAsInt() : 0);
-        return delta.hasChanges() ? delta : null;
+        delta.setEnvironment(root.has("environment") && root.get("environment").isJsonPrimitive()
+                ? root.get("environment").getAsString() : "");
+        JsonArray episodes = root.getAsJsonArray("episodes");
+        if (episodes != null) {
+            for (JsonElement element : episodes) {
+                if (!element.isJsonObject()) return null;
+                JsonObject episode = element.getAsJsonObject();
+                if (!validString(episode, "summary") || !validNumber(episode, "importance")) return null;
+                JsonArray keywords = episode.has("keywords") && episode.get("keywords").isJsonArray()
+                        ? episode.getAsJsonArray("keywords") : new JsonArray();
+                delta.addEpisode(string(episode, "summary"), readStringList(keywords),
+                        integer(episode, "importance"));
+            }
+        } else {
+            delta.setEpisode(episodeObject.has("summary") ? episodeObject.get("summary").getAsString() : "",
+                    readStringList(episodeObject.getAsJsonArray("keywords")),
+                    episodeObject.has("importance") ? episodeObject.get("importance").getAsInt() : 0);
+        }
+        return delta;
+    }
+
+    /**
+     * Models routinely omit empty arrays or an empty episode object. Treat those as empty rather
+     * than rejecting the whole delta, while still rejecting wrong-typed or malformed fields.
+     */
+    private static JsonObject normalizeRequiredFields(JsonObject source) {
+        for (String key : List.of("facts_upsert", "facts_delete", "open_loops_upsert", "open_loops_close")) {
+            if (!source.has(key) || source.get(key).isJsonNull()) {
+                source.add(key, new JsonArray());
+            } else if (!source.get(key).isJsonArray()) {
+                return null;
+            }
+        }
+        if (!source.has("episode") || source.get("episode").isJsonNull()) {
+            JsonObject episode = new JsonObject();
+            episode.addProperty("summary", "");
+            episode.add("keywords", new JsonArray());
+            episode.addProperty("importance", 0);
+            source.add("episode", episode);
+        } else if (!source.get("episode").isJsonObject()) {
+            return null;
+        }
+        JsonObject episode = source.getAsJsonObject("episode");
+        if (!episode.has("summary") || episode.get("summary").isJsonNull()) {
+            episode.addProperty("summary", "");
+        } else if (!episode.get("summary").isJsonPrimitive()
+                || !episode.getAsJsonPrimitive("summary").isString()) {
+            return null;
+        }
+        if (!episode.has("keywords") || episode.get("keywords").isJsonNull()) {
+            episode.add("keywords", new JsonArray());
+        } else if (!episode.get("keywords").isJsonArray()) {
+            return null;
+        }
+        if (!episode.has("importance") || episode.get("importance").isJsonNull()) {
+            episode.addProperty("importance", 0);
+        } else if (!episode.get("importance").isJsonPrimitive()
+                || !episode.getAsJsonPrimitive("importance").isNumber()) {
+            return null;
+        }
+        if (source.has("environment") && !source.get("environment").isJsonNull()
+                && (!source.get("environment").isJsonPrimitive()
+                || !source.getAsJsonPrimitive("environment").isString())) {
+            return null;
+        }
+        if (source.has("episodes") && !source.get("episodes").isJsonNull()) {
+            if (!source.get("episodes").isJsonArray()) return null;
+            for (JsonElement element : source.getAsJsonArray("episodes")) {
+                if (!element.isJsonObject()) return null;
+            }
+        } else {
+            source.remove("episodes");
+        }
+        return source;
     }
 
     private static boolean readFacts(JsonArray array, MemoryExtractionDelta delta) {

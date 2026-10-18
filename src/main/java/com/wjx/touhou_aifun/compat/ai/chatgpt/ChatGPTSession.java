@@ -58,9 +58,12 @@ public final class ChatGPTSession {
     private static final SecureRandom RANDOM = new SecureRandom();
     private static JsonObject session;
     private static HttpServer listener;
+    private static PendingLogin pendingLogin;
     private static long authEpoch;
     private static long modelEpoch;
     private static ChatGPTModelDiscovery.Result modelDiscovery;
+
+    private record PendingLogin(int port, boolean newAccount, String clientId, String url) { }
 
     private ChatGPTSession() { }
 
@@ -207,9 +210,41 @@ public final class ChatGPTSession {
 
     /** Only loopback is bound. Remote operators forward this port through SSH. */
     public static synchronized String login(int port, boolean newAccount, Consumer<String> finished) throws Exception {
-        cancelLogin();
+        // A reopened screen no longer knows whether the pending flow imported an ID
+        // or added an account. Its ordinary login button still resumes that flow.
+        if (!newAccount && listener != null && pendingLogin != null && pendingLogin.port() == port)
+            return pendingLogin.url();
         JsonObject selected = session().deepCopy();
+        return login(port, newAccount, selected, finished);
+    }
+
+    /** Reauthorize an existing registration on this host without transferring any tokens. */
+    public static synchronized String loginWithRegistration(int port, String clientId, Consumer<String> finished) throws Exception {
+        String client = clientId.strip();
+        if (!client.matches("[A-Za-z0-9_-]{1,256}") || "dynamic_agent_client".equals(client))
+            throw new IllegalStateException("请输入旧设备复制的应用注册 ID");
+        JsonObject current = session();
+        JsonObject selected;
+        if (client.equals(string(current, "client_id"))) selected = current.deepCopy();
+        else {
+            Path file = profileFile(client);
+            selected = Files.isRegularFile(file) ? JsonParser.parseString(Files.readString(file)).getAsJsonObject() : new JsonObject();
+            if (selected.has("client_id") && !client.equals(string(selected, "client_id")))
+                throw new SecurityException("Invalid saved registration");
+            selected.addProperty("client_id", client);
+        }
+        return login(port, false, selected, finished);
+    }
+
+    private static String login(int port, boolean newAccount, JsonObject selected, Consumer<String> finished) throws Exception {
         String client = newAccount ? "" : string(selected, "client_id");
+        // Reopening the settings screen loses its local URL. Reopen the same pending
+        // transaction instead of issuing another dynamic-registration link.
+        if (listener != null && pendingLogin != null && pendingLogin.port() == port
+                && pendingLogin.newAccount() == newAccount && pendingLogin.clientId().equals(client)) {
+            return pendingLogin.url();
+        }
+        cancelLogin();
         String host = hostId();
         String state = random(), nonce = random(), verifier = random();
         HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", port), 0);
@@ -236,15 +271,18 @@ public final class ChatGPTSession {
                     if (epoch != authEpoch || listener != server) throw new SecurityException("Login attempt expired");
                     // Consume this transaction exactly once, even on an exchange failure.
                     ++authEpoch;
+                    pendingLogin = null;
                     if (query.containsKey("error")) throw new IllegalStateException("用户未完成 ChatGPT 授权");
                     String issued = query.getOrDefault("client_id", client);
                     if (issued.isBlank() || "dynamic_agent_client".equals(issued)
                             || (!client.isBlank() && !client.equals(issued))) throw new SecurityException("Invalid OAuth client registration");
                     if (!query.containsKey("code") || query.get("code").isBlank()) throw new SecurityException("Missing OAuth code");
-                    if (!newAccount) {
-                        selected.addProperty("client_id", issued);
-                        persist(selected); // Retain issued registration if exchange fails.
-                    }
+                    // Retain the registration on exchange failure, but only switch the
+                    // active account after verifying the new identity and token response.
+                    JsonObject checkpoint = client.isBlank() ? new JsonObject() : selected.deepCopy();
+                    checkpoint.addProperty("client_id", issued);
+                    if (!newAccount && client.equals(string(session(), "client_id"))) persist(checkpoint);
+                    else writeProtected(profileFile(issued), GSON.toJson(checkpoint));
                     JsonObject tokens = postForm(TOKEN, Map.of("grant_type", "authorization_code", "client_id", issued,
                             "code", query.get("code"), "code_verifier", verifier, "redirect_uri", redirect, "resource", RESOURCE));
                     JsonObject discovery = getJson("https://auth.openai.com/.well-known/openid-configuration", null);
@@ -300,11 +338,14 @@ public final class ChatGPTSession {
         params.put("code_challenge", Base64.getUrlEncoder().withoutPadding().encodeToString(
                 MessageDigest.getInstance("SHA-256").digest(verifier.getBytes(StandardCharsets.US_ASCII))));
         // No id_token_hint: command URLs may be persisted in console logs.
-        return AUTH + "?" + form(params);
+        String url = AUTH + "?" + form(params);
+        pendingLogin = new PendingLogin(port, newAccount, client, url);
+        return url;
     }
 
     public static synchronized void cancelLogin() {
         ++authEpoch;
+        pendingLogin = null;
         if (listener != null) { listener.stop(0); listener = null; }
     }
 

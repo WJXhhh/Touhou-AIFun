@@ -90,6 +90,18 @@ ssh -N -L 1455:127.0.0.1:1455 用户@服务器
 
 ## 管理和凭据
 
+### 跨设备复用同一个应用
+
+同一个 ChatGPT 账号和工作区在不同设备登录时，若每台设备都从首次注册开始，额度页会出现多个同名应用。现在可以复用旧设备的应用注册：
+
+1. 旧设备打开订阅设置，点底部 **跨设备** → **复制应用注册 ID**。
+2. 在新设备打开同一页面，粘贴 ID，点 **使用已有授权**，在浏览器登录原账号。
+3. 完成后返回 **账号与模型** 页，确认账号、模型及启用状态并保存。
+
+只传递公开的应用注册 ID（`client_id`），新设备使用自己的 host ID 并获取自己的登录令牌；无需复制 `session.json` 或 `host.json`。多台设备共用同一注册的额度设置。登录取消或失败不会替换新设备当前使用的账号；成功后原账号仍可在账号列表中切换。无法取得旧注册 ID 时，普通首次登录仍会创建新注册，模组不会仅凭应用同名或邮箱相同自动合并。此行为依据 [OpenAI Docs：客户端与设备](https://developers.openai.com/siwc/token-sharing-open-source)。
+
+客户端和服务端均需更新：网络协议版本为 18，确保服务端不会忽略跨设备登录传入的注册 ID。
+
 | 命令 | 作用 |
 | --- | --- |
 | `aifun chatgpt status` | 查看当前账号及订阅授权状态 |
@@ -106,6 +118,10 @@ ssh -N -L 1455:127.0.0.1:1455 用户@服务器
 凭据位于运行目录下 `config/touhou_aifun/chatgpt/`。文件在 Unix 上限制为 `0600`，Windows 上设为仅文件所有者可访问。它们不写入 `touhou_little_maid/sites/llm.json`，不通过站点同步包发送给玩家，也不输出到日志。没有操作系统加密；服务器管理员仍应保护服务器目录和备份。
 
 退出登录保留账号注册及服务器 host ID，以便之后重登复用。若未确认远程撤销，命令会明确提示；可以在 [ChatGPT 使用设置](https://chatgpt.com/settings/usage) 中断开应用及管理额度。
+
+重新授权会复用当前保存的 `client_id`；授权未完成时，关闭再打开设置页点击登录也会返回同一个待完成链接。需要重开流程时先点 **取消授权**。**添加账号** 用于创建另一个账号或工作区的注册，同一账号重登请使用 **Continue with ChatGPT**。
+
+ChatGPT 额度页按应用注册区分条目，应用名称相同不会自动合并。如果本地注册记录丢失，模组只能发起首次注册，因此可能出现同名条目；请保留 `config/touhou_aifun/chatgpt/`。已经产生的重复注册需要在 ChatGPT 设置中识别并断开不用的应用，模组不会按邮箱自动合并不同注册。注册复用规则见 [OpenAI Docs：账号与会话](https://developers.openai.com/siwc/token-sharing-open-source/profiles-and-sessions)。
 
 接口固定使用公开的 `https://api.openai.com/v1/responses`，请求带 `store:false` 和 `stream:true`，只有收到 `response.completed` 才执行最终回复或女仆工具调用。关闭模组 LLM 流式选项会关闭渐进显示/朗读，网络协议仍按官方要求流式接收。
 

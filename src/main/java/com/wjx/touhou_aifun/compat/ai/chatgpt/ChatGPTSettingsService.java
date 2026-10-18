@@ -12,6 +12,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.Consumer;
 
 /** Server-side GUI controller. All OAuth/file/network work runs outside the Minecraft server thread. */
 public final class ChatGPTSettingsService {
@@ -50,18 +51,20 @@ public final class ChatGPTSettingsService {
                 switch (action.action()) {
                     case LOGIN, NEW_ACCOUNT -> {
                         if (action.port() < 1024 || action.port() > 65535) throw new IllegalStateException("回调端口必须在 1024–65535 之间");
-                        url = ChatGPTSession.login(action.port(), action.action() == AIFunChatGPTActionMessage.Action.NEW_ACCOUNT,
-                                message -> WORKER.execute(() -> {
-                                    operationStatus = message;
-                                    try {
-                                        if (message.startsWith("已连接") && ChatGPTSession.uiMetadata().get("sharing").getAsBoolean()) {
-                                            BUSY.set(true);
-                                            refreshModels(player);
-                                            operationStatus = "登录成功；" + ChatGPTSession.modelSummary() + "；启用服务后点击保存";
-                                        }
-                                    } catch (Exception e) { operationStatus = "模型读取失败：" + ChatGPTSession.safeError(e); }
-                                    finally { BUSY.set(false); publish(player, action, "", false); }
-                                }));
+                        Consumer<String> finished = message -> WORKER.execute(() -> {
+                            operationStatus = message;
+                            try {
+                                if (message.startsWith("已连接") && ChatGPTSession.uiMetadata().get("sharing").getAsBoolean()) {
+                                    BUSY.set(true);
+                                    refreshModels(player);
+                                    operationStatus = "登录成功；" + ChatGPTSession.modelSummary() + "；启用服务后点击保存";
+                                }
+                            } catch (Exception e) { operationStatus = "模型读取失败：" + ChatGPTSession.safeError(e); }
+                            finally { BUSY.set(false); publish(player, action, "", false); }
+                        });
+                        url = action.action() == AIFunChatGPTActionMessage.Action.LOGIN && !action.clientId().isEmpty()
+                                ? ChatGPTSession.loginWithRegistration(action.port(), action.clientId(), finished)
+                                : ChatGPTSession.login(action.port(), action.action() == AIFunChatGPTActionMessage.Action.NEW_ACCOUNT, finished);
                         operationStatus = "等待浏览器授权，完成后本页会自动更新";
                     }
                     case CANCEL -> { ChatGPTSession.cancelLogin(); operationStatus = "已取消授权"; }

@@ -57,6 +57,7 @@ public final class LittleMaidCompat implements ILittleMaid {
         register.register(new WebSearchTool());
         register.register(new WebFetchTool());
         register.register(new CurrentDateTimeTool());
+        register.register(new com.wjx.touhou_aifun.compat.ai.history.ToolHistoryTool());
         register.register(new com.wjx.touhou_aifun.chat.agent.VersionedGameContextTool());
     }
 

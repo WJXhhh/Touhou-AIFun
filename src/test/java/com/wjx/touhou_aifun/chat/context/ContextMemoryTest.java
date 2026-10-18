@@ -387,6 +387,192 @@ class ContextMemoryTest {
         assertTrue(state.openLoops().get(0).closed());
     }
 
+    @Test
+    void landmarkCodecRoundTripsAndLegacyPayloadHasEmptyList() {
+        MaidMemoryState state = new MaidMemoryState();
+        state.landmarks().add(new LandmarkPlace("minecraft:overworld", "minecraft:furnace",
+                12, 64, -3, "smelter", 100, "gui_open"));
+        MaidMemoryState decoded = MemoryStateCodec.decodeBytes(MemoryStateCodec.encodeBytes(state));
+        assertEquals(1, decoded.landmarks().size());
+        LandmarkPlace place = decoded.landmarks().get(0);
+        assertEquals("minecraft:furnace", place.blockId());
+        assertEquals(12, place.x());
+        assertEquals(64, place.y());
+        assertEquals(-3, place.z());
+        assertEquals("smelter", place.label());
+        assertEquals(100, place.lastSeenGameTime());
+
+        MaidMemoryState legacy = MemoryStateCodec.decode("""
+                {"schemaVersion":1,"turns":[],"facts":[],"openLoops":[],"episodes":[],
+                 "tokenCalibrations":[]}
+                """);
+        assertTrue(legacy.landmarks().isEmpty());
+    }
+
+    @Test
+    void landmarkUpsertMergesSamePositionAndEvictsLeastRecentlySeen() {
+        List<LandmarkPlace> places = new java.util.ArrayList<>();
+        LandmarkMemory.upsert(places, new LandmarkPlace("d", "minecraft:chest", 1, 2, 3, "", 100, "gui"));
+        LandmarkMemory.upsert(places, new LandmarkPlace("d", "minecraft:chest", 1, 2, 3, "", 200, "gui"));
+        assertEquals(1, places.size());
+        assertEquals(2, places.get(0).hitCount());
+        assertEquals(200, places.get(0).lastSeenGameTime());
+
+        for (int i = 0; i < 40; i++) {
+            LandmarkMemory.upsert(places, new LandmarkPlace("d", "minecraft:barrel", i, 4, 5, "", 300 + i, "scan"));
+        }
+        assertEquals(LandmarkMemory.MAX_PLACES, places.size());
+        assertTrue(places.stream().anyMatch(place -> place.x() == 39 && place.blockId().equals("minecraft:barrel")));
+        assertFalse(places.stream().anyMatch(place -> place.x() == 1 && place.blockId().equals("minecraft:chest")));
+    }
+
+    @Test
+    void landmarkRenderingFiltersDimensionAndShowsDistance() {
+        List<LandmarkPlace> places = List.of(
+                new LandmarkPlace("minecraft:overworld", "minecraft:furnace", 10, 64, 0, "", 0, "gui"),
+                new LandmarkPlace("minecraft:the_nether", "minecraft:chest", 1, 1, 1, "", 0, "gui"));
+        String section = LandmarkMemory.renderSection(places, "minecraft:overworld",
+                0.5, 64.5, 0.5, 2400, 8);
+        assertTrue(section.contains("Known landmarks"));
+        assertTrue(section.contains("minecraft:furnace @ 10,64,0"));
+        assertTrue(section.contains("10 blocks away"));
+        assertTrue(section.contains("2m ago"));
+        assertFalse(section.contains("minecraft:chest"));
+        assertEquals("", LandmarkMemory.renderSection(places, "minecraft:the_end", 0, 0, 0, 0, 8));
+    }
+
+    @Test
+    void recencyEpisodeFallbackPreventsPostCompactionAmnesia() {
+        MaidMemoryState state = new MaidMemoryState();
+        state.episodes().add(new MemoryEpisode("old", "玩家修建了红石线路", List.of(), 1, 0, 10, List.of()));
+        state.episodes().add(new MemoryEpisode("new", "玩家要求熔炼铁矿", List.of(), 1, 0, 20, List.of()));
+        assertEquals(List.of("new", "old"),
+                AIFunMemoryManager.withRecencyFallback(List.of(), state)
+                        .stream().map(MemoryEpisode::id).toList());
+        List<MemoryEpisode> strong = List.of(state.episodes().get(0));
+        assertEquals(strong, AIFunMemoryManager.withRecencyFallback(strong, state));
+    }
+
+    @Test
+    void correctionSharingOnlyOneCommonTokenDoesNotDeleteFact() {
+        MaidMemoryState state = new MaidMemoryState();
+        state.facts().add(new MemoryFact("mine", "location", "玩家今天去过矿区", 2, 1, List.of(1L)));
+        ImmediateMemoryReconciler.Result result = ImmediateMemoryReconciler.reconcile(
+                state, "其实我今天想挖矿", 10);
+        assertFalse(result.changed());
+        assertEquals(1, state.facts().size());
+    }
+
+    @Test
+    void extractionToleratesMissingEmptyArrayFields() {
+        MemoryExtractionDelta delta = MemoryExtractionCallback.parseDelta("""
+                {"episode":{"summary":"玩家要求熔炼铁矿","keywords":["铁矿"],"importance":1}}
+                """);
+        assertTrue(delta != null);
+        assertEquals("玩家要求熔炼铁矿", delta.episodeSummary());
+        assertTrue(delta.factUpserts().isEmpty());
+        assertTrue(delta.factDeletes().isEmpty());
+
+        MemoryExtractionDelta empty = MemoryExtractionCallback.parseDelta("{}");
+        assertTrue(empty != null);
+        assertFalse(empty.hasChanges());
+    }
+
+    @Test
+    void extractionAcceptsLongerEpisodeSummaryWithinNewLimit() {
+        MemoryExtractionDelta accepted = new MemoryExtractionDelta();
+        accepted.setEpisode("事".repeat(2500), List.of(), 1);
+        assertTrue(AIFunMemoryManager.isValidDelta(accepted));
+        MemoryExtractionDelta rejected = new MemoryExtractionDelta();
+        rejected.setEpisode("事".repeat(2501), List.of(), 1);
+        assertFalse(AIFunMemoryManager.isValidDelta(rejected));
+    }
+
+    @Test
+    void extractionParsesMultipleChronologicalEpisodes() {
+        MemoryExtractionDelta delta = MemoryExtractionCallback.parseDelta("""
+                {"episodes":[
+                  {"summary":"[对话主线] 玩家要求把箱子里的东西搬回家","keywords":["箱子","搬运"],"importance":2},
+                  {"summary":"[玩家目标] 玩家想打暮色森林的娜迦","keywords":["暮色森林","娜迦"],"importance":3}
+                ]}
+                """);
+        assertTrue(delta != null);
+        assertEquals(2, delta.episodes().size());
+        assertEquals(3, delta.episodes().get(1).importance());
+        assertTrue(AIFunMemoryManager.isValidDelta(delta));
+
+        MemoryExtractionDelta tooMany = new MemoryExtractionDelta();
+        for (int i = 0; i < 7; i++) tooMany.addEpisode("第" + i + "段", List.of(), 1);
+        assertFalse(AIFunMemoryManager.isValidDelta(tooMany));
+    }
+
+    @Test
+    void compressionPolicyUsesBudgetPercentagesInsteadOfTurnCounts() {
+        int budget = 100_000;
+        assertEquals(CompressionPolicy.Decision.NONE,
+                CompressionPolicy.assess(50_000, budget, true, 2_000).decision());
+        assertEquals(CompressionPolicy.Decision.COMPRESS,
+                CompressionPolicy.assess(71_000, budget, true, 2_000).decision());
+        assertEquals("soft_limit_task_hard",
+                CompressionPolicy.assess(71_000, budget, true, 2_000).reason());
+        assertEquals(CompressionPolicy.Decision.NONE,
+                CompressionPolicy.assess(71_000, budget, false, 1_000).decision());
+        assertEquals(CompressionPolicy.Decision.COMPRESS,
+                CompressionPolicy.assess(75_000, budget, false, 20_000).decision());
+        assertEquals(CompressionPolicy.Decision.FORCE,
+                CompressionPolicy.assess(91_000, budget, false, 100).decision());
+        assertEquals(15_000, CompressionPolicy.targetTokens(15_000, 475_000));
+        assertTrue(CompressionPolicy.targetTokens(300_000, 20_000) <= 10_000);
+        assertEquals(400_000, CompressionPolicy.compressionBatchLimit(475_000));
+    }
+
+    @Test
+    void toolCallHistoryKeepsNewestHundredAndProjectShortSummary() {
+        List<ToolCallRecord> records = new java.util.ArrayList<>();
+        for (int i = 0; i < 130; i++) {
+            ToolCallHistory.append(records, new ToolCallRecord("open_gui", "summary " + i, "ok", i));
+        }
+        assertEquals(ToolCallHistory.MAX_RECORDS, records.size());
+        assertEquals("summary 30", records.get(0).summary());
+        assertEquals("summary 129", records.get(records.size() - 1).summary());
+
+        List<ToolCallRecord> page = ToolCallHistory.page(records, 0, 5, "open_gui");
+        assertEquals("summary 129", page.get(0).summary());
+        assertEquals(5, page.size());
+        assertTrue(ToolCallHistory.page(records, 0, 5, "scan").isEmpty());
+
+        String summary = ToolCallHistory.summarize("""
+                {"status":"ok","target_position":[12,64,-3],"moved_item":"minecraft:iron_ingot",
+                 "moved_count":27,"note":"some long field that should not dominate the summary"}
+                """);
+        assertTrue(summary.contains("status=ok"));
+        assertTrue(summary.contains("moved_count=27"));
+        assertTrue(summary.codePointCount(0, summary.length()) <= ToolCallHistory.SUMMARY_CODE_POINTS);
+        assertEquals("ok", ToolCallHistory.statusOf("{\"status\":\"ok\"}"));
+    }
+
+    @Test
+    void codecRoundTripsToolHistoryAndEnvironmentNote() {
+        MaidMemoryState state = new MaidMemoryState();
+        state.appendToolCall(new ToolCallRecord("scan_surroundings", "status=ok target=12,64,-3", "ok", 500));
+        state.setEnvironment("minecraft:overworld", "plains near the base; chest and furnace", 480);
+        MaidMemoryState decoded = MemoryStateCodec.decodeBytes(MemoryStateCodec.encodeBytes(state));
+        assertEquals(1, decoded.toolCalls().size());
+        assertEquals("scan_surroundings", decoded.toolCalls().get(0).tool());
+        assertEquals("minecraft:overworld", decoded.environmentDimension());
+        assertTrue(decoded.environmentSummary().contains("furnace"));
+    }
+
+    @Test
+    void extractionParsesEnvironmentAndToleratesMissingSections() {
+        MemoryExtractionDelta delta = MemoryExtractionCallback.parseDelta("""
+                {"episode":{"summary":"玩家要求熔炼铁矿","keywords":["铁矿"],"importance":1},
+                 "environment":"plains, near (10,64,0); furnace and chest visible"}
+                """);
+        assertTrue(delta != null);
+        assertTrue(delta.environment().contains("furnace"));
+    }
+
     private static boolean hasUnpairedSurrogate(String value) {
         for (int i = 0; i < value.length(); i++) {
             char current = value.charAt(i);

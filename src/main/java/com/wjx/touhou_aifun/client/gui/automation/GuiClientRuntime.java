@@ -53,10 +53,17 @@ public final class GuiClientRuntime {
         String failure = "";
         long frame;
         String layout = "";
+        net.minecraft.world.level.block.entity.BlockEntity tile;
+        net.minecraft.nbt.CompoundTag tileTag;
+        long protocolSequence;
         State(UUID session, UUID maid, LocalPlayer actor) { this.session = session; this.maid = maid; this.actor = actor; }
     }
     private GuiClientRuntime() { }
-    public static boolean isolated() { return active != null; }
+    public static boolean isolated() { return active != null && RenderSystem.isOnRenderThread(); }
+    public static net.minecraft.world.level.block.entity.BlockEntity detachedBlockEntity(net.minecraft.core.BlockPos position) {
+        return com.mojang.blaze3d.systems.RenderSystem.isOnRenderThread()
+                && active != null && active.tile != null && active.tile.getBlockPos().equals(position) ? active.tile : null;
+    }
     public static void replaceScreen(Screen screen) {
         if (active == null) return;
         if (screen != null && (!(screen instanceof MenuAccess<?> access) || access.getMenu() != active.menu))
@@ -100,7 +107,11 @@ public final class GuiClientRuntime {
     }
     public static void handle(AIFunGuiRequestMessage request) {
         Minecraft mc = Minecraft.getInstance();
-        if (request.operation().equals("close")) { STATES.remove(request.session()); GuiOperationPreviewScreen.closed(request.maid()); return; }
+        if (request.operation().equals("close")) {
+            State removed = STATES.remove(request.session());
+            if (removed != null) removed.actor.connection.getConnection().channel().close();
+            GuiOperationPreviewScreen.closed(request.maid()); return;
+        }
         EntityMaid maid = null;
         if (mc.level != null) for (var entity : mc.level.entitiesForRendering()) {
             if (entity instanceof EntityMaid candidate && candidate.getUUID().equals(request.maid())) { maid = candidate; break; }
@@ -116,17 +127,19 @@ public final class GuiClientRuntime {
             State state = STATES.get(request.session());
             if (state == null) {
                 if (STATES.size() >= 8) { fail(request, "gui_client_capacity"); return; }
-                Connection ownerConnection = mc.player.connection.getConnection();
+                var attributes = new io.netty.channel.embedded.EmbeddedChannel();
                 Connection connection = new Connection(PacketFlow.CLIENTBOUND) {
                     @Override public void send(Packet<?> packet) { intercept(packet); }
                     @Override public void send(Packet<?> packet, PacketSendListener listener) { intercept(packet); }
-                    @Override public io.netty.channel.Channel channel() { return ownerConnection.channel(); }
+                    @Override public io.netty.channel.Channel channel() { return attributes; }
                 };
-                GameProfile profile = new GameProfile(request.session(), "[AIFunMaid]");
+                com.wjx.touhou_aifun.maid.gui.GuiProtocolBridge.copyNegotiation(connection, mc.player.connection.getConnection());
+                GameProfile profile = new GameProfile(UUID.nameUUIDFromBytes(("touhou_aifun:gui:" + request.maid()).getBytes(java.nio.charset.StandardCharsets.UTF_8)), "[AIFunMaid]");
                 ClientPacketListener listener = new ClientPacketListener(mc, null, connection, null, profile, null) {
                     @Override public net.minecraft.world.item.crafting.RecipeManager getRecipeManager() { return mc.level.getRecipeManager(); }
                     @Override public void close() { }
                 };
+                connection.setListener(listener);
                 LocalPlayer actor = new LocalPlayer(mc, mc.level, listener, new StatsCounter(), new ClientRecipeBook(), false, false);
                 actor.moveTo(maid.getX(), maid.getY(), maid.getZ(), maid.getYRot(), maid.getXRot());
                 state = new State(request.session(), request.maid(), actor); STATES.put(request.session(), state);
@@ -146,17 +159,25 @@ public final class GuiClientRuntime {
                     input(current, args);
                     if (!current.failure.isBlank()) throw new IllegalArgumentException(current.failure);
                     JsonObject result = new JsonObject(); result.add("actions", current.actions.deepCopy());
+                    result.addProperty("protocol_ack", current.protocolSequence);
                     mc.tell(() -> reply(request, result, new byte[0]));
                 } else {
-                    Rendered rendered = render(current, request.operation().equals("preview"));
+                    Rendered rendered = render(current, request.operation().equals("preview"), args);
                     if (!current.failure.isBlank() || current.actions.size() > 0) throw new IllegalArgumentException("screen_render_has_network_side_effects");
                     if (request.operation().equals("preview")) {
                         GuiOperationPreviewScreen.update(request.maid(), args, rendered.image);
+                        JsonObject acknowledgement = new JsonObject(); acknowledgement.addProperty("protocol_ack", current.protocolSequence);
+                        mc.tell(() -> reply(request, acknowledgement, new byte[0]));
                     } else {
                         current.frame++; current.layout = layout(current.screen);
                         JsonObject result = new JsonObject(); result.addProperty("frame_id", current.frame);
+                        result.addProperty("protocol_ack", current.protocolSequence);
                         result.addProperty("layout", current.layout); result.addProperty("width", current.screen.width); result.addProperty("height", current.screen.height);
                         result.add("controls", controls(current.screen));
+                        result.addProperty("controls_truncated", result.getAsJsonArray("controls").size() < widgets(current.screen).size());
+                        BitSet activeSlots = new BitSet();
+                        for (int n = 0; n < current.menu.slots.size(); n++) if (current.menu.getSlot(n).isActive()) activeSlots.set(n);
+                        result.addProperty("active_slots", Base64.getEncoder().encodeToString(activeSlots.toByteArray()));
                         NativeImage image = rendered.image;
                         CompletableFuture.supplyAsync(() -> { try { return jpeg(image); } finally { image.close(); } })
                                 .whenComplete((bytes, error) -> mc.execute(() -> {
@@ -176,6 +197,15 @@ public final class GuiClientRuntime {
         try {
             var type = BuiltInRegistries.MENU.get(buffer.readResourceLocation()); int id = buffer.readVarInt(); var title = buffer.readComponent();
             byte[] extra = buffer.readByteArray(32600);
+            if (buffer.readBoolean()) {
+                var position = buffer.readBlockPos(); var tag = buffer.readNbt();
+                if (tag == null) throw new IllegalArgumentException("missing_gui_tile_state");
+                if (state.tile == null || !state.tile.getBlockPos().equals(position)) {
+                    state.tile = net.minecraft.world.level.block.entity.BlockEntity.loadStatic(position, state.actor.level().getBlockState(position), tag);
+                    if (state.tile == null) throw new IllegalArgumentException("gui_tile_factory_missing");
+                    state.tile.setLevel(state.actor.level()); state.tileTag = tag.copy();
+                } else if (!tag.equals(state.tileTag)) { state.tile.handleUpdateTag(tag); state.tileTag = tag.copy(); }
+            } else { state.tile = null; state.tileTag = null; }
             if (state.menu == null || state.menu.containerId != id || state.menu.getType() != type) {
                 FriendlyByteBuf opening = new FriendlyByteBuf(Unpooled.wrappedBuffer(extra));
                 try { state.menu = type.create(id, state.actor.getInventory(), opening); } finally { opening.release(); }
@@ -201,6 +231,22 @@ public final class GuiClientRuntime {
                 boolean applied = false;
                 for (MaidGuiClientAdapter adapter : ADAPTERS) if (adapter.supports(state.menu)) { adapter.apply(state.menu, state.screen, custom); applied = true; break; }
                 if (!applied) throw new IllegalArgumentException("custom_screen_state_requires_client_adapter");
+            }
+            int packets = buffer.readVarInt();
+            if (packets < 0 || packets > 2048) throw new IllegalArgumentException("invalid_gui_protocol_batch");
+            for (int i = 0; i < packets; i++) {
+                long sequence = buffer.readLong(); var channel = buffer.readResourceLocation(); byte[] payload = buffer.readByteArray(256 * 1024);
+                if (sequence <= state.protocolSequence) continue;
+                var packetData = new FriendlyByteBuf(Unpooled.wrappedBuffer(payload));
+                try {
+                    var packet = new ClientboundCustomPayloadPacket(channel, packetData) {
+                        @Override public FriendlyByteBuf getInternalData() { return packetData; }
+                        @Override public net.minecraftforge.network.NetworkDirection getDirection() { return net.minecraftforge.network.NetworkDirection.PLAY_TO_CLIENT; }
+                    };
+                    if (!net.minecraftforge.network.NetworkHooks.onCustomPayload((net.minecraftforge.network.ICustomPacket<?>) packet, state.actor.connection.getConnection()))
+                        throw new IllegalArgumentException("gui_protocol_client_handler_unavailable:" + channel);
+                    state.protocolSequence = sequence;
+                } finally { packetData.release(); }
             }
         } finally { buffer.release(); }
     }
@@ -238,7 +284,7 @@ public final class GuiClientRuntime {
         } else { state.screen.mouseClicked(x, y, button); state.screen.mouseReleased(x, y, button); }
     }
     private record Rendered(NativeImage image) { }
-    private static Rendered render(State state, boolean preview) {
+    private static Rendered render(State state, boolean preview, JsonObject args) {
         Minecraft mc = Minecraft.getInstance();
         int width = state.screen.width, height = state.screen.height;
         float scale = Math.min(2F, Math.min(2048F / width, 1536F / height));
@@ -261,7 +307,10 @@ public final class GuiClientRuntime {
             RenderSystem.setProjectionMatrix(new Matrix4f().setOrtho(0, width, height, 0, -1000, 1000), VertexSorting.ORTHOGRAPHIC_Z);
             RenderSystem.disableDepthTest(); RenderSystem.disableScissor();
             GuiGraphics graphics = new GuiGraphics(mc, mc.renderBuffers().bufferSource());
-            state.screen.render(graphics, -1, -1, 0); graphics.flush();
+            int hoverX = args.has("hover_x") ? args.get("hover_x").getAsInt() : -1;
+            int hoverY = args.has("hover_y") ? args.get("hover_y").getAsInt() : -1;
+            if (hoverX < -1 || hoverX >= width || hoverY < -1 || hoverY >= height) throw new IllegalArgumentException("coordinate_out_of_bounds");
+            state.screen.render(graphics, hoverX, hoverY, 0); graphics.flush();
             return new Rendered(Screenshot.takeScreenshot(target));
         } finally {
             if (target != null) target.destroyBuffers();
@@ -281,8 +330,15 @@ public final class GuiClientRuntime {
     }
     private static List<AbstractWidget> widgets(Screen screen) {
         List<AbstractWidget> widgets = new ArrayList<>();
-        for (GuiEventListener child : screen.children()) if (child instanceof AbstractWidget widget) widgets.add(widget);
+        collectWidgets(screen.children(), widgets, Collections.newSetFromMap(new IdentityHashMap<>()));
         return widgets;
+    }
+    private static void collectWidgets(List<? extends GuiEventListener> children, List<AbstractWidget> widgets, Set<GuiEventListener> seen) {
+        for (GuiEventListener child : children) {
+            if (seen.size() >= 512 || !seen.add(child)) continue;
+            if (child instanceof AbstractWidget widget) widgets.add(widget);
+            if (child instanceof net.minecraft.client.gui.components.events.ContainerEventHandler parent) collectWidgets(parent.children(), widgets, seen);
+        }
     }
     private static String layout(Screen screen) {
         StringBuilder value = new StringBuilder(screen.getClass().getName()).append(screen.width).append(':').append(screen.height);
@@ -292,13 +348,20 @@ public final class GuiClientRuntime {
     }
     private static JsonArray controls(Screen screen) {
         JsonArray values = new JsonArray(); List<AbstractWidget> widgets = widgets(screen);
-        for (int i = 0; i < Math.min(24, widgets.size()); i++) {
+        int bytes = 0;
+        var order = java.util.stream.IntStream.range(0, widgets.size()).boxed()
+                .sorted(Comparator.comparingInt(i -> !widgets.get(i).visible ? 2 : widgets.get(i).active ? 0 : 1)).limit(96).toList();
+        for (int i : order) {
             AbstractWidget widget = widgets.get(i); JsonObject value = new JsonObject();
+            if (!widget.visible) continue;
             String label = widget.getMessage().getString();
             value.addProperty("id", "widget:" + i); value.addProperty("label", label.substring(0, Math.min(64, label.length())));
             value.addProperty("kind", widget instanceof EditBox ? "text" : "button"); value.addProperty("enabled", widget.active && widget.visible);
             if (widget instanceof EditBox box) value.addProperty("value", box.getValue().substring(0, Math.min(128, box.getValue().length())));
-            value.addProperty("x", widget.getX()); value.addProperty("y", widget.getY()); value.addProperty("width", widget.getWidth()); value.addProperty("height", widget.getHeight()); values.add(value);
+            value.addProperty("x", widget.getX()); value.addProperty("y", widget.getY()); value.addProperty("width", widget.getWidth()); value.addProperty("height", widget.getHeight());
+            bytes += value.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8).length + 1;
+            if (bytes > 6000) break;
+            values.add(value);
         }
         return values;
     }
@@ -313,7 +376,7 @@ public final class GuiClientRuntime {
         } catch (java.io.IOException e) { throw new IllegalStateException(e); }
     }
     private static void fail(AIFunGuiRequestMessage request, String reason) {
-        if (request.operation().equals("preview")) { GuiOperationPreviewScreen.failed(reason); return; }
+        if (request.operation().equals("preview")) GuiOperationPreviewScreen.failed(reason);
         JsonObject result = new JsonObject(); result.addProperty("status", "failed"); result.addProperty("error", reason.substring(0, Math.min(256, reason.length()))); reply(request, result, new byte[0]);
     }
     private static void reply(AIFunGuiRequestMessage request, JsonObject result, byte[] bytes) {
@@ -322,5 +385,8 @@ public final class GuiClientRuntime {
         for (int i = 0; i < parts; i++) AIFunNetwork.sendGuiResult(new AIFunGuiResultMessage(request.request(), request.session(), request.maid(), json, i, parts,
                 Arrays.copyOfRange(bytes, Math.min(bytes.length, i * 16384), Math.min(bytes.length, (i + 1) * 16384))));
     }
-    public static void clear() { STATES.clear(); }
+    public static void clear() {
+        for (State state : STATES.values()) state.actor.connection.getConnection().channel().close();
+        STATES.clear();
+    }
 }

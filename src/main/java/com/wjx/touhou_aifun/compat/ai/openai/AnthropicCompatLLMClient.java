@@ -86,17 +86,6 @@ public class AnthropicCompatLLMClient implements LLMClient {
                 && ChatFlowManager.isSuperseded(maid.getUUID(), callback)) {
             return;
         }
-        if (com.wjx.touhou_aifun.chat.agent.AgentExecution.managed(callback)) {
-            ToolCatalogSnapshot snapshot = ToolContextSelector.snapshot(maid, callback);
-            double factor = AIFunMemoryManager.calibratedEstimate(maid.getAiChatManager(), callback.getMessages())
-                    / (double) Math.max(1, com.wjx.touhou_aifun.chat.context.ContextTokenEstimator.estimate(callback.getMessages()));
-            List<LLMMessage> planned = ContextBudgetPlanner.trim(callback.getMessages(),
-                    TouhouAIFunConfig.CONTEXT_INPUT_BUDGET_TOKENS.get(),
-                    snapshot.schemaBudget(ChatFlowManager.requestedToolIds(maid.getUUID(), callback))
-                            + com.wjx.touhou_aifun.vision.MultimodalTurnContext.inputReserve(callback), factor);
-            callback.getMessages().clear();
-            callback.getMessages().addAll(planned);
-        }
         var preparation=AgentTelemetry.root(callback,"model_prepare");
         JsonObject body = this.buildRequestBody(callback);
 
@@ -171,8 +160,9 @@ public class AnthropicCompatLLMClient implements LLMClient {
         }
         // Keep the emotion reminders adjacent to the model's next response, exactly like the OpenAI path.
         if (managed) {
-            systemParts.add(ToolContextSelector.snapshot(maid, callback).directory());
-            updates.add(ToolContextSelector.loadedNotice(maid, callback));
+            updates.add(ToolContextSelector.snapshot(maid, callback).directory());
+            if(!(callback instanceof com.wjx.touhou_aifun.chat.agent.TaskCallback))
+                updates.add(ToolContextSelector.loadedNotice(maid, callback));
             String emotionChange = EmotionControlPrompts.changeNotice(maid);
             if (emotionChange != null) {
                 updates.add(emotionChange);
@@ -293,6 +283,7 @@ public class AnthropicCompatLLMClient implements LLMClient {
             }
             body.add("tools", tools);
         }
+        if(callback instanceof com.wjx.touhou_aifun.chat.agent.TaskCallback task)task.recordWirePrefix(body);
 
         // Streaming must be requested explicitly: without `"stream": true` the endpoint returns a
         // plain JSON body, which the SSE consumer would silently ignore (empty text reply).

@@ -130,6 +130,11 @@ public final class MultimodalTurnContext {
                         ACTIVE.remove(callback, attachment);
                         String value = error == null && result != null ? result
                                 : VisionObservationManager.snapshotFailure(attachment.snapshot, "independent_vision_failed");
+                        if ("GUI".equals(attachment.snapshot.sourceKind())) {
+                            JsonObject observation = com.google.gson.JsonParser.parseString(value).getAsJsonObject();
+                            GuiVisualObservation.invalidateFailedInterpretation(callback, observation);
+                            value = observation.toString();
+                        }
                         FALLBACK_TEXT.put(callback, value);
                         com.wjx.touhou_aifun.chat.context.AIFunMemoryManager.addToolOutcome(callback, value);
                         client.chat(callback);

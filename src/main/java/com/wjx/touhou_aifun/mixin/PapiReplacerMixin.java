@@ -56,6 +56,9 @@ public abstract class PapiReplacerMixin {
                   never a world coordinate: use coordinate_space=maid_relative only for fresh offsets from the maid's
                   current block position. For the nearest chest, omit x/y/z and use target=minecraft:chest.
                   If opening fails, inspect actual_block/target_position and correct the target; do not repeat guessed coordinates.
+                - Known landmarks in memory are verified absolute positions of blocks the maid actually used or
+                  observed. Prefer their coordinates for open_gui; target=nearest is only for an unknown target.
+                  Opening another block still requires being within 16 blocks, so walk closer first for a far place.
                 - Explicit 'do not wait', '不用等', '放进去就走' means NO_WAIT: load/start, verify, close, and leave.
                   Otherwise choose AUTO unless the user explicitly wants finished products brought back (UNTIL_GOAL).
                 - AUTO waits only jobs estimated within one minute. Long jobs are started and left processing.
@@ -64,7 +67,9 @@ public abstract class PapiReplacerMixin {
                 - On blocked_missing_fuel or blocked_output_full, repair using available authorized inventory,
                   then wait again with the same total goal. Budgets do not recharge. Do not retry exhausted waits.
                 - Inspect slots/controls before actions. For visual input use the latest frame_id and layout,
-                  with logical GUI coordinates, not screenshot pixels. Reinspect when stale; unknown mod protocols need adapters.
+                  with logical GUI coordinates, not screenshot pixels. For unfamiliar mod machines inspect_gui(visual=true)
+                  before moving items; use hover_x/hover_y for native tooltips. Reinspect when stale. Native Forge play
+                  messages are bridged as the maid; verify authoritative slot/backpack changes after operations.
                 - Say 'started' only when started, and 'completed and collected' only when the actual tool reports delivery.
                   Leave machine inputs in place on interruption and never invent success or automatically schedule a return.
                   stopped_by_owner or superseded ends this task: do not reopen, retry or resume it without a new instruction.
@@ -192,6 +197,15 @@ public abstract class PapiReplacerMixin {
                   danger judgment, obtain a compatible scan (`blocks`, `entities`, or `both`), either
                   directly or through `observe_surroundings`. Do not repeat an equivalent fresh scan.
                   Do not infer an exact Minecraft id from a texture or a vague nearby-entity list.
+                - When the user identifies a small region such as the blocks above/on/next to a workstation,
+                  use `scan_surroundings` with `intent=inspect_area` and inclusive `area` bounds (at most 7
+                  blocks per axis). Locate the anchor first if needed, then inspect its surroundings using
+                  world coordinates from the scan's recorded origin. A smaller max_distance alone is not
+                  a precise area inspection. This enumerates all cells without a vanilla/mod whitelist.
+                  Check `observed_blocks`; use `observation_id` and `next_offset` to read remaining pages
+                  when `has_more` is true. Pages belong to that original observation and may expire.
+                  Only an explicit `status=air` establishes air at that cell. Missing entries, `occluded`,
+                  `unloaded`, `out_of_range` and `out_of_world` never establish an empty location.
                 - Use `observe_surroundings` with `scan_mode` `blocks`/`entities`/`both` when the answer
                   needs both the six-face appearance and code-level grounding. Use `none` only for color,
                   visual style, spatial appearance, or OCR of text other than signs.

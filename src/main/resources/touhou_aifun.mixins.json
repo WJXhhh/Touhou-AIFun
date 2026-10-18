@@ -10,6 +10,9 @@
     "WikiCostMixin",
     "GuiActorInventoryMixin",
     "GuiActorSlotMixin",
+    "GuiForgeSlotMixin",
+    "GuiRangedWrapperAccessor",
+    "GuiCombinedWrapperAccessor",
     "GuiMenuDataAccessor",
     "GuiNetworkHooksMixin",
     "GuiTemporaryItemsMixin",
@@ -29,6 +32,7 @@
     "TTSCallbackMixin"
   ],
   "client": [
+    "client.GuiBlockEntityIsolationMixin",
     "client.GuiConnectionIsolationMixin",
     "client.GuiScreenIsolationMixin",
     "client.AIChatSettingsHubAccessor",

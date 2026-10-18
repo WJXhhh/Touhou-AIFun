@@ -16,7 +16,7 @@ public final class GuiVisualObservation {
         if (!value.has("_gui_image")) return CompletableFuture.completedFuture(value);
         String image = value.remove("_gui_image").getAsString();
         if (!TouhouAIFunConfig.VISION_ENABLED.get()) {
-            value.addProperty("image_status", "vision_disabled"); return CompletableFuture.completedFuture(value);
+            value.addProperty("image_status", "vision_disabled"); return settleInterpretation(callback, value);
         }
         var maid = callback.getMaid(); long tick = maid.level().getGameTime();
         ObservationSnapshot snapshot = new ObservationSnapshot(UUID.randomUUID().toString(), maid.getUUID(), maid.getOwnerUUID(),
@@ -30,6 +30,27 @@ public final class GuiVisualObservation {
         }
         return VisionObservationManager.identify(callback, snapshot,
                 "Describe controls, labels and their center coordinates in logical GUI coordinates; report uncertainty for ambiguous targets.", ignored -> { })
-                .thenApply(identified -> { value.add("visual_observation", JsonParser.parseString(identified)); return value; });
+                .handle((identified, error) -> {
+                    if (error == null) value.add("visual_observation", JsonParser.parseString(identified));
+                    else { JsonObject failed = new JsonObject(); failed.addProperty("error", "independent_vision_failed"); value.add("visual_observation", failed); }
+                    return value;
+                }).thenCompose(result -> settleInterpretation(callback, result));
+    }
+    private static CompletableFuture<JsonObject> settleInterpretation(LLMCallback callback, JsonObject value) {
+        var future = new CompletableFuture<JsonObject>();
+        callback.runOnServerThread(() -> { invalidateFailedInterpretation(callback, value); future.complete(value); });
+        return future;
+    }
+    /** Capturing pixels alone cannot authorize blind machine actions when image interpretation failed. Server thread only. */
+    public static void invalidateFailedInterpretation(LLMCallback callback, JsonObject value) {
+        JsonObject observation = value.has("visual_observation") && value.get("visual_observation").isJsonObject()
+                ? value.getAsJsonObject("visual_observation") : value;
+        String imageStatus = observation.has("image_status") ? observation.get("image_status").getAsString() : "";
+        if (!observation.has("error") && !imageStatus.equals("failed") && !imageStatus.equals("vision_disabled")) return;
+        var session = com.wjx.touhou_aifun.maid.gui.MaidGuiSessionManager.session(callback.getMaid().getUUID());
+        if (session != null && session.callback == callback && session.unfamiliarMenu()) {
+            session.visuallyObservedMenu = null;
+            value.addProperty("visual_inspection_required", true);
+        }
     }
 }

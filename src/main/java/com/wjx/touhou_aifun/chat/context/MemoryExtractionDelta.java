@@ -14,6 +14,8 @@ public final class MemoryExtractionDelta {
     private String episodeSummary = "";
     private final List<String> keywords = new ArrayList<>();
     private int importance;
+    private final List<EpisodeChange> episodes = new ArrayList<>();
+    private String environment = "";
 
     public List<FactChange> factUpserts() { return factUpserts; }
     public List<String> factDeletes() { return factDeletes; }
@@ -22,13 +24,29 @@ public final class MemoryExtractionDelta {
     public String episodeSummary() { return episodeSummary == null ? "" : episodeSummary; }
     public List<String> keywords() { return keywords; }
     public int importance() { return Math.max(0, Math.min(3, importance)); }
+    /** Multi-episode digest for long batches; each episode covers one chronological/thematic chunk. */
+    public List<EpisodeChange> episodes() { return episodes; }
+    public String environment() { return environment == null ? "" : environment; }
 
     public boolean hasChanges() {
         return factUpserts.stream().anyMatch(change -> StringUtils.isNotBlank(change.text()))
                 || factDeletes.stream().anyMatch(StringUtils::isNotBlank)
                 || loopUpserts.stream().anyMatch(change -> StringUtils.isNotBlank(change.text()))
                 || loopCloses.stream().anyMatch(StringUtils::isNotBlank)
-                || StringUtils.isNotBlank(episodeSummary);
+                || StringUtils.isNotBlank(episodeSummary)
+                || episodes.stream().anyMatch(change -> StringUtils.isNotBlank(change.summary()))
+                || StringUtils.isNotBlank(environment);
+    }
+
+    public void addEpisode(String summary, List<String> keywords, int importance) {
+        if (StringUtils.isBlank(summary)) return;
+        List<String> copy = new ArrayList<>();
+        if (keywords != null) copy.addAll(keywords);
+        episodes.add(new EpisodeChange(summary, copy, Math.max(0, Math.min(3, importance))));
+    }
+
+    public void setEnvironment(String environment) {
+        this.environment = environment == null ? "" : environment;
     }
 
     public void setEpisode(String summary, List<String> keywords, int importance) {
@@ -40,4 +58,5 @@ public final class MemoryExtractionDelta {
 
     public record FactChange(String id, String kind, String text, int importance) { }
     public record LoopChange(String id, String text, int importance) { }
+    public record EpisodeChange(String summary, List<String> keywords, int importance) { }
 }

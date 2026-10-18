@@ -7,6 +7,7 @@ import com.wjx.touhou_aifun.vision.scan.EnvironmentScanRequest;
 import com.wjx.touhou_aifun.vision.scan.EnvironmentScanResult;
 import com.wjx.touhou_aifun.vision.scan.ScanDirection;
 import com.wjx.touhou_aifun.vision.scan.ScanMode;
+import com.wjx.touhou_aifun.vision.scan.ScanArea;
 import com.wjx.touhou_aifun.vision.scan.ScannedSign;
 import com.wjx.touhou_aifun.vision.scan.ShallowEnvironmentScanner;
 import com.wjx.touhou_aifun.vision.scan.VisionScanCache;
@@ -30,6 +31,130 @@ import java.util.List;
 @GameTestHolder("aifun_gui_test")
 @PrefixGameTestTemplate(false)
 public final class SignScanGameTests {
+    @GameTest(template="empty",templateNamespace="aifun_gui_test")
+    public static void observesUntaggedModBlockAboveCraftingTable(GameTestHelper helper) {
+        EntityMaid maid = maid(helper);
+        helper.setBlock(new BlockPos(2, 1, 4), Blocks.CRAFTING_TABLE);
+        helper.setBlock(new BlockPos(2, 2, 4), GuiFixtureMod.MACHINE.get());
+        BlockPos target = helper.absolutePos(new BlockPos(2, 2, 4));
+        helper.assertTrue(helper.getLevel().getBlockEntity(target) == null, "Fixture has no block entity");
+        var result = VisionScanCache.scan(maid, BLOCKS);
+        helper.assertTrue(result.importantBlocks().stream().noneMatch(block -> block.registryId().equals("aifun_gui_test:machine")),
+                "Ordinary machine is not rescued by old important-block heuristics");
+        helper.assertTrue(result.observedBlocks().stream().anyMatch(block -> block.registryId().equals("aifun_gui_test:machine")
+                && block.dx() + maid.blockPosition().getX() == target.getX()
+                && block.dy() + maid.blockPosition().getY() == target.getY()), "Panorama retains exact ordinary mod block identity and coordinates");
+        var compact = JsonParser.parseString(result.toCompactJson()).getAsJsonObject();
+        helper.assertTrue(compact.getAsJsonArray("observed_blocks").asList().stream()
+                .anyMatch(row -> row.getAsJsonObject().has("registry_id")
+                        && row.getAsJsonObject().get("registry_id").getAsString().equals("aifun_gui_test:machine")),
+                "Mod block survives summary compression without any tag");
+        helper.succeed();
+    }
+
+    @GameTest(template="empty",templateNamespace="aifun_gui_test")
+    public static void preciseAreaFindsModBlockAndAirAndPreservesSavedPagesAfterMovement(GameTestHelper helper) {
+        EntityMaid maid = maid(helper);
+        helper.setBlock(new BlockPos(2, 1, 4), Blocks.CRAFTING_TABLE);
+        helper.setBlock(new BlockPos(2, 2, 4), GuiFixtureMod.MACHINE.get());
+        BlockPos target = helper.absolutePos(new BlockPos(2, 2, 4));
+        var area = new ScanArea(target.getX(), target.getY(), target.getZ(), target.getX() + 1,
+                target.getY(), target.getZ(), "world");
+        var request = new EnvironmentScanRequest(ScanMode.BLOCKS, ScanDirection.ALL, 5, "", "inspect_area", "summary", area, 0, 1, "");
+        var result = VisionScanCache.scan(maid, request);
+        helper.assertTrue(result.observedBlocks().size() == 2, "Every requested cell is enumerated");
+        helper.assertTrue(result.observedBlocks().stream().anyMatch(block -> block.registryId().equals("aifun_gui_test:machine")), "Area does not filter ordinary mod blocks");
+        helper.assertTrue(result.observedBlocks().stream().anyMatch(block -> block.status().equals("air")), "Visible empty cell is explicitly air");
+        var first = JsonParser.parseString(result.toJson()).getAsJsonObject();
+        helper.assertTrue(first.get("primary_rays").getAsInt() == 0, "Area inspection skips panorama");
+        helper.assertTrue(first.get("has_more").getAsBoolean(), "Small page exposes continuation");
+        helper.setBlock(new BlockPos(2, 2, 4), Blocks.AIR);
+        maid.setPos(maid.getX() + 1, maid.getY(), maid.getZ());
+        var next = VisionScanCache.scan(maid, new EnvironmentScanRequest(ScanMode.BOTH, ScanDirection.ALL, 20,
+                "", "overview", "summary", null, first.get("next_offset").getAsInt(), 1, result.observationId()));
+        var second = JsonParser.parseString(next.toJson()).getAsJsonObject();
+        helper.assertTrue(first.get("observation_id").equals(second.get("observation_id")), "Pages keep one observation identity");
+        helper.assertTrue(first.get("maid_position_at_scan_start").equals(second.get("maid_position_at_scan_start")), "Movement does not rewrite original origin");
+        helper.assertTrue(next.observedBlocks().stream().anyMatch(block -> block.registryId().equals("aifun_gui_test:machine")), "Page read uses captured state even after block changes");
+        var fresh = VisionScanCache.scan(maid, request);
+        helper.assertTrue(fresh.observedBlocks().stream().noneMatch(block -> block.registryId().equals("aifun_gui_test:machine")), "Fresh precise scan sees changed state");
+        helper.succeed();
+    }
+
+    @GameTest(template="empty",templateNamespace="aifun_gui_test")
+    public static void preciseAreaDoesNotExposeOccludedIdentitiesOrClaimUnknownCellsAreAir(GameTestHelper helper) {
+        EntityMaid maid = maid(helper);
+        helper.setBlock(new BlockPos(2, 2, 4), GuiFixtureMod.MACHINE.get());
+        for (BlockPos wall : BlockPos.betweenClosed(new BlockPos(0, 1, 3), new BlockPos(5, 4, 3))) helper.setBlock(wall, Blocks.STONE);
+        BlockPos target = helper.absolutePos(new BlockPos(2, 2, 4));
+        var area = new ScanArea(target.getX(), target.getY(), target.getZ(), target.getX() + 1, target.getY(), target.getZ(), "world");
+        var result = VisionScanCache.scan(maid, new EnvironmentScanRequest(ScanMode.BLOCKS, ScanDirection.ALL, 5,
+                "", "inspect_area", "full", area, 0, 32, ""));
+        helper.assertTrue(result.observedBlocks().size() == 2, "Occluded cells are accounted for");
+        helper.assertTrue(result.observedBlocks().stream().allMatch(block -> block.status().equals("occluded")
+                && block.registryId().isEmpty() && block.properties().isEmpty()), "No identities or air claims through an opaque wall");
+        var json = JsonParser.parseString(result.toJson()).getAsJsonObject();
+        helper.assertTrue(json.get("area_enumeration_complete").getAsBoolean()
+                && !json.get("area_visibility_complete").getAsBoolean(), "Enumeration and visual completeness are distinct");
+        var shortRange = ShallowEnvironmentScanner.scan(maid, new EnvironmentScanRequest(ScanMode.BLOCKS, ScanDirection.ALL, 1,
+                "", "inspect_area", "full", area, 0, 32, ""));
+        helper.assertTrue(shortRange.observedBlocks().stream().allMatch(block -> block.status().equals("out_of_range")), "Distant region never bypasses radius");
+        helper.succeed();
+    }
+
+    @GameTest(template="empty",templateNamespace="aifun_gui_test",timeoutTicks=100)
+    public static void preciseAreaRunsIncrementallyAndDoesNotShareAnotherRegionCache(GameTestHelper helper) {
+        EntityMaid maid = maid(helper);
+        BlockPos min = helper.absolutePos(new BlockPos(0, 1, 0));
+        var area = new ScanArea(min.getX(), min.getY(), min.getZ(), min.getX() + 5, min.getY() + 4, min.getZ() + 5, "world");
+        var future = VisionScanCache.scanAsync(maid, new EnvironmentScanRequest(ScanMode.BLOCKS, ScanDirection.ALL, 10,
+                "", "inspect_area", "summary", area, 0, 32, ""));
+        helper.succeedWhen(() -> {
+            helper.assertTrue(future.isDone(), "Incremental area scan completed");
+            var result = future.join();
+            helper.assertTrue(result.observedBlocks().size() == 180, "No cells dropped across tick boundaries");
+            helper.assertTrue(result.completedTick() > result.gameTick(), "Work is spread across ticks");
+            var single = new ScanArea(min.getX(), min.getY(), min.getZ(), min.getX(), min.getY(), min.getZ(), "world");
+            var other = VisionScanCache.scan(maid, new EnvironmentScanRequest(ScanMode.BLOCKS, ScanDirection.ALL, 10,
+                    "", "inspect_area", "full", single, 0, 32, ""));
+            helper.assertTrue(other.observedBlocks().size() == 1 && !other.observationId().equals(result.observationId()), "Different bounds never reuse wrong cached geometry");
+        });
+    }
+
+    @GameTest(template="empty",templateNamespace="aifun_gui_test")
+    public static void preciseAreaDoesNotLoadChunksOrSharePagesBetweenMaids(GameTestHelper helper) {
+        EntityMaid maid = maid(helper);
+        var area = new ScanArea(0, 0, 0, 0, 0, 0, "maid_relative");
+        var request = new EnvironmentScanRequest(ScanMode.BLOCKS, ScanDirection.ALL, 5, "", "inspect_area", "full", area, 0, 32, "");
+        var saved = VisionScanCache.scan(maid, request);
+        EntityMaid other = maid(helper);
+        boolean rejected = false;
+        try { VisionScanCache.scan(other, new EnvironmentScanRequest(ScanMode.BLOCKS, ScanDirection.ALL, 5,
+                "", "overview", "full", null, 0, 32, saved.observationId())); }
+        catch (IllegalArgumentException expected) { rejected = true; }
+        helper.assertTrue(rejected, "Saved pages are bound to their maid");
+        maid.setOwnerUUID(java.util.UUID.randomUUID());
+        rejected = false;
+        try { VisionScanCache.scan(maid, new EnvironmentScanRequest(ScanMode.BLOCKS, ScanDirection.ALL, 5,
+                "", "overview", "full", null, 0, 32, saved.observationId())); }
+        catch (IllegalArgumentException expected) { rejected = true; }
+        helper.assertTrue(rejected, "Changed owner cannot access earlier saved pages");
+        var owned = VisionScanCache.scan(maid, request);
+        VisionScanCache.clearMaid(maid.getUUID());
+        rejected = false;
+        try { VisionScanCache.scan(maid, new EnvironmentScanRequest(ScanMode.BLOCKS, ScanDirection.ALL, 5,
+                "", "overview", "full", null, 0, 32, owned.observationId())); }
+        catch (IllegalArgumentException expected) { rejected = true; }
+        helper.assertTrue(rejected, "Clearing maid memory clears saved scan pages");
+        maid.setPos(1_000_000.5, maid.getY(), 1_000_000.5);
+        helper.assertTrue(!helper.getLevel().hasChunkAt(maid.blockPosition()), "Destination is unloaded");
+        int loaded = helper.getLevel().getChunkSource().getLoadedChunksCount();
+        var result = ShallowEnvironmentScanner.scan(maid, request);
+        helper.assertTrue(result.observedBlocks().size() == 1 && result.observedBlocks().get(0).status().equals("unloaded"), "Unloaded cell has no invented identity");
+        helper.assertTrue(helper.getLevel().getChunkSource().getLoadedChunksCount() == loaded, "Precise inspection never loads chunks");
+        helper.succeed();
+    }
+
     @GameTest(batch="agentScanLatency",template="empty",templateNamespace="aifun_gui_test",timeoutTicks=120)
     public static void multipleMaidsFinishBoundedScansAtLowTickRate(GameTestHelper helper) {
         var scans=new java.util.ArrayList<java.util.concurrent.CompletableFuture<EnvironmentScanResult>>();

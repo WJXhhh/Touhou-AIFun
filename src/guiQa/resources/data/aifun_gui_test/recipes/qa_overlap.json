@@ -1,0 +1,5 @@
+{
+  "type": "minecraft:crafting_shapeless",
+  "ingredients": [{"tag": "minecraft:logs"}, {"item": "minecraft:oak_log"}],
+  "result": {"item": "minecraft:paper"}
+}

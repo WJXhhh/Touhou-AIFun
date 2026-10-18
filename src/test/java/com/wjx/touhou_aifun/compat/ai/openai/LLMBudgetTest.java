@@ -19,7 +19,9 @@ class LLMBudgetTest {
         assertEquals(256, LLMRuntimeBudget.toolRounds());
         assertEquals(8, LLMRuntimeBudget.repeatBatches());
         assertEquals(Duration.ofMinutes(10), LLMRuntimeBudget.timeout());
-        assertEquals(98304, TouhouAIFunConfig.CONTEXT_INPUT_BUDGET_TOKENS.getDefault());
+        assertEquals(475000, TouhouAIFunConfig.CONTEXT_INPUT_BUDGET_TOKENS.getDefault());
+        assertEquals(475000, TouhouAIFunConfig.AGENT_CONTEXT_INPUT_BUDGET_TOKENS.getDefault());
+        assertEquals(15000, TouhouAIFunConfig.MEMORY_COMPRESSION_TARGET_TOKENS.getDefault());
     }
 
     @Test void sendsProtocolAppropriateOutputLimitWithoutChangingThinkingMode() {

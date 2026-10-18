@@ -13,6 +13,10 @@ import net.minecraftforge.fml.event.lifecycle.FMLClientSetupEvent;
 
 @Mod.EventBusSubscriber(modid = "aifun_gui_test", bus = Mod.EventBusSubscriber.Bus.MOD, value = Dist.CLIENT)
 public final class GuiFixtureClient {
+    public static void applyNativeState(int value) {
+        var player=net.minecraft.client.Minecraft.getInstance().player;
+        if(player!=null && player.containerMenu instanceof GuiFixtureMod.TestMenu menu)menu.storage.nativeValue=value;
+    }
     @SubscribeEvent public static void setup(FMLClientSetupEvent event) {
         event.enqueueWork(() -> MenuScreens.register(GuiFixtureMod.MENU.get(), TestScreen::new));
     }
@@ -32,6 +36,8 @@ public final class GuiFixtureClient {
                 finally { data.release(); }
             })
                     .bounds(leftPos + 8, topPos + 170, 100, 18).build());
+            addRenderableWidget(Button.builder(Component.literal("Native"),b->GuiFixtureMod.NATIVE_CHANNEL.sendToServer(new GuiFixtureMod.NativeMode(101)))
+                    .bounds(leftPos+114,topPos+170,60,18).build());
         }
         @Override protected void renderBg(GuiGraphics graphics, float partial, int x, int y) {
             graphics.fill(leftPos, topPos, leftPos + imageWidth, topPos + imageHeight, 0xff263149);
@@ -42,6 +48,7 @@ public final class GuiFixtureClient {
         }
         @Override protected void renderLabels(GuiGraphics graphics, int x, int y) {
             graphics.drawString(font, "Fixture mode: " + menu.storage.mode, 8, 8, 0xffffff, false);
+            graphics.drawString(font, "Native state: " + menu.storage.nativeValue, 8, -34, 0xffffff, false);
         }
         @Override public void render(GuiGraphics graphics, int x, int y, float partial) { super.render(graphics, x, y, partial); renderTooltip(graphics, x, y); }
         @Override public boolean mouseClicked(double x, double y, int button) {

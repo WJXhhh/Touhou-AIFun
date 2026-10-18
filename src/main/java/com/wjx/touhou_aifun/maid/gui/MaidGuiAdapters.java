@@ -5,6 +5,9 @@ import java.util.concurrent.CopyOnWriteArrayList;
 
 public final class MaidGuiAdapters {
     private static final List<MaidGuiAdapter> GUI = new CopyOnWriteArrayList<>();
+    static {
+        if (net.minecraftforge.fml.ModList.get().isLoaded("projecte")) GUI.add(new ProjectETransmutationAdapter());
+    }
     private static final List<MaidGuiProcessAdapter> PROCESS = new CopyOnWriteArrayList<>(List.of(new FurnaceProcessAdapter()));
     private MaidGuiAdapters() { }
     public static void register(MaidGuiAdapter adapter) { GUI.add(0, adapter); }

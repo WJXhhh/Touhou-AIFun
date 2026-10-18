@@ -36,6 +36,7 @@ public final class VisionScanScheduler {
     public static CompletableFuture<EnvironmentScanResult> request(EntityMaid maid,
                                                                      EnvironmentScanRequest request) {
         EnvironmentScanRequest normalized = request == null ? EnvironmentScanRequest.defaults() : request;
+        if (!normalized.observationId().isBlank()) return VisionScanCache.scanAsync(maid, normalized);
         EnvironmentScanResult cached = VisionScanCache.getIfFresh(maid, normalized);
         if (cached != null) {
             return CompletableFuture.completedFuture(cached);
@@ -129,7 +130,7 @@ public final class VisionScanScheduler {
                         active.job.abort("hard_timeout");
                     }
                     EnvironmentScanResult result = active.job.result().completedAt(maid.level().getGameTime());
-                    VisionScanCache.put(active.key, result);
+                    VisionScanCache.put(active.key, result, maid.getOwnerUUID());
                     active.future.complete(result);
                     ACTIVE.remove(maidId, active);
                 }

@@ -1,0 +1,6 @@
+{
+  "type": "minecraft:crafting_shaped",
+  "pattern": ["PI", " P"],
+  "key": {"P": {"tag": "minecraft:planks"}, "I": {"item": "minecraft:iron_ingot"}},
+  "result": {"item": "aifun_gui_test:machine", "count": 2}
+}

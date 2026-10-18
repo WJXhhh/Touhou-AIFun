@@ -170,16 +170,18 @@ public final class GuiGameTests {
     public static void openGuiWalksFromBlockEdgeInsteadOfWaitingForTimeout(GameTestHelper helper) {
         for (var floor : BlockPos.betweenClosed(new BlockPos(0, 0, 0), new BlockPos(5, 0, 5))) helper.setBlock(floor, Blocks.STONE);
         helper.setBlock(new BlockPos(1, 1, 2), Blocks.CHEST);
-        var maid = helper.spawn(InitEntities.MAID.get(), new BlockPos(3, 1, 2));
-        var start = helper.absolutePos(new BlockPos(3, 1, 2));
+        var maid = helper.spawn(InitEntities.MAID.get(), new BlockPos(5, 1, 2));
+        var start = helper.absolutePos(new BlockPos(5, 1, 2));
         maid.setPos(start.getX() + .70, start.getY(), start.getZ() + .5);
         maid.setNoAi(false); maid.setInvulnerable(true);
+        FourChestNavigationGameTests.prepareNavigationChunks(maid);
         var target = helper.absolutePos(new BlockPos(1, 1, 2));
         var callback = new LLMCallback(maid.getAiChatManager(), new ArrayList<>(), true);
         JsonObject request = new JsonObject(); request.addProperty("target", "minecraft:chest");
         request.addProperty("x", target.getX()); request.addProperty("y", target.getY()); request.addProperty("z", target.getZ());
         request.addProperty("wait_policy", "AUTO");
         var future = MaidGuiSessionManager.call(callback, "open_gui", "edge_walk", request);
+        helper.assertTrue(!future.isDone(), "Start outside the new eye-to-surface interaction range");
         helper.runAfterDelay(80, () -> {
             try {
                 helper.assertTrue(future.isDone(), "Opening stalled outside interaction range; maid=" + maid.position() + ", target=" + target);
@@ -196,6 +198,7 @@ public final class GuiGameTests {
         var maid = helper.spawn(InitEntities.MAID.get(), new BlockPos(4, 1, 4));
         maid.setNoAi(true); maid.setInvulnerable(true);
         var callback = new LLMCallback(maid.getAiChatManager(), new ArrayList<>(), true);
+        FourChestNavigationGameTests.prepareNavigationChunks(maid);
         var target = helper.absolutePos(new BlockPos(1, 1, 1));
         JsonObject request = new JsonObject(); request.addProperty("target", "minecraft:chest");
         request.addProperty("x", target.getX()); request.addProperty("y", target.getY()); request.addProperty("z", target.getZ());
@@ -227,6 +230,8 @@ public final class GuiGameTests {
     }
     @GameTest(template = "empty", templateNamespace = "aifun_gui_test")
     public static void blockedChestExplainsWhyNoMenuWasCreated(GameTestHelper helper) {
+        // Keep only the intended lid obstruction; other blocks would test visibility instead.
+        for (var air : BlockPos.betweenClosed(new BlockPos(0,1,0), new BlockPos(5,3,5))) helper.setBlock(air, Blocks.AIR);
         helper.setBlock(new BlockPos(1, 1, 1), Blocks.CHEST); helper.setBlock(new BlockPos(1, 2, 1), Blocks.STONE);
         var seed = session(helper); var target = helper.absolutePos(new BlockPos(1, 1, 1));
         var callback = new LLMCallback(seed.maid.getAiChatManager(), new ArrayList<>(), true);
@@ -378,6 +383,7 @@ public final class GuiGameTests {
     public static void navigationYieldsNormalBrainAndReachesTarget(GameTestHelper helper) {
         helper.setBlock(new BlockPos(5, 1, 4), Blocks.CHEST);
         var seed = session(helper); var maid = seed.maid; maid.setNoAi(false);
+        FourChestNavigationGameTests.prepareNavigationChunks(maid);
         var pos = helper.absolutePos(new BlockPos(5, 1, 4));
         var callback = new LLMCallback(maid.getAiChatManager(), new ArrayList<>(), true);
         JsonObject open = new JsonObject(); open.addProperty("x", pos.getX()); open.addProperty("y", pos.getY()); open.addProperty("z", pos.getZ()); open.addProperty("wait_policy", "AUTO");
@@ -385,7 +391,7 @@ public final class GuiGameTests {
         helper.runAfterDelay(150, () -> {
             helper.assertTrue(future.isDone(), "Navigation reached GUI");
             helper.assertTrue(future.join().get("status").getAsString().equals("opened"), future.join().toString());
-            helper.assertTrue(maid.distanceToSqr(net.minecraft.world.phys.Vec3.atCenterOf(pos)) <= 2.25 * 2.25, "GUI opened within interaction range");
+            helper.assertTrue(com.wjx.touhou_aifun.maid.action.MaidBlockInteraction.hit(maid, pos) != null, "GUI opened within visible surface interaction range");
             MaidGuiSessionManager.cancel(maid.getUUID(), "qa_complete"); helper.succeed();
         });
     }

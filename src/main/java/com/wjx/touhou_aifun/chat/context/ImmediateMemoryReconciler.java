@@ -12,12 +12,6 @@ import java.util.Set;
  * can learn the replacement from recent verbatim turns.
  */
 public final class ImmediateMemoryReconciler {
-    private static final Set<String> QUERY_STOP_TOKENS = Set.of(
-            "用户", "玩家", "女仆", "我的", "我不", "不要", "不是", "其实", "改成", "更正", "纠正",
-            "忘掉", "别记", "记住", "完成", "完了", "已经", "取消", "不用", "算了", "喜欢", "不喜",
-            "这个", "那个", "事情", "东西", "这样", "那样", "是这", "是那", "而是",
-            "player", "user", "maid", "my", "the", "this", "that", "please", "forget", "remember",
-            "actually", "correction", "correct", "cancel", "done", "completed", "like", "dislike");
 
     private ImmediateMemoryReconciler() {
     }
@@ -41,18 +35,24 @@ public final class ImmediateMemoryReconciler {
         int episodesBefore = state.episodes().size();
 
         if (forget || correction) {
-            state.facts().removeIf(fact -> matches(queryTokens, fact.text()));
+            // An explicit forget may name a single subject; a correction must share at least two
+            // meaningful tokens so a sentence that merely contains "其实" cannot delete an
+            // unrelated fact on one incidental overlap.
+            int minOverlap = forget ? 1 : 2;
+            state.facts().removeIf(fact -> matches(queryTokens, fact.text(), minOverlap));
         }
         if (forget) {
             state.episodes().removeIf(episode -> matches(queryTokens,
-                    episode.summary() + " " + String.join(" ", episode.keywords())));
+                    episode.summary() + " " + String.join(" ", episode.keywords()), 1));
         }
 
         int loopsClosed = 0;
         if (forget || close) {
+            int minOverlap = forget ? 1 : 2;
             var open = state.openLoops().stream().filter(loop -> !loop.closed()).toList();
             for (OpenLoop loop : open) {
-                if (matches(queryTokens, loop.text()) || (queryTokens.isEmpty() && open.size() == 1 && close)) {
+                if (matches(queryTokens, loop.text(), minOverlap)
+                        || (queryTokens.isEmpty() && open.size() == 1 && close)) {
                     loop.close(gameTime);
                     loopsClosed++;
                 }
@@ -91,7 +91,7 @@ public final class ImmediateMemoryReconciler {
         Set<String> tokens = new HashSet<>();
         for (String token : LocalMemoryRetriever.tokens(text)) {
             int length = token.codePointCount(0, token.length());
-            if (length < 2 || QUERY_STOP_TOKENS.contains(token)) continue;
+            if (length < 2) continue;
             if (token.chars().allMatch(Character::isDigit)) continue;
             tokens.add(token);
         }
@@ -108,9 +108,13 @@ public final class ImmediateMemoryReconciler {
                         + "forget|completed|cancelled|cancel|done)\\b", " ");
     }
 
-    private static boolean matches(Set<String> queryTokens, String candidateText) {
+    private static boolean matches(Set<String> queryTokens, String candidateText, int minOverlap) {
         if (queryTokens.isEmpty() || StringUtils.isBlank(candidateText)) return false;
         Set<String> candidate = LocalMemoryRetriever.tokens(candidateText);
-        return queryTokens.stream().anyMatch(candidate::contains);
+        int overlap = 0;
+        for (String token : queryTokens) {
+            if (candidate.contains(token) && ++overlap >= Math.max(1, minOverlap)) return true;
+        }
+        return false;
     }
 }

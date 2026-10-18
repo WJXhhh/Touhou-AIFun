@@ -77,6 +77,14 @@ minecraft {
 sourceSets.main.resources { srcDir 'src/generated/resources' }
 
 repositories {
+    flatDir {
+        dirs 'build/machine-qa-libs'
+        content { includeGroup 'aifun.qa' }
+    }
+    maven {
+        url = 'https://cursemaven.com'
+        content { includeGroup 'curse.maven' }
+    }
     maven {
         name = 'Modrinth'
         url = 'https://api.modrinth.com/maven'
@@ -97,6 +105,16 @@ dependencies {
     // Optional Oculus integration. compileOnly is intentional: users without Oculus must keep
     // loading normally, and Oculus must never be nested into the AIFun jar.
     compileOnly fg.deobf("maven.modrinth:oculus:${oculus_version}")
+    // Optional ProjectE integration; never bundled or required for ordinary installations.
+    compileOnly fg.deobf('curse.maven:projecte-226410:4901949')
+    if (project.hasProperty('projecteQa')) runtimeOnly fg.deobf('curse.maven:projecte-226410:4901949')
+    if (project.hasProperty('machineQa')) {
+        runtimeOnly fg.deobf('maven.modrinth:iron-furnaces:KHAcRQwi')
+        runtimeOnly fg.deobf('aifun.qa:mekanism-github:10.4.16.80')
+        runtimeOnly fg.deobf('maven.modrinth:thermal-expansion:Ux2Z0ow1')
+        runtimeOnly fg.deobf('curse.maven:thermal-foundation-222880:5443583')
+        runtimeOnly fg.deobf('curse.maven:cofh-core-69162:5374122')
+    }
 
     testImplementation 'org.junit.jupiter:junit-jupiter:5.10.2'
     testCompileOnly fg.deobf("maven.modrinth:touhou-little-maid:${touhou_little_maid_version}")
@@ -166,6 +184,11 @@ tasks.withType(JavaCompile).configureEach {
 // The compatibility fixture is opt-in and never included in the release jar.
 if (project.hasProperty('guiQa')) {
     def guiQa = sourceSets.create('guiQa')
+    if (project.hasProperty('machineQa')) guiQa.java.srcDir('src/machineQa/java')
+    if (project.hasProperty('projecteQa')) {
+        guiQa.java.srcDir('src/projecteQa/java')
+        guiQa.resources.srcDir('src/projecteQa/resources')
+    }
     def chestQaDirectory = project.hasProperty('cacheAgentQa') ? 'build/agent-cache-qa-server'
             : project.hasProperty('isolatedAgentQa') ? 'build/agent-tail-isolated-qa-server' : 'build/four-chest-qa-server'
     if (project.hasProperty('agentQaRunId')) {
@@ -180,14 +203,41 @@ if (project.hasProperty('guiQa')) {
     }
     minecraft.runs.gameTestServer {
         workingDirectory project.file('build/gui-qa-server')
+        if (project.hasProperty('guiQaRunId')) {
+            def runId = project.property('guiQaRunId').toString()
+            if (!(runId ==~ /[A-Za-z0-9_-]{1,64}/)) throw new GradleException('guiQaRunId must be a simple isolated-run name')
+            workingDirectory project.file("build/gui-qa-${runId}")
+        }
+        if (project.hasProperty('projecteQa')) workingDirectory project.file('build/projecte-qa-server')
         if (project.hasProperty('fourChestQa') || project.hasProperty('fourChestLiveQa') || project.hasProperty('foregroundLiveQa')) {
             workingDirectory project.file(chestQaDirectory)
         }
         property 'forge.enabledGameTestNamespaces', (project.hasProperty('fourChestQa') || project.hasProperty('fourChestLiveQa') || project.hasProperty('foregroundLiveQa'))
                 ? 'aifun_gui_test,aifun_four_chest_test' : 'aifun_gui_test'
+        if (project.hasProperty('projecteQa')) property 'forge.enabledGameTestNamespaces', 'aifun_projecte_test'
         if (project.hasProperty('agentLiveQa')) property 'aifun.agentQa.sites', file('run/config/touhou_little_maid/sites/llm.json').absolutePath
+        if (project.hasProperty('craftingLiveQa')) property 'aifun.craftingQa.sites', file('run/config/touhou_little_maid/sites/llm.json').absolutePath
+        if (project.hasProperty('projecteLiveQa')) property 'aifun.projecteQa.sites', file('run/config/touhou_little_maid/sites/llm.json').absolutePath
         if (project.hasProperty('fourChestLiveQa')) property 'aifun.fourChestQa.sites', file('run/config/touhou_little_maid/sites/llm.json').absolutePath
         if (project.hasProperty('foregroundLiveQa')) property 'aifun.foregroundQa.sites', file('run/config/touhou_little_maid/sites/llm.json').absolutePath
+        if (project.hasProperty('allowedToolsLiveQa')) {
+            workingDirectory project.file(chestQaDirectory)
+            property 'forge.enabledGameTestNamespaces', 'aifun_allowed_live_test'
+            property 'aifun.allowedQa.sites', file('run/config/touhou_little_maid/sites/llm.json').absolutePath
+            property 'aifun.allowedQa.config', file('run/config/touhou-aifun.toml').absolutePath
+            if (project.hasProperty('allowedToolsRepeatQa')) property 'aifun.allowedQa.repeat', 'true'
+            if (project.hasProperty('allowedToolsAutomaticFirstQa')) property 'aifun.allowedQa.automaticFirst', 'true'
+            if (project.hasProperty('allowedToolsLiveModel')) {
+                def model = project.property('allowedToolsLiveModel').toString()
+                if (!(model ==~ /[A-Za-z0-9._-]{1,128}/)) throw new GradleException('allowedToolsLiveModel must be a simple model id')
+                property 'aifun.allowedQa.model', model
+            }
+            if (project.hasProperty('allowedToolsLiveMode')) {
+                def mode = project.property('allowedToolsLiveMode').toString()
+                if (!(mode in ['all','baseline','automatic'])) throw new GradleException('allowedToolsLiveMode must be all, baseline or automatic')
+                property 'aifun.allowedQa.mode', mode
+            }
+        }
         if (project.hasProperty('foregroundRetrieveLiveQa')) property 'aifun.foregroundQa.retrieve', 'true'
         if (project.hasProperty('foregroundLiveTrials')) {
             int trials = Integer.parseInt(project.property('foregroundLiveTrials').toString())
@@ -196,7 +246,12 @@ if (project.hasProperty('guiQa')) {
         }
         if (project.hasProperty('foregroundAmendLiveQa')) property 'aifun.foregroundQa.amend', 'true'
     }
-    if (project.hasProperty('fourChestQa') || project.hasProperty('fourChestLiveQa') || project.hasProperty('foregroundLiveQa')) {
+    tasks.named('processGuiQaResources').configure {
+        from('src/guiQa/resources/data/aifun_gui_test/structures/four_chests.nbt') {
+            into 'data/aifun_allowed_live_test/structures'
+        }
+    }
+    if (project.hasProperty('fourChestQa') || project.hasProperty('fourChestLiveQa') || project.hasProperty('foregroundLiveQa') || project.hasProperty('allowedToolsLiveQa')) {
         tasks.matching { it.name == 'runGameTestServer' }.configureEach {
             doFirst {
                 def fixtureDirectory = file(chestQaDirectory)
@@ -216,7 +271,26 @@ level-name=world
     minecraft.runs.client {
         workingDirectory project.file('build/gui-qa-client')
         if (project.hasProperty('guiQaAuto')) property 'aifun.guiQa.autorun', 'true'
+        if (project.hasProperty('machineQa')) {
+            workingDirectory project.file('build/machine-qa-client')
+            property 'aifun.machineQa.autorun', 'true'
+            if (project.hasProperty('machineLiveQa')) property 'aifun.machineQa.sites', file('run/config/touhou_little_maid/sites/llm.json').absolutePath
+            jvmArg '-Xmx4G'
+        }
         if (project.hasProperty('decisionUiQa')) property 'aifun.decisionUiQa.autorun', 'true'
+    }
+    if (project.hasProperty('machineQa')) {
+        tasks.register('verifyMachineQaClient') {
+            doLast {
+                def report = file('build/machine-qa-client/machine-client-result.json')
+                if (!report.exists() || !new groovy.json.JsonSlurper().parse(report).completed)
+                    throw new GradleException(report.exists() ? report.getText('UTF-8') : 'Machine client did not finish its checks')
+            }
+        }
+        tasks.matching { it.name == 'runClient' }.configureEach {
+            doFirst { file('build/machine-qa-client/machine-client-result.json').delete() }
+            finalizedBy 'verifyMachineQaClient'
+        }
     }
     if (project.hasProperty('guiQaAuto')) {
         tasks.register('verifyGuiQaClient') {

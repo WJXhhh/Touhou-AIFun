@@ -45,7 +45,6 @@ public final class MaidEatFoodActionManager {
     private static final int FINISH_ACTION_TIMEOUT_TICKS = 20 * 60;
     private static final int CONSUME_INTERVAL_TICKS = 10;
     private static final int MAX_CONSUMED_SERVINGS = 64;
-    private static final double CONSUME_DISTANCE_SQR = 2.25 * 2.25;
     private static final float WALK_SPEED = 0.65f;
 
     private static final Map<UUID, ActiveAction> ACTIVE = new ConcurrentHashMap<>();
@@ -202,46 +201,34 @@ public final class MaidEatFoodActionManager {
             return new SearchResult(null, outsideRestriction, false);
         }
 
-        MaidPathFindingBFS pathFinding = new MaidPathFindingBFS(
-                maid.getNavigation().getNodeEvaluator(), level, maid, center,
-                maxDistance + 2.0f, VERTICAL_SEARCH_DISTANCE + 2);
-        try {
-            for (Candidate candidate : candidates) {
+        for (Candidate candidate : candidates) {
+            MaidPathFindingBFS pathFinding = new MaidPathFindingBFS(
+                    maid.getNavigation().getNodeEvaluator(), level, maid, center,
+                    maxDistance + 2.0f, VERTICAL_SEARCH_DISTANCE + 2);
+            try {
                 BlockPos approach = findApproachPosition(maid, pathFinding, candidate.pos);
                 if (approach != null) {
                     return new SearchResult(new Target(candidate.pos, approach, candidate.blockId,
                             candidate.edible), outsideRestriction, false);
                 }
+            } finally {
+                pathFinding.finish();
             }
-        } finally {
-            pathFinding.finish();
         }
         return new SearchResult(null, outsideRestriction, true);
     }
 
     private static BlockPos findApproachPosition(EntityMaid maid, MaidPathFindingBFS pathFinding,
                                                  BlockPos foodPos) {
-        List<BlockPos> approaches = new ArrayList<>();
-        for (int y = -1; y <= 1; y++) {
-            for (int x = -1; x <= 1; x++) {
-                for (int z = -1; z <= 1; z++) {
-                    if (x == 0 && y == 0 && z == 0) {
-                        continue;
-                    }
-                    BlockPos approach = foodPos.offset(x, y, z);
-                    if (maid.isWithinRestriction(approach)) {
-                        approaches.add(approach);
-                    }
-                }
-            }
-        }
-        approaches.sort(Comparator.comparingDouble(pos -> maid.distanceToSqr(Vec3.atCenterOf(pos))));
-        for (BlockPos approach : approaches) {
-            if (pathFinding.canPathReach(approach)) {
-                return approach.immutable();
-            }
-        }
-        return null;
+        if (MaidBlockInteraction.hit(maid, foodPos) != null) return maid.blockPosition();
+        return pathFinding.find(pos -> !pos.equals(foodPos) && !sameStandingColumn(maid, pos)
+                && maid.isWithinRestriction(pos) && MaidBlockInteraction.canInteractFrom(maid, foodPos, pos))
+                .map(BlockPos::immutable).orElse(null);
+    }
+
+    private static boolean sameStandingColumn(EntityMaid maid, BlockPos pos) {
+        return pos.getX() == maid.blockPosition().getX() && pos.getZ() == maid.blockPosition().getZ()
+                && Math.abs(pos.getY() - maid.getY()) <= 1.01;
     }
 
     private static boolean safeShouldMoveTo(IMaidEdibleBlock edible, EntityMaid maid, BlockPos pos,
@@ -334,7 +321,7 @@ public final class MaidEatFoodActionManager {
     private static final class ActiveAction {
         private final EntityMaid maid;
         private final Object callback;
-        private final Target target;
+        private Target target;
         private final boolean untilFinished;
         private final CompletableFuture<Result> future;
         private final long deadline;
@@ -380,10 +367,15 @@ public final class MaidEatFoodActionManager {
                 return;
             }
 
-            if (maid.distanceToSqr(Vec3.atCenterOf(target.foodPos)) <= CONSUME_DISTANCE_SQR) {
+            if (MaidBlockInteraction.hit(maid, target.foodPos) != null) {
                 if (level.getGameTime() < nextConsumeTick) {
                     takeControl();
                     return;
+                }
+                if(callback instanceof com.wjx.touhou_aifun.chat.agent.TaskCallback task) {
+                    var pos=new com.google.gson.JsonArray();pos.add(target.foodPos.getX());pos.add(target.foodPos.getY());pos.add(target.foodPos.getZ());
+                    try {task.task.checkConsumptionAllowance(level.dimension().location().toString(),target.blockId,pos);}
+                    catch(IllegalArgumentException rejected) {finish(Result.failure(rejected.getMessage().split(":",2)[0],rejected.getMessage()));return;}
                 }
                 int points = target.edible.getFavorabilityPoints(maid, target.foodPos, current);
                 if (target.edible.consume(maid, target.foodPos, current)) {
@@ -414,6 +406,19 @@ public final class MaidEatFoodActionManager {
                 return;
             }
 
+            if (maid.getNavigation().isDone() && (sameStandingColumn(maid, target.approachPos)
+                    || maid.position().distanceToSqr(Vec3.atBottomCenterOf(target.approachPos)) <= .75 * .75)) {
+                MaidPathFindingBFS pathFinding = new MaidPathFindingBFS(maid.getNavigation().getNodeEvaluator(),
+                        level, maid, maid.blockPosition(), MAX_SEARCH_DISTANCE + 2F, VERTICAL_SEARCH_DISTANCE + 2);
+                try {
+                    BlockPos revised = findApproachPosition(maid, pathFinding, target.foodPos);
+                    if (revised == null) {
+                        finish(Result.failure("unreachable", "No unobstructed interaction position remains."));
+                        return;
+                    }
+                    target = new Target(target.foodPos, revised, target.blockId, target.edible);
+                } finally { pathFinding.finish(); }
+            }
             // The active work task may try to replace WALK_TARGET during the entity tick. This is
             // cheap when our target is still owned, and restores it immediately only when needed.
             takeControl();

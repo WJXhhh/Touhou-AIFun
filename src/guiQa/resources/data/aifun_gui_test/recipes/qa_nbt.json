@@ -1,0 +1,5 @@
+{
+  "type": "minecraft:crafting_shapeless",
+  "ingredients": [{"type": "forge:nbt", "item": "minecraft:paper", "nbt": "{aifun_qa:1}"}],
+  "result": {"item": "minecraft:emerald"}
+}

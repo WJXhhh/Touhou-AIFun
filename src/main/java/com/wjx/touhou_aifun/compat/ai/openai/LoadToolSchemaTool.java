@@ -49,6 +49,13 @@ public final class LoadToolSchemaTool implements ITool<String> {
         root.addProperties("tool_name", value);
         return root;
     }
+    static Parameter taskParameters(java.util.Collection<String> registeredIds) {
+        var root=ObjectParameter.create();var name=StringParameter.create().setDescription("Exact registered missing tool id. GUI action names such as craft_recipe are NOT tool ids; open the workbench to receive gui_action automatically. Load only capabilities needed for an owner requirement.");
+        // Use the already frozen catalogue; never rerun third-party trigger/schema hooks.
+        // Large extension registries keep free-text loading rather than an unbounded enum.
+        if(registeredIds.size()<=96)name.addEnumValues(registeredIds.stream().sorted().toArray(String[]::new));
+        root.addProperties("tool_name",name,true);return root;
+    }
 
     @Override
     public Codec<String> codec() { return CODEC; }

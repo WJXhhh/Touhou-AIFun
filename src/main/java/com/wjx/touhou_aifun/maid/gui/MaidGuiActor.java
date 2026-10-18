@@ -27,10 +27,12 @@ public final class MaidGuiActor extends FakePlayer {
     private MerchantOffers offers;
     private int guiCounter;
     public int droppedCount;
+    public final GuiProtocolBridge protocol;
     public MaidGuiActor(EntityMaid maid) {
         super((ServerLevel) maid.level(), new GameProfile(UUID.nameUUIDFromBytes(
                 ("touhou_aifun:gui:" + maid.getUUID()).getBytes(StandardCharsets.UTF_8)), "[AIFunMaid]"));
         this.maid = maid;
+        protocol = new GuiProtocolBridge(this);
         align();
     }
     public EntityMaid maid() { return maid; }
@@ -42,6 +44,7 @@ public final class MaidGuiActor extends FakePlayer {
     public OptionalInt open(MenuProvider provider, Consumer<FriendlyByteBuf> writer) {
         if (provider == null) return OptionalInt.empty();
         if (containerMenu != inventoryMenu) closeContainer();
+        protocol.beginMenu();
         FriendlyByteBuf buffer = new FriendlyByteBuf(Unpooled.buffer());
         try {
             writer.accept(buffer);

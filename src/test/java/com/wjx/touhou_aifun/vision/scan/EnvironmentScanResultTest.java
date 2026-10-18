@@ -14,6 +14,83 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class EnvironmentScanResultTest {
     @Test
+    void allObservedModBlocksRemainRetrievableAcrossByteBoundedPagesAndSummaryFallback() {
+        List<ScannedBlock> blocks = new ArrayList<>();
+        for (int index = 0; index < 200; index++) {
+            blocks.add(new ScannedBlock("example:machine_" + index, index, 1, 3, index + 1,
+                    "block", Map.of("facing", "north", "mode", "working")));
+        }
+        EnvironmentScanResult result = result(List.of(), 100, 200, 100, 0)
+                .origin(10, 64, 20).observedBlocks(blocks);
+        var seen = new java.util.HashSet<String>();
+        int offset = 0;
+        do {
+            var request = new EnvironmentScanRequest(ScanMode.BLOCKS, ScanDirection.ALL, 20,
+                    "", "overview", "summary", null, offset, 64, result.observationId());
+            String encoded = result.project(request).toJson();
+            assertTrue(encoded.getBytes(StandardCharsets.UTF_8).length <= 12 * 1024);
+            var page = JsonParser.parseString(encoded).getAsJsonObject();
+            assertEquals(200, page.get("observed_cell_count").getAsInt());
+            assertEquals(result.observationId(), page.get("observation_id").getAsString());
+            assertEquals(JsonParser.parseString("[10,64,20]"), page.get("maid_position_at_scan_start"));
+            page.getAsJsonArray("observed_blocks").forEach(row -> assertTrue(seen.add(
+                    row.getAsJsonObject().get("registry_id").getAsString())));
+            if (!page.get("has_more").getAsBoolean()) break;
+            int next = page.get("next_offset").getAsInt();
+            assertTrue(next > offset);
+            offset = next;
+        } while (offset < 200);
+        assertEquals(200, seen.size());
+    }
+
+    @Test
+    void preciseAreaIncludesAirAndUnknownCellsAndSurvivesEmergencyEnvelope() {
+        var area = new ScanArea(0, 1, 0, 0, 1, 2, "maid_relative");
+        var request = new EnvironmentScanRequest(ScanMode.BLOCKS, ScanDirection.ALL, 20,
+                "", "inspect_area", "summary", area, 0, 64, "");
+        var result = new EnvironmentScanResult(42, "维度".repeat(10_000), request,
+                0, 30, 0, List.of(), List.of(), List.of(), 0, 0, 0,
+                Map.of(), 0, 0, Map.of(), new int[0], Map.of(), new int[0], Map.of(), new double[0], false)
+                .observedBlocks(List.of(
+                        new ScannedBlock("minecraft:air", 0, 1, 0, 1, "air", Map.of()),
+                        new ScannedBlock("", 0, 1, 1, 2, "occluded", Map.of()),
+                        new ScannedBlock("othermod:device", 0, 1, 2, 3, "block", Map.of("huge", "界".repeat(5000)))));
+        String encoded = result.toJson();
+        assertTrue(encoded.getBytes(StandardCharsets.UTF_8).length <= 12 * 1024);
+        var json = JsonParser.parseString(encoded).getAsJsonObject();
+        assertEquals(3, json.getAsJsonArray("observed_blocks").size());
+        assertTrue(json.get("area_enumeration_complete").getAsBoolean());
+        assertEquals(0, json.get("expected_primary_rays").getAsInt());
+        var machine = json.getAsJsonArray("observed_blocks").get(0).getAsJsonObject();
+        assertEquals("othermod:device", machine.get("registry_id").getAsString());
+        assertTrue(machine.get("state_omitted").getAsBoolean());
+    }
+
+    @Test
+    void summaryPreservesOrdinaryModBlockAboveWorkstationWithoutImportantClassification() {
+        SurfaceBlockHit workstation = new SurfaceBlockHit("minecraft:crafting_table", "front", OpacityClass.OPAQUE,
+                20, 3, 3, List.of(new SurfaceBlockHit.Representative(0, 0, 3, 3, 0)));
+        SurfaceBlockHit modBlock = new SurfaceBlockHit("example:custom_table", "front", OpacityClass.LOW,
+                8, 3, 3, List.of(new SurfaceBlockHit.Representative(0, 1, 3, 3, 15)));
+        EnvironmentScanResult result = result(List.of(workstation, modBlock), 100, 28, 28, 0)
+                .origin(10, 64, 20).observedBlocks(List.of(
+                        new ScannedBlock("minecraft:crafting_table", 0, 0, 3, 3, "block", Map.of()),
+                        new ScannedBlock("example:custom_table", 0, 1, 3, 3, "block", Map.of())))
+                .project(new EnvironmentScanRequest(ScanMode.BLOCKS,
+                        ScanDirection.ALL, 20, "", "overview", "summary"));
+
+        JsonObject json = JsonParser.parseString(result.toJson()).getAsJsonObject();
+        assertEquals(0, json.getAsJsonArray("important_targets").size());
+        var targets = json.getAsJsonArray("observed_blocks");
+        assertEquals(2, targets.size());
+        JsonObject table = targets.get(0).getAsJsonObject();
+        assertEquals("example:custom_table", table.get("registry_id").getAsString());
+        assertEquals(JsonParser.parseString("[0,1,3]"), table.get("relative_position"));
+        assertEquals(JsonParser.parseString("[10,64,20]"), json.get("maid_position_at_scan_start"));
+        assertTrue(!json.get("has_more").getAsBoolean());
+    }
+
+    @Test
     void serializesOneAggregateOnceAndUsesRayCoverage() {
         SurfaceBlockHit group = new SurfaceBlockHit("minecraft:glass", "front", OpacityClass.HIGH,
                 10, 2.0, 7.5, List.of(

@@ -14,7 +14,7 @@ public final class AgentToolOutcome {
                     || value.has("status") && java.util.Set.of("failed","error","rejected","cancelled").contains(value.get("status").getAsString());
         } catch(RuntimeException ignored) {
             return java.util.List.of("tool_failed","invalid_","cancelled_","tool_unavailable","tool_returned_no_result",
-                    "duplicate_tool_call_id:","goal_updated_before_dispatch:","fresh_world_observation_required:",
+                    "duplicate_tool_call_id:","tool_not_in_allowed_tools:","goal_updated_before_dispatch:","fresh_world_observation_required:",
                     "completion_contract_required_before_mutation:","task_execution_only","task_cannot_manage_queue")
                     .stream().anyMatch(result::startsWith);
         }

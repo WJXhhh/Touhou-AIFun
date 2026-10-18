@@ -47,6 +47,7 @@ public final class VisionObservationManager {
     public static void clearMaid(UUID maidId) {
         cancelForMaid(maidId);
         ObservationSnapshotCache.INSTANCE.clearMaid(maidId);
+        VisionScanCache.clearMaid(maidId);
     }
 
     public static void clearAll() {

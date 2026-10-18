@@ -77,6 +77,7 @@ public final class GuiClientChecks {
         var level = player.serverLevel();
         player.setGameMode(net.minecraft.world.level.GameType.CREATIVE);
         player.setHealth(player.getMaxHealth()); player.setAirSupply(300);
+        player.teleportTo(player.getX(),120,player.getZ());
         BlockPos pos = player.blockPosition().offset(2, 0, 0);
         for (BlockPos floor : BlockPos.betweenClosed(pos.offset(-3, -1, -3), pos.offset(3, -1, 3))) level.setBlockAndUpdate(floor, Blocks.STONE.defaultBlockState());
         for (BlockPos air : BlockPos.betweenClosed(pos.offset(-3, 0, -3), pos.offset(3, 4, 3))) level.setBlockAndUpdate(air, Blocks.AIR.defaultBlockState());
@@ -93,6 +94,7 @@ public final class GuiClientChecks {
         }).exceptionally(error -> { finish(error); return null; });
     }
     @SubscribeEvent public static void serverTick(TickEvent.ServerTickEvent event) {
+        if (maid != null && !finished && event.phase == TickEvent.Phase.END) maid.setAirSupply(300);
         if (event.phase == TickEvent.Phase.END && maid != null) for (Delayed task : List.copyOf(delayed)) {
             if (maid.level().getGameTime() >= task.at) { delayed.remove(task); try { task.task.run(); } catch (Throwable error) { finish(error); } }
         }
@@ -123,6 +125,21 @@ public final class GuiClientChecks {
         }).thenCompose(result -> {
             check(result, "failed"); require(result.get("error").getAsString().contains("custom_protocol_requires_adapter"), "Unknown protocol isolated");
             require(mode() == 0, "Unsupported packet does not mutate server"); return capture();
+        }).thenCompose(result -> {
+            check(result,"ok");frame=result;return widget("widget:4","widget",null);
+        }).thenCompose(result -> {
+            check(result,"ok");require(((GuiFixtureMod.TestMenu)MaidGuiSessionManager.session(maid.getUUID()).menu()).storage.nativeValue==101,"Unadapted Forge handler executes as maid");
+            require(GuiFixtureMod.NATIVE_CHANNEL.isRemotePresent(MaidGuiSessionManager.session(maid.getUUID()).actor.connection.connection),"Dedicated maid connection retains negotiated Forge channel metadata");
+            return capture();
+        }).thenApply(result -> {
+            check(result,"ok");
+            try {
+                var field=com.wjx.touhou_aifun.client.gui.automation.GuiClientRuntime.class.getDeclaredField("STATES");field.setAccessible(true);
+                var state=((java.util.Map<?,?>)field.get(null)).get(MaidGuiSessionManager.session(maid.getUUID()).id);
+                var menuField=state.getClass().getDeclaredField("menu");menuField.setAccessible(true);
+                require(((GuiFixtureMod.TestMenu)menuField.get(state)).storage.nativeValue==101,"Native S2C protocol applies to detached client menu; actual="+((GuiFixtureMod.TestMenu)menuField.get(state)).storage.nativeValue);
+            }catch(ReflectiveOperationException error){throw new RuntimeException(error);}
+            return result;
         }).thenCompose(result -> {
             check(result, "ok"); frame = result;
             JsonObject click = args(); click.addProperty("action", "click"); click.add("frame_id", frame.get("frame_id")); click.add("layout", frame.get("layout"));

@@ -22,6 +22,42 @@ import java.util.*;
 @GameTestHolder("aifun_gui_test")
 @PrefixGameTestTemplate(false)
 public final class GuiTaskFinalizationGameTests {
+    @GameTest(batch="craftingTask",template="empty",templateNamespace="aifun_gui_test",timeoutTicks=100)
+    public static void craftingToolCompletesRequestedModQuantityWithVerifiedBackpackDelivery(GameTestHelper helper) throws Exception {
+        var f = new Fixture(helper, 0);
+        try {
+            f.state.goal = "Craft six compatibility machines using the maid backpack, return products and close the workbench";
+            helper.setBlock(f.local, Blocks.CRAFTING_TABLE);
+            f.maid.getMaidInv().setStackInSlot(0, new ItemStack(Items.OAK_PLANKS, 6));
+            f.maid.getMaidInv().setStackInSlot(1, new ItemStack(Items.IRON_INGOT, 3));
+            var query = new JsonObject(); query.addProperty("item", "aifun_gui_test:machine");
+            var recipes = MaidGuiSessionManager.call(f.task, "query_recipes", "task_recipe", query).join();
+            helper.assertTrue(recipes.getAsJsonArray("recipes").size() == 1, "Task sees actual loaded mod recipe");
+            var open = f.target(f.position); open.addProperty("target", "minecraft:crafting_table");
+            var opened = MaidGuiSessionManager.call(f.task, "open_gui", "task_workbench", open).join();
+            helper.assertTrue(!opened.has("error"), opened.toString());
+            var condition = new JsonObject(); condition.addProperty("kind", "transfer");
+            condition.addProperty("item", "aifun_gui_test:machine"); condition.addProperty("count", 6); condition.addProperty("to_maid", true);
+            condition.addProperty("dimension", f.maid.level().dimension().location().toString());
+            var position = new JsonArray(); position.add(f.position.getX()); position.add(f.position.getY()); position.add(f.position.getZ()); condition.add("position", position);
+            f.task.defineCompletion(condition);
+            var action = new JsonObject(); action.add("session_id", opened.get("session_id")); action.addProperty("action", "craft_recipe");
+            action.addProperty("recipe_id", "aifun_gui_test:qa_machine_shaped"); action.addProperty("count", 6); action.addProperty("complete_task", true);
+            var calls = new JsonArray(); calls.add(call("craft_final", "gui_action", action)); var response = new JsonObject(); response.add("tool_calls", calls);
+            int[] extraModel = {0}; f.task.onFunctionCall(new Gson().fromJson(response, Message.class), ignored -> extraModel[0]++);
+            helper.runAfterDelay(8, () -> {
+                try {
+                    helper.assertTrue(f.state.status == AgentTaskState.Status.completed && f.state.verifiedCount == 6,
+                            "Task completion verifies actual crafted transfer receipts: " + f.state.status + " / " + f.state.verifiedCount);
+                    int count = 0; var backpack = f.maid.getAvailableBackpackInv();
+                    for (int i = 0; i < backpack.getSlots(); i++) if (backpack.getStackInSlot(i).is(GuiFixtureMod.MACHINE.get().asItem())) count += backpack.getStackInSlot(i).getCount();
+                    helper.assertTrue(count == 6 && MaidGuiSessionManager.session(f.maid.getUUID()) == null, "Products reach real backpack and final menu is settled");
+                    helper.assertTrue(extraModel[0] == 0, "Verified final crafting needs no extra model completion round"); helper.succeed();
+                } finally { f.close(); }
+            });
+        } catch (RuntimeException | Error failure) { f.close(); throw failure; }
+    }
+
     private static final class Fixture implements AutoCloseable {
         final boolean enabled=TouhouAIFunConfig.AGENT_RUNTIME.get();
         final EntityMaid maid;final AgentTaskState state;final TaskCallback task;final GameTestHelper helper;

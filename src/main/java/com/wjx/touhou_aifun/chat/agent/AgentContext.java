@@ -16,8 +16,12 @@ public final class AgentContext {
     }
     /** Model summaries are a last resort, before the main request, and only touch completed evidence. */
     public static java.util.concurrent.CompletableFuture<Boolean> prepareTask(TaskCallback callback,LLMClient client) {
+        return prepareTask(callback,client,0);
+    }
+    private static java.util.concurrent.CompletableFuture<Boolean> prepareTask(TaskCallback callback,LLMClient client,int attempt) {
+        int goalVersion=callback.task.goalVersion;long mutationVersion=callback.task.appliedMutationVersion;
         int target=target(callback);
-        List<LLMMessage> out=new ArrayList<>(compact(callback.getMessages(),target,callback.results));
+        List<LLMMessage> out=new ArrayList<>(callback.retainRecipeEvidence(compact(callback.getMessages(),target,callback.results)));
         callback.getMessages().clear(); callback.getMessages().addAll(out);
         if(ContextTokenEstimator.estimate(out)<=target) return java.util.concurrent.CompletableFuture.completedFuture(true);
         Set<Integer> selected=new TreeSet<>();
@@ -39,14 +43,34 @@ public final class AgentContext {
             if(ContextTokenEstimator.estimate(merged)>target) return java.util.concurrent.CompletableFuture.completedFuture(false);
             // All changes to the actual request list are committed by TaskCallback on the server thread.
             var ready=new java.util.concurrent.CompletableFuture<Boolean>();
-            callback.runOnServerThread(()-> { if(!callback.stopped()) { callback.getMessages().clear(); callback.getMessages().addAll(merged); ready.complete(true); } else ready.complete(false); });
+            callback.runOnServerThread(()-> {
+                if(callback.stopped()) {ready.complete(false);return;}
+                // An amendment or late physical settlement invalidates this snapshot. The caller
+                // rebuilds its checkpoint before any model request; never install the old summary.
+                if(!callback.task.pendingAmendment.isBlank() || callback.task.goalVersion!=goalVersion
+                        || callback.task.appliedMutationVersion!=mutationVersion) {ready.complete(true);return;}
+                if(!callback.getMessages().equals(out)) {
+                    if(attempt>=2) {ready.complete(false);return;}
+                    prepareTask(callback,client,attempt+1).whenComplete((value,error)-> {
+                        if(error!=null)ready.completeExceptionally(error);else ready.complete(value);
+                    });
+                    return;
+                }
+                callback.getMessages().clear(); callback.getMessages().addAll(merged); ready.complete(true);
+            });
             return ready;
         });
     }
     private static int target(LLMCallback callback) {
         int reserve=ToolContextSelector.schemaBudget(callback.getMaid(),callback)+com.wjx.touhou_aifun.vision.MultimodalTurnContext.inputReserve(callback);
         double factor=AIFunMemoryManager.calibratedEstimate(callback.getChatManager(),callback.getMessages())/(double)Math.max(1,ContextTokenEstimator.estimate(callback.getMessages()));
-        return Math.max(0,(int)((TouhouAIFunConfig.CONTEXT_INPUT_BUDGET_TOKENS.get()-reserve)/Math.max(1,factor)));
+        return Math.max(0,(int)((inputBudget(callback)-reserve)/Math.max(1,factor)));
+    }
+    /** Task execution has an independent budget so a different execution model can use its own limit. */
+    private static int inputBudget(LLMCallback callback) {
+        return callback instanceof TaskCallback
+                ? TouhouAIFunConfig.AGENT_CONTEXT_INPUT_BUDGET_TOKENS.get()
+                : TouhouAIFunConfig.CONTEXT_INPUT_BUDGET_TOKENS.get();
     }
     public static boolean prepare(LLMCallback callback) {
         if (!AgentExecution.managed(callback)) return true;
@@ -54,13 +78,14 @@ public final class AgentContext {
         AgentRuntime.prepareForeground(callback);
         int reserve = ToolContextSelector.schemaBudget(callback.getMaid(), callback)
                 + com.wjx.touhou_aifun.vision.MultimodalTurnContext.inputReserve(callback);
-        int budget = TouhouAIFunConfig.CONTEXT_INPUT_BUDGET_TOKENS.get();
+        int budget = inputBudget(callback);
         double factor = AIFunMemoryManager.calibratedEstimate(callback.getChatManager(), callback.getMessages())
                 / (double) Math.max(1, ContextTokenEstimator.estimate(callback.getMessages()));
         List<LLMMessage> planned = callback instanceof TaskCallback ? new ArrayList<>(callback.getMessages())
                 : ContextBudgetPlanner.trim(callback.getMessages(), budget, reserve, factor);
         int target = Math.max(0, (int) ((budget - reserve) / Math.max(1, factor)));
         planned = compact(planned, target, store(callback));
+        if(callback instanceof TaskCallback task)planned=task.retainRecipeEvidence(planned);
         callback.getMessages().clear(); callback.getMessages().addAll(planned);
         if (ContextTokenEstimator.estimate(planned) > target) {
             callback.onFailure(null, new IllegalStateException("context_budget_exceeded_after_compaction"), 500);
@@ -70,26 +95,13 @@ public final class AgentContext {
     }
     public static List<LLMMessage> compact(List<LLMMessage> source, int budget, TaskResultStore store) {
         List<LLMMessage> out = new ArrayList<>(source);
-        // Several serial actions can return full snapshots in one closed batch. Preserve the
-        // latest structure and current delta; earlier snapshots remain paired as referenced facts.
+        // Cheap, deterministic deduplication runs even when the large input budget is roomy.
+        // Only closed protocol groups are eligible; owner text and pending tool calls stay intact.
         Set<Integer> closedResults = new HashSet<>();
-        int latestFull = -1;
         for (int[] group : groups(out)) for (int i = group[0] + 1; i < group[1]; i++) {
             closedResults.add(i);
-            try {
-                var value = com.google.gson.JsonParser.parseString(out.get(i).message()).getAsJsonObject();
-                if (value.has("snapshot_kind") && Set.of("full","container_inspection").contains(value.get("snapshot_kind").getAsString())) latestFull = i;
-            } catch (RuntimeException ignored) { }
         }
-        for (int i : closedResults) if (i != latestFull) {
-            LLMMessage m = out.get(i);
-            try {
-                var value = com.google.gson.JsonParser.parseString(m.message()).getAsJsonObject();
-                if (!value.has("snapshot_kind") || !Set.of("full","container_inspection").contains(value.get("snapshot_kind").getAsString())) continue;
-                if (!value.has("result_ref")) value.addProperty("result_ref", store.put(m.message()));
-                out.set(i, new LLMMessage(m.role(), ToolResultProjection.domainSummary(value.toString()), m.gameTime(), m.toolCalls(), m.toolCallId()));
-            } catch (RuntimeException ignored) { }
-        }
+        TaskContextProjection.reduce(out,closedResults,store);
         if (ContextTokenEstimator.estimate(out) <= budget * .8) return List.copyOf(out);
         // First reduce large results without breaking the protocol envelope.
         for (int i = 0; i < out.size(); i++) {

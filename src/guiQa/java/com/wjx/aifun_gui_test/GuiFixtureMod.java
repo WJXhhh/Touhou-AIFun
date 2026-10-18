@@ -30,6 +30,7 @@ import java.util.*;
 public final class GuiFixtureMod {
     public static final ResourceLocation CHANNEL_ID = new ResourceLocation("aifun_gui_test", "mode");
     public static final net.minecraftforge.network.simple.SimpleChannel CHANNEL = net.minecraftforge.network.NetworkRegistry.newSimpleChannel(CHANNEL_ID, () -> "1", "1"::equals, "1"::equals);
+    public static final net.minecraftforge.network.simple.SimpleChannel NATIVE_CHANNEL = net.minecraftforge.network.NetworkRegistry.newSimpleChannel(new ResourceLocation("aifun_gui_test","native_gui"), () -> "1", "1"::equals, "1"::equals);
     public static final DeferredRegister<Block> BLOCKS = DeferredRegister.create(ForgeRegistries.BLOCKS, "aifun_gui_test");
     public static final DeferredRegister<Item> ITEMS = DeferredRegister.create(ForgeRegistries.ITEMS, "aifun_gui_test");
     public static final DeferredRegister<MenuType<?>> MENUS = DeferredRegister.create(ForgeRegistries.MENU_TYPES, "aifun_gui_test");
@@ -56,6 +57,19 @@ public final class GuiFixtureMod {
     private static final Map<String, Storage> STORAGE = new HashMap<>();
     private static Storage storage(Level level, BlockPos pos) { return STORAGE.computeIfAbsent(level.dimension().location() + ":" + pos, ignored -> new Storage()); }
     public GuiFixtureMod() {
+        NATIVE_CHANNEL.registerMessage(0, NativeMode.class, (m,b)->b.writeVarInt(m.value), b->new NativeMode(b.readVarInt()), (m,ctx)->{
+            ctx.get().enqueueWork(()->{
+                var player=ctx.get().getSender();
+                if(player instanceof MaidGuiActor && player.containerMenu instanceof TestMenu menu && m.value>=0 && m.value<=200){
+                    menu.storage.nativeValue=m.value;
+                    NATIVE_CHANNEL.send(net.minecraftforge.network.PacketDistributor.PLAYER.with(()->player),new NativeState(m.value));
+                }
+            });ctx.get().setPacketHandled(true);
+        },Optional.of(net.minecraftforge.network.NetworkDirection.PLAY_TO_SERVER));
+        NATIVE_CHANNEL.registerMessage(1, NativeState.class, (m,b)->b.writeVarInt(m.value), b->new NativeState(b.readVarInt()), (m,ctx)->{
+            ctx.get().enqueueWork(()->net.minecraftforge.fml.DistExecutor.unsafeRunWhenOn(net.minecraftforge.api.distmarker.Dist.CLIENT,()->()->GuiFixtureClient.applyNativeState(m.value)));
+            ctx.get().setPacketHandled(true);
+        },Optional.of(net.minecraftforge.network.NetworkDirection.PLAY_TO_CLIENT));
         CHANNEL.registerMessage(0, Mode.class, (m, b) -> b.writeByte(m.value), b -> new Mode(b.readUnsignedByte()), (m, ctx) -> {
             ctx.get().enqueueWork(() -> {
                 var player = ctx.get().getSender(); if (m.value <= 1 && player != null && player.containerMenu instanceof TestMenu menu) menu.storage.mode = m.value;
@@ -92,8 +106,11 @@ public final class GuiFixtureMod {
     public static final class Storage {
         final SimpleContainer items = new SimpleContainer(2);
         int mode, progress, produced;
+        int nativeValue;
     }
     public record Mode(int value) { }
+    public record NativeMode(int value) { }
+    public record NativeState(int value) { }
     public static final class TestMenu extends AbstractContainerMenu {
         final Storage storage;
         final BlockPos pos;

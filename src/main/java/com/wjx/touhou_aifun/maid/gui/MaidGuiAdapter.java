@@ -10,6 +10,11 @@ import net.minecraft.world.inventory.AbstractContainerMenu;
 public interface MaidGuiAdapter {
     boolean supports(AbstractContainerMenu menu);
     default JsonArray controls(MaidGuiSession session) { return new JsonArray(); }
+    /** Optional authoritative semantic interface, independent of client widgets. */
+    default JsonObject execute(MaidGuiSession session, JsonObject action) { return null; }
+    default JsonObject state(MaidGuiSession session) { return new JsonObject(); }
+    default void validateAction(MaidGuiSession session, JsonObject action) { }
+    default boolean semanticOnly() { return false; }
     default byte[] initializationData(MaidGuiSession session) { return session.actor.openingData(); }
     /** Snapshot custom S2C state for the matching client adapter; never replay it on the owner. */
     default JsonObject clientState(MaidGuiSession session) { return new JsonObject(); }

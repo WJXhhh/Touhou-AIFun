@@ -45,12 +45,12 @@ public final class AgentTool implements ITool<JsonObject> {
                 .setDescription("kind=all: every atomic requirement must hold."),false);
         if(sequence)completion.addProperties("phases",ArrayParameter.create().setItems(completionParameter(false)).setRange(2,8)
                 .setDescription("kind=sequence: ordered verified phases, excluding eat_food. Transfer counts are NET WITHIN EACH PHASE. Use for take-then-return or intermediate states; never encode a round trip as a final outbound net transfer. Final phase remains live-verified."),false);
-        return completion.setDescription("Full user requirements, verified from actual server facts. all combines simultaneous outcomes; sequence records ordered phases. No dummy conditions.");
+        return completion.setDescription("Full user requirements, verified from actual server facts. EVERY transfer leaf requires dimension,item,count,to_maid,position=[observed container x,y,z]. Composite groups require explicit kind=all or sequence; never drop owner requirements to fix validation. No dummy conditions.");
     }
     private static ObjectParameter atomicCompletion(boolean requiredDimension,String... kinds) {
         ObjectParameter root=ObjectParameter.create();
         root.addProperties("kind",StringParameter.create().addEnumValues(kinds).setDescription("Defaults to transfer. inventory is FINAL backpack stock, never a precondition."),false);
-        root.addProperties("dimension",StringParameter.create(),requiredDimension);
+        root.addProperties("dimension",StringParameter.create().setDescription("Required on EVERY atomic condition, including backpack_empty. Composite all/sequence groups may omit."),requiredDimension);
         root.addProperties("item",StringParameter.create().setDescription("Exact item id for transfer/inventory."),false);
         root.addProperties("count",IntegerParameter.create().setMinimum(0).setDescription("Transfer >=1; inventory >=1, or 0 with match=exact."),false);
         root.addProperties("match",StringParameter.create().addEnumValues("at_least","exact").setDescription("inventory only; default at_least."),false);
