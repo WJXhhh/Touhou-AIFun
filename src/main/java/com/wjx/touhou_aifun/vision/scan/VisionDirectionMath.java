@@ -52,4 +52,19 @@ public final class VisionDirectionMath {
         }
         return right >= 0 ? "right" : "left";
     }
+
+    /**
+     * True when the view ray actually intersects the entity's bounding box (any body part), not
+     * just a tight cone around its centre. At close range a 10-degree-to-centre test reports
+     * "not looking" while the player is staring at the maid's head or feet.
+     */
+    public static boolean lookHitsBox(Vec3 eye, Vec3 view, net.minecraft.world.phys.AABB box,
+                                      double range) {
+        if (eye == null || view == null || box == null || range <= 0.0D) {
+            return false;
+        }
+        Vec3 direction = view.normalize();
+        Vec3 end = eye.add(direction.scale(range));
+        return box.inflate(0.2D).clip(eye, end).isPresent();
+    }
 }

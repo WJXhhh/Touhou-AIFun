@@ -15,7 +15,7 @@ public final class AgentTool implements ITool<JsonObject> {
     @Override public boolean trigger(EntityMaid maid, ChatCompletion request) { return name.equals("read_task_result") || AgentRuntime.enabled(maid); }
     @Override public String summary(EntityMaid maid) {
         return name.equals("task_control") ? "Read task status or manage owner tasks. Enqueue new actions; amend current requirements; replace only when explicitly told to switch. Chat does not cancel work. Resume after reload only when asked."
-                : "Read original tool evidence by result_ref and Unicode character offset. Use task_trace for the execution record. Expired results retain a summary and cannot be replayed automatically.";
+                : "Read original tool evidence by result_ref and Unicode character offset. Use task_trace for the execution record and task_narration for the background executor's own recent written narration (its intermediate assistant text, newest last). Expired results retain a summary and cannot be replayed automatically.";
     }
     @Override public Parameter parameters(ObjectParameter root, EntityMaid maid) {
         if (name.equals("task_control")) {
@@ -27,8 +27,8 @@ public final class AgentTool implements ITool<JsonObject> {
             // Keep accepting explicit completion in control() for existing callers, but do not
             // ask the chat model to plan quantities/coordinates merely to enqueue a task.
         } else {
-            root.addProperties("result_ref", StringParameter.create(), true);
-            root.addProperties("task_id",StringParameter.create().setDescription("Owner may read an archived task. Required with task_trace outside the active task callback."),false);
+            root.addProperties("result_ref", StringParameter.create().setDescription("task_trace for the execution record; task_narration for the background executor's intermediate narration; otherwise a result_* reference returned by a tool."), true);
+            root.addProperties("task_id",StringParameter.create().setDescription("Owner may read an archived task. Required with task_trace outside the active task callback; optional with task_narration (defaults to the task the conversation is talking about)."),false);
             root.addProperties("offset", IntegerParameter.create().setMinimum(0), false);
         }
         return root;
@@ -79,8 +79,12 @@ public final class AgentTool implements ITool<JsonObject> {
                 : task.results.read(args.get("result_ref").getAsString(), args.has("offset") ? args.get("offset").getAsInt() : 0);
         else {
             String reference=args.get("result_ref").getAsString();int offset=args.has("offset")?args.get("offset").getAsInt():0;
-            var store=AgentContext.store(callback);
-            result=store.contains(reference)?store.read(reference,offset):AgentRuntime.readArchived(callback,args.has("task_id")?args.get("task_id").getAsString():null,reference,offset);
+            String taskId=args.has("task_id")&&!args.get("task_id").isJsonNull()?args.get("task_id").getAsString():null;
+            if (TaskNarration.REF.equals(reference)) result=AgentRuntime.readTaskNarration(callback,taskId,offset);
+            else {
+                var store=AgentContext.store(callback);
+                result=store.contains(reference)?store.read(reference,offset):AgentRuntime.readArchived(callback,taskId,reference,offset);
+            }
         }
         return callback.addToolResult(result, callId);
     }

@@ -29,7 +29,7 @@ public class GuiTool implements ITool<JsonObject> {
     /** Completion belongs to a TaskCallback, never to an ordinary chat or native client. */
     public String summary(EntityMaid maid, boolean taskExecutor) {
         String summary = switch (id) {
-            case "query_recipes" -> "Query CURRENT server-loaded crafting AND cooking recipes by exact output item id or recipe_id, including mod/datapack/script replacements and ingredient alternatives. No GUI session needed. Use before crafting; never guess a pack's recipe. Reports whether one craft can be filled from unlocked maid backpack. Rows identify recipe_type, station and cooking time; smelting glass is discoverable here. Operate cooking recipes through the actual furnace GUI, not craft_recipe.";
+            case "query_recipes" -> "Query CURRENT server-loaded crafting AND cooking recipes by exact output item id, fuzzy registered item name, or recipe_id, including mod/datapack/script replacements and ingredient alternatives. No GUI session needed. Use before crafting; never guess a pack's recipe and never web-search a pack item name. A fuzzy phrase is resolved against the live item registry and returns resolved_item plus item_candidates; multiple matches are not guessed. Reports whether one craft can be filled from unlocked maid backpack. Rows identify recipe_type, station and cooking time; smelting glass is discoverable here. Operate cooking recipes through the actual furnace GUI, not craft_recipe.";
             case "inspect_containers" -> "Inspect up to eight exact chest targets in one ordered call using normal GUI access. Returns item counts for planning, keeps the final menu open with its current snapshot. Use when collecting all items with unknown quantities; never inspect each chest in separate model rounds. Counts from closed menus do not authorize slot actions.";
             case "gui_batch" -> "Execute at most 16 observed semantic GUI actions in order. Requires expected_revision. Stops at first failure; earlier changes remain committed. Use close_after=true when done with this menu.";
             case "open_gui" -> "Walk to and open a block/entity GUI, or use a maid-held item. Uses the maid's own inventory. "
@@ -60,7 +60,7 @@ public class GuiTool implements ITool<JsonObject> {
         switch (id) {
             case "query_recipes" -> {
                 root.addProperties("recipe_type", StringParameter.create().addEnumValues("all", "minecraft:crafting", "minecraft:smelting", "minecraft:blasting", "minecraft:smoking", "minecraft:campfire_cooking").setDescription("Default all: include cooking routes as well as workbench recipes."), false);
-                text(root, "item", "Exact registered output item id. Supply item or recipe_id. Reads live recipes, not a static wiki.", false);
+                text(root, "item", "Exact registered output item id, or a fuzzy display name (Chinese/English, speech-recognized or colloquial). Fuzzy names resolve against the loaded registry; ambiguous matches return item_candidates and no recipe is guessed. Supply item or recipe_id. Reads live recipes, not a static wiki.", false);
                 text(root, "recipe_id", "Exact recipe id to inspect instead of searching output item.", false);
                 integer(root, "count", "Desired output count, 1..4096; reports required native recipe batches.", false);
                 integer(root, "offset", "Recipe-list page offset from next_offset.", false);

@@ -8,6 +8,7 @@ public final class TouhouAIFunConfig {
     public static final ForgeConfigSpec.BooleanValue AGENT_DIAGNOSTICS;
     public static final ForgeConfigSpec.ConfigValue<String> AGENT_TASK_ANNOUNCEMENTS;
     public static final ForgeConfigSpec.BooleanValue AGENT_AUTOMATIC_TOOL_SELECTION;
+    public static final ForgeConfigSpec.BooleanValue AGENT_AMEND_AUTO_RESUME;
     public static final ForgeConfigSpec.IntValue AGENT_CONTEXT_INPUT_BUDGET_TOKENS;
     public static final ForgeConfigSpec.ConfigValue<String> AGENT_DECISION_MODEL;
     public static final ForgeConfigSpec.ConfigValue<String> AGENT_DEEPSEEK_EFFORT;
@@ -39,9 +40,14 @@ public final class TouhouAIFunConfig {
     public static final ForgeConfigSpec.IntValue FREE_CHAT_MAX_UTTERANCE_MILLIS;
     public static final ForgeConfigSpec.IntValue FREE_CHAT_PREROLL_MILLIS;
     public static final ForgeConfigSpec.ConfigValue<String> FREE_CHAT_BARGE_IN;
+    public static final ForgeConfigSpec.ConfigValue<String> FREE_CHAT_NOTICE;
     public static final ForgeConfigSpec.DoubleValue FREE_CHAT_MIN_CONFIDENCE;
+    public static final ForgeConfigSpec.DoubleValue FREE_CHAT_SIGHT_MIN_CONFIDENCE;
+    public static final ForgeConfigSpec.DoubleValue FREE_CHAT_QUESTION_FOLLOW_UP_MIN_CONFIDENCE;
     public static final ForgeConfigSpec.DoubleValue FREE_CHAT_PLAYER_RELATED_CONFIDENCE;
+    public static final ForgeConfigSpec.DoubleValue FREE_CHAT_PLAYER_OFF_GAZE_RELATED_GAIN;
     public static final ForgeConfigSpec.DoubleValue FREE_CHAT_OTHER_RELATED_CONFIDENCE;
+    public static final ForgeConfigSpec.DoubleValue FREE_CHAT_INTERVENTION_IGNORE_PROBABILITY;
     public static final ForgeConfigSpec.BooleanValue VISION_ENABLED;
     public static final ForgeConfigSpec.ConfigValue<String> VISION_SELECTED_SITE;
     public static final ForgeConfigSpec.IntValue VISION_SNAPSHOT_MEMORY_MIB;
@@ -79,6 +85,12 @@ public final class TouhouAIFunConfig {
                 .define("taskAnnouncements", "brief",
                         value -> value instanceof String text && java.util.Set.of("detailed", "brief", "silent").contains(text));
         AGENT_AUTOMATIC_TOOL_SELECTION = builder.comment("Automatically narrow repeated native container work after two completed targets and at least four outstanding targets. Does not change requirements or authorize actions.").define("automaticToolSelection", true);
+        AGENT_AMEND_AUTO_RESUME = builder
+                .comment("When the owner amends a task that the runtime paused because it failed, got stuck or",
+                        "could not verify completion, automatically resume the queue instead of requiring a",
+                        "separate explicit 'continue'. An explicit owner pause is preserved and still requires",
+                        "continue. Disable to keep every amendment pending until the owner resumes manually.")
+                .define("amendAutoResume", true);
         AGENT_CONTEXT_INPUT_BUDGET_TOKENS = builder
                 .comment("Input-context budget for the background task executor only; ordinary chat keeps",
                         "[llm].contextInputBudgetTokens. Completed tool batches are compacted at 80% and trimmed",
@@ -204,25 +216,67 @@ public final class TouhouAIFunConfig {
                 .defineInRange("freeChatPrerollMillis", 300, 0, 1000);
         FREE_CHAT_BARGE_IN = builder
                 .comment("How free chat interrupts a maid that is currently speaking:",
+                        "immediate = stop her the moment the volume gate reports a speech onset; the utterance",
+                        "is judged afterwards, so she is also interrupted when it turns out to be invalid",
+                        "(headphones recommended: with speakers her own voice may trip the gate);",
                         "after_asr = wait for ASR and the server-side echo check, then stop her TTS;",
-                        "immediate = stop local TTS as soon as speech onset is confirmed (headphones recommended);",
                         "off = do not stop early; an accepted new chat turn takes over normally.")
-                .define("freeChatBargeIn", "after_asr",
+                .define("freeChatBargeIn", "immediate",
                         value -> value instanceof String text && java.util.Set.of("off", "after_asr", "immediate").contains(text));
+        FREE_CHAT_NOTICE = builder
+                .comment("Where free-chat feedback (recognized text and decision reason codes) is shown:",
+                        "hud = a compact fading notice centered just above the action bar (default); it is",
+                        "drawn by this mod and never touches the vanilla action bar, so other mods' messages",
+                        "are not overwritten;",
+                        "chat = the chat box; action_bar = the vanilla action bar (old behaviour, may",
+                        "overwrite other action bar messages); off = show no feedback.")
+                .define("freeChatNotice", "hud",
+                        value -> value instanceof String text && java.util.Set.of("hud", "chat", "action_bar", "off").contains(text));
         FREE_CHAT_MIN_CONFIDENCE = builder
-                .comment("Confidence gate for the free-chat target, validity and intervention answers.",
-                        "Kept separate from the task decision service threshold so conversational recall does not",
-                        "weaken task action safety.")
+                .comment("Confidence gate for explicitly identifying the addressee target (maid_i, other_player,",
+                        "other_entity, environment). Kept separate from the task decision service threshold so",
+                        "conversational recall does not weaken task action safety. The validity question is not",
+                        "gated here: its two negative branches are the explicit invalid-speech filter.")
                 .defineInRange("freeChatMinConfidence", 0.7, 0.5, 1.0);
+        FREE_CHAT_SIGHT_MIN_CONFIDENCE = builder
+                .comment("Lower target-confidence threshold used when the addressed maid is in the owner's",
+                        "view (55 degree cone) or the owner is looking directly at her (bounding-box ray +",
+                        "line of sight). This is deterministic contextual evidence, not a second model guess;",
+                        "it prevents a hedged but correct maid target from being rejected merely because the",
+                        "owner faced a block or GUI. Off-screen or behind-the-back targets still need",
+                        "freeChatMinConfidence. Values above freeChatMinConfidence never make the gate stricter.")
+                .defineInRange("freeChatSightMinConfidence", 0.5, 0.3, 1.0);
+        FREE_CHAT_QUESTION_FOLLOW_UP_MIN_CONFIDENCE = builder
+                .comment("Lowest target-confidence threshold used when the addressed maid's latest reply",
+                        "contains a question mark and she is in view. A short answer to her question is very",
+                        "likely addressed to her even when the decision service hedges. Only applies to a",
+                        "maid target; ambient and other addressees keep their normal thresholds.")
+                .defineInRange("freeChatQuestionFollowUpMinConfidence", 0.35, 0.2, 1.0);
         FREE_CHAT_PLAYER_RELATED_CONFIDENCE = builder
-                .comment("When the player is talking to another player, the conversation must be this clearly",
-                        "related to the maid before she may interject. Higher than the other-entity threshold",
-                        "because player-to-player chat is statistically less likely to concern the maid.")
+                .comment("When the player is talking to another player, the decision service must assign at least",
+                        "this much probability mass to 'direct' + 'relevant' before the maid may interject.",
+                        "This is probability mass, not the calibrated confidence field. Higher than the",
+                        "other-entity threshold because player-to-player chat is statistically less likely to",
+                        "concern the maid.")
                 .defineInRange("freeChatPlayerRelatedConfidence", 0.85, 0.5, 1.0);
+        FREE_CHAT_PLAYER_OFF_GAZE_RELATED_GAIN = builder
+                .comment("Multiplicative gain applied to the 'direct' + 'relevant' probability mass when the",
+                        "decision service says the player is talking to another player, but the owner is NOT",
+                        "looking at that player at capture time (server checks a 10 degree view cone, line of",
+                        "sight and 16 blocks). Off-gaze, a player-to-player addressee is less certain, so the",
+                        "conversation is more likely to concern the maid; looking at the maid or elsewhere",
+                        "therefore gets a modest boost. 1.0 disables the boost; values below 1.0 are ignored.")
+                .defineInRange("freeChatPlayerOffGazeRelatedGain", 1.15, 1.0, 2.0);
         FREE_CHAT_OTHER_RELATED_CONFIDENCE = builder
-                .comment("Relatedness confidence required when the player is talking to another entity, a block",
-                        "or the environment before the maid may interject.")
+                .comment("'direct' + 'relevant' probability mass required when the player is talking to another",
+                        "entity, a block or the environment before the maid may interject.")
                 .defineInRange("freeChatOtherRelatedConfidence", 0.7, 0.5, 1.0);
+        FREE_CHAT_INTERVENTION_IGNORE_PROBABILITY = builder
+                .comment("Largest probability the decision service may give to 'ignore' and still let the maid",
+                        "intervene. The intervention question is a soft four-way choice: its calibrated",
+                        "confidence stays around 0.35-0.55 even for a clear direct command, so it is judged by",
+                        "this probability instead of the target confidence gate.")
+                .defineInRange("freeChatInterventionIgnoreProbability", 0.5, 0.05, 0.95);
         builder.pop();
 
         builder.push("vision");
@@ -334,7 +388,16 @@ public final class TouhouAIFunConfig {
 
     public static String freeChatBargeIn() {
         String value = FREE_CHAT_BARGE_IN.get();
-        return value == null ? "after_asr" : value;
+        return value == null ? "immediate" : value;
+    }
+
+    public static String freeChatNotice() {
+        String value = FREE_CHAT_NOTICE.get();
+        String normalized = value == null ? "" : value.trim().toLowerCase(java.util.Locale.ROOT);
+        return switch (normalized) {
+            case "hud", "chat", "action_bar", "off" -> normalized;
+            default -> "hud";
+        };
     }
 
     public static void setVisionEnabled(boolean enabled) {

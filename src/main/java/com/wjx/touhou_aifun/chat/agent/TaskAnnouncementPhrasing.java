@@ -123,12 +123,14 @@ public final class TaskAnnouncementPhrasing {
                 + "- Keep it short: about 20 Chinese characters or 15 English words at most.\n"
                 + "- completed: sound natural and pleased; you may lightly mention what was finished.\n"
                 + "- failed: sound natural and light; say it got stuck or paused and you will retry. Never claim success.\n"
+                + "- If the task contains an owner correction or supplement, use the corrected item, quantity or "
+                + "destination and never repeat a superseded name. Do not mention the word \"correction\".\n"
                 + "- Never mention task ids, queue positions, counts, model/provider errors, technical reasons, "
                 + "tools, systems, background jobs or the fact that a machine generated this line.\n"
                 + "- Do not invent work the maid did not do, and do not address the owner by a name you were not given.";
         Map<String, Object> context = Map.of(
                 "result", success ? "completed" : "failed",
-                "task", AgentTaskState.bounded(goal == null ? "" : goal, 160),
+                "task", AgentTaskState.bounded(goal == null ? "" : goal, 512),
                 "waiting_tasks", Math.max(0, queued));
         return new String[]{system, GSON.toJson(context)};
     }

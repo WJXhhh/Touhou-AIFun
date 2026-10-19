@@ -118,16 +118,62 @@ StepFun / MiMo / Qwen / OpenAI 兼容 / DeepSeek 的 LLM 都继承它，自动�
 - **TTS 期间照常采集**：没有采集抑制；只把起音阈值 ×1.5。`SelfEchoMatcher` 在决策前比较
   转写与候选女仆最近 2 条 assistant 历史（规范化后包含或 bigram Dice ≥ 0.8），命中
   `self_echo` 直接丢弃。
-- **打断**：`[stt].freeChatBargeIn` 三档。`after_asr`（默认）在自回声检查通过后、决策前对候选
-  女仆 `ChatFlowManager.interruptSpeech` + `AIFunNetwork.sendInterruptTts`；`immediate` 由客户端
-  在起音时停本地播放并发现有 `AIFunMaidSpeechStopMessage`；`off` 等新回合接管。打断只静音 TTS，
-  不取消文本回复。
+- **打断**：`[stt].freeChatBargeIn` 三档，**默认 `immediate`**（2026-10 用户要求“门控检测到
+  有效输入就打断，后面判不判定另说”）：`VadCapture.onSpeechStart()` 起音回调里直接
+  `tryImmediateBargeIn()`（不等下一个 tick，也不等 ASR）→ 停本地 `QueuedTTSPlaybackManager`/
+  `AIFunStreamSoundManager` + 对范围内自有女仆发 `AIFunMaidSpeechStopMessage` → 服务端
+  `ChatFlowManager.interruptSpeech`；日志 `Free chat barge-in: gate onset stopped maid TTS (maids=N)`。
+  `after_asr` 仍在自回声检查通过后、决策前才停；`off` 等新回合接管。打断只静音 TTS，
+  不取消文本回复；外放时女仆自己的声音可能触发门控自打断，建议耳机或提高 `freeChatThreshold`。
 - **决策**：`FreeChatDecision` 纯函数构造 4 个 choice：`target`（maid_i/other_player/
   other_entity/environment/ambient/unknown）、`validity`（meaningful/too_short_incoherent/
   background）、`maid_related`（direct/relevant/maid_general/unrelated/unclear）、
-  `intervention`（answer/brief_ack/clarify/ignore）。候选直呼不看 related；`other_player` 要求
-  direct/relevant 且置信 ≥ `freeChatPlayerRelatedConfidence`（默认 0.85）；其他实体/方块/环境
-  门槛 `freeChatOtherRelatedConfidence`（默认 0.7）。通用门槛 `freeChatMinConfidence`（0.7）。
+  `intervention`（answer/brief_ack/clarify/ignore）。**门槛语义（2026-10 用真实 Perplexity
+  Decider 标定，不要按“直觉置信度”改回去）**：`target` 分级用 `confidence`——通用
+  `freeChatMinConfidence`（0.7，实测有效目标 0.94–1.00）；目标女仆 `in_view` 或
+  `being_looked_at` 时降到 `freeChatSightMinConfidence`（0.5）；她的 `recent_reply` 含
+  `?`/`？` 且她在视野内/被注视时，短回答降到 `freeChatQuestionFollowUpMinConfidence`
+  （0.35）。只有 `maid_i` 目标享受这两档，`ambient`/其他玩家/实体仍按通用门槛；完全离屏的
+  女仆不会被降低。2026-10-19 实测纠正/追问的 target 置信只有 0.54–0.64，曾被 0.7 连续误杀。
+  `validity` 不设置信门槛，负分支
+  直接过滤、正分支放行；`maid_related` 用 `P(direct)+P(relevant)` **概率质量** ≥
+  `freeChatPlayerRelatedConfidence`（0.85，玩家）/`freeChatOtherRelatedConfidence`（0.7，
+  其他），不是 `confidence`（5 选 1 时 confidence 常只有 0.3–0.5）；`intervention` 是软 4 选 1，
+  实测直接命令 confidence 也只有 0.35–0.55，因此看 `ignore` 概率是否 ≤
+  `freeChatInterventionIgnoreProbability`（0.5）且未选 `ignore`。候选直呼不看 related。
+  误用通用置信门槛会把“芙兰你过来一下”判成 `low_confidence` 静默丢弃。
+  **视线增益**：`target=other_player` 时服务端用 `lookingAtOtherPlayer()`（10° 视锥 + 视线可达 +
+  16 格）判断主人是否真看着对方；没看着（看女仆/别处）时把相关概率质量 ×
+  `freeChatPlayerOffGazeRelatedGain`（默认 1.15，clamp 到 ≥1.0，上限 1.0）再比 0.85——
+  非玩家视线下“在跟玩家聊天”更不可靠、话题更可能涉及女仆，所以是**增益不是抬门槛**。
+  盯着玩家时不加增益；其他实体/方块目标不适用。日志里 `ownerLookingAtPlayer` /
+  `playerRelatedGain` 可核对。
+  **名字与 ASR 容错**：state 的 `candidates[].name` = `maid.getName()`（TLM 聊天系统提示用的
+  同一个实体名，不是独立“角色设定名”——TLM 只有实体名 + 一段 setting 文本），`player_view`
+  和 `target` 候选描述里会重复出现；模型只不知道与实体名无关的私人昵称。state 带
+  `transcript_source=speech_recognition`，`target` 题干和 `direct` 判定文案显式允许 ASR
+  同音/近音/简写/昵称，并让模型在相似候选里选最接近的。真实 decider 实测：弗兰/芙蓝→芙兰
+  目标置信 0.99+，芙兰/芙蕾双候选能按转写区分（0.93），无名字但看着女仆也能选中（0.97）。
+  **player_view 三个已修的坑**：① 场景原来在语音段**结束后**才快照，人说话时盯着女仆、说完
+  视线移开就会被记成“没看”，现在改在**起音瞬间**快照（`VadCapture.Listener.onSpeechStart`
+  默认方法 → `FreeChatController.pendingScene`），结束时仅兜底；② “盯着”原来用视线与包围盒
+  **中心**夹角 ≤10°，近距离看头/脚必然超角，改为 `VisionDirectionMath.lookHitsBox()`（视线射线
+  与 AABB 求交，客户端 `Look target` 和服务端 `being_looked_at`/`ownerLookingAtPlayer` 共用）；
+  ③ scene 里 `looking_at_player` 标签有歧义（实际是女仆看玩家），改名为
+  `maid_looking_at_player` 并新增 `player_looking_at_her`（其他实体 `player_looking_at`/
+  `entity_looking_at_player`）。服务端 `asking` 日志会打印
+  `candidateFocus=[#0:d=3.0,in_view=true,looked_at=true,busy=false]` 便于核对。
+  **target 题干不要写“明确指向才选她”**：实测“把附近的苦力怕都清理掉”在没看着女仆时 target
+  置信只有 0.43（被 0.7 门槛拒），改成“看她不是必要条件/单候选优先/只有明确自言自语才选
+  ambient”后同一句 0.98，而“这苦力怕真烦人”仍判 ambient（0.62）正确过滤。
+- **诊断日志**：客户端与服务端每个阶段都有 `Free chat ...` INFO/WARN（只含阶段、数量、原因码、
+  耗时，绝不含转写/场景/最近对话）；`FreeChatDecision.summary()` 输出
+  `target=maid_0@1.00 ... related_mass=0.64 ignore_p=0.11` 供日志定位。客户端反馈默认走
+  `FreeChatNotifier` 的 HUD 通知（屏幕下方居中、原版 action bar 正上方，最多 3 行淡出），
+  **不写 action bar**，避免顶掉其他模组的消息；`[stt].freeChatNotice` 可切 `chat`/
+  `action_bar`/`off`。1.20.1 实测：action bar 文字在 `screenHeight-72..-63`（背景
+  `-74..-61`），护甲/伤害吸收/氧气行会占到 `-59`（满护甲），经验条 `-29..-24`，所以唯一
+  稳定的居中空带是 action bar 之上；另有 20s 无反馈看门狗。
 - **上下文**：`FreeChatContext` 在 `chat()` 前按 maid+message 身份挂起 ambient facts，
   `MaidAIChatManagerMixin.normalChat` 取到并在 `<context>` 内插入；不写入聊天历史。`player_view`
   是客户端上报的玩家视角实体摘要（候选女仆、准星目标、其他玩家/实体、方向/距离/视野/朝向），
@@ -138,6 +184,13 @@ StepFun / MiMo / Qwen / OpenAI 兼容 / DeepSeek 的 LLM 都继承它，自动�
   按键语音时 `STTChatKeyMixin` 会让畅聊暂停。扬声器外放会把女仆 TTS 录进来，建议耳机或
   `after_asr`/`off`。`AIFunStreamSoundManager.isSpeaking()` 跟踪 PCM 流是否仍在播放，不能只看
   收到 END。
+- **坑（音频线程，2026-10 实测）**：JavaSound 的 `TargetDataLine.close()/stop()` 以及
+  `AudioSystem.getMixerInfo()` 在 Windows 音频驱动上可能阻塞几十秒。`VadCapture` 的
+  `start()/stop()` 只能在渲染线程翻标志，真正的 open/close/枚举全部放到采集线程；同一设备
+  在「STT 仪表盘 ↔ 畅聊」之间用 `retune()` 复用线路而不是重开；`FreeChatController` 对短暂
+  GUI/ESC 有 `CAPTURE_STOP_GRACE_MILLIS`(2s) 宽限并在宽限期间丢弃迟到语音段。踩过的现象：
+  渲染线程卡 45s（整窗口未响应），随后 20s 内 7 次 `Free chat listening` 重启 + `mic_busy`。
+  另注意 `freeChatThreshold` 过低（如 100）会让环境噪声反复触发 ASR，增加负载和费用。
 
 ## Provider 集成要点
 
@@ -231,30 +284,58 @@ dev 用 official 映射，本番用 SRG 名，桥梁是编译期生成的 **refm
 
 ## 已知坑 / 排查
 
-- **同一句女仆台词在聊天栏出现两次**：TLM 的 `ChatBubbleManager.addLLMChatText` 同时做两件事——替换头顶气泡 + 给主人发一条 `<女仆名> 文本` 聊天栏消息。任何"先手动加气泡（立刻显示）→ TTS 成功/失败回调再加一次"的流程都会二次发聊天栏消息。任务公告 `AgentRuntime.deliverNotification`（bubbleId=-1）就是典型：手动 `addLLMChatText` + `manager.tts(...)` 回调各加一次。`ChatBubbleManagerMixin` 原有去重只处理 `waitingChatBubbleId >= 0`（气泡已被移除的迟到回调），公告用 -1 绕过去了。现由 `chat/ChatLineDedup` 在 mixin HEAD 统一 claim `(maid UUID, bubbleId, text)`：正 id 用 60s 窗口、-1 公告用 15s 文本窗口，重复调用直接 cancel（只跳过聊天栏/气泡重复，音频链路不受影响）。
+- **同一句女仆台词在聊天栏出现两次**：TLM 的 `ChatBubbleManager.addLLMChatText` 同时做两件事——替换头顶气泡 + 给主人发一条 `<女仆名> 文本` 聊天栏消息。任何"先手动加气泡（立刻显示）→ TTS 成功/失败回调再加一次"的流程都会二次发聊天栏消息。任务公告 `AgentRuntime.deliverNotification`（bubbleId=-1）就是典型：手动 `addLLMChatText` + `manager.tts(...)` 回调各加一次。`ChatBubbleManagerMixin` 原有去重只处理 `waitingChatBubbleId >= 0`（气泡已被移除的迟到回调），公告用 -1 绕过去了。现由 `chat/ChatLineDedup` 在 mixin HEAD 统一 claim `(maid UUID, bubbleId, text)`：正 id 用 60s 窗口、-1 公告用 15s 文本窗口，重复调用直接 cancel（只跳过聊天栏/气泡重复，音频链路不受影响）。**但 TTS 回调可能在 17–25s 后才到**（超过 15s 窗口），所以 2026-10-19 起 `TTSCallbackMixin.onSuccess` 对 `waitingChatBubbleId < 0` **不再**调用 `addLLMChatText`：公告文本/气泡在开始播放前已由 `deliverNotification` 写入，负 id 的流式句块本来就是空文本。实测一条公告对应一条 `[CHAT]`，第二次延迟文字消失而 TTS 仍正常。
 - **光影下气泡文字消失**（Oculus/IterationRP）：不是本模组，是 **AcceleratedRendering** 的加速文字与光影不兼容。改 `config/acceleratedrendering-client.toml` 的 `[accelerated_text_rendering] default_pipeline = "ACCELERATED" → "VANILLA"`（或 feature_status=DISABLED）。判据：改 `Font.DisplayMode` 完全无效 = 不是深度问题。曾尝试的 `EntityGraphicsMixin` 改 DisplayMode 已删除（无效）。
+- **流式 TTS 的 `AudioStream.read` 绝不能在声卡线程阻塞**：`SoundEngine.play()` 会在渲染线程同步 `join()` 等待声卡通道任务，而声卡线程只有一个。`AIFunPcmAudioStream.read()` 若用 `BlockingQueue.poll(15s)` 等网络数据，渲染线程会陪它一起卡住（2026-10-19 实测窗口“未响应”9–45 秒；jstack 证据：`Render thread` 在 `SoundEngine.play:375` 的 `ChannelAccess.createHandle(...).join()`，`Sound engine` 在 `AIFunPcmAudioStream.nextChunk` → `LinkedBlockingQueue.poll`）。修复原则：`read()` 无数据时**立即返回静音帧（上限 8 秒静音）或 null，永不等待**；`AIFunStreamSoundManager` 对 30 秒无数据且未收到 END 的流做清理。排查工具：`scripts/freeze-watchdog.ps1`，卡住时自动把 `jstack` + `GC.heap_info` 写入 `run/logs/hang-dumps/`。
 - **本环境 gradlew 可编译**：`JAVA_HOME` 指 JDK 17（本机为 `C:\Program Files\Java\jdk-17.0.20`；系统 PATH 的 java 是 1.8，勿用）且**在线模式**（offline 缺 Forge 依赖缓存）。`gradlew build` 全流程（compileJava/reobfJar/refmap）可跑。
 - 本仓库是 Windows + 中文环境，与用户沟通用中文。
 
-## 最近提交与验证状态（2026-10-18）
+## 2026-10-19 畅聊/任务执行修正
 
-工作区目前干净（`git status` 无改动）。最近一批提交包含：
+- **畅聊目标门槛分级**：`freeChatSightMinConfidence`（0.5，`in_view`/`being_looked_at`）与
+  `freeChatQuestionFollowUpMinConfidence`（0.35，女仆最近回复含问号且玩家在看她）；只作用于
+  `maid_i` 目标，离屏女仆仍用 0.7。日志实测 0.54–0.64 的纠正/追问曾被连续误杀。
+- **query_recipes 模糊物品**：`maid/gui/ItemNameMatcher` + `RegisteredItemSearch` 把中文/英文
+  模糊名解析到注册表；唯一强匹配有配方时自动用 `resolved_item`，多匹配返回 `item_candidates`
+  不猜；任务检查点附 `goal_item_candidates`。禁止为整合包物品名调用 `web_search`。实测
+  「软板的刷子」→ `minecraft:brush`/刷子（任务档案确认实际合成物）。
+- **改单有效目标**：`AgentTaskState.effectiveGoal()`（原目标 + 最新修正，日志/状态/前台）与
+  `announcementGoal()`（最新修正在前、512 字，完成/失败措辞与预取使用）；完成播报不再沿用旧
+  物品名。原始 `goal` 不改，执行器仍按 `constraints` 顺序保留全部要求。
+- **amend 自动继续**：`[agentRuntimeV1].amendAutoResume` 默认 true；运行时失败/歧义导致队列
+  暂停时，主人补充后自动恢复，dispatch=`starting_now`，不再要求第二次“继续”；显式主人暂停
+  （`paused_by_owner`）仍必须手动继续。
+- **完成播报去重**：`TTSCallbackMixin` 对 `waitingChatBubbleId < 0` 不再二次 `addLLMChatText`；
+  公告文本/气泡在 TTS 前已写入，TTS 回调可延迟 17–25s（超过 `ChatLineDedup` 的 15s 窗口），
+  曾造成同句两次聊天栏、第二次无语音。
+- **执行器中间正文可查（2026-10-19）**：`TaskCallback` 把每轮 assistant 正文（工具调用同轮
+  content + 收尾正文）追加进任务档案 `AgentTaskArchive.narration`（最多 24 条 × 1000 字，
+  附加字段，旧档案缺省为空），同时每轮留一条 `assistant_text` 记录（全文存 result ref、摘要
+  ≤200 字）供超出窗口后追溯。执行器系统提示 `AgentTaskInstructions.NARRATION_POLICY` **强制
+  要求每轮先写 1–3 句执行情况**（含上一批工具结果的真实数量/物品/位置/失败摘要），最终回复
+  必须是事实性执行报告；缺正文时下一轮 checkpoint 带 `intermediate_narration_required`
+  提醒并记 `narration_missing` 诊断（不会因此暂停任务）。前台主模型两条查看通道：① 每次前台
+  请求注入的 `## Runtime task status for foreground` 带最近 2 条正文
+  （`ForegroundTaskStatus.narration`，每条 ≤200 字）；② `read_task_result(result_ref="task_narration")`
+  按最新往回分页（`offset`/`next_offset`，单次 ≤8 条、≤4000 字），带 `task_id` 可读已归档任务，
+  仅实际主人可读。执行器正文仍不画气泡、不朗读、不写入聊天历史/长期记忆——只是可检查，
+  不会被重新播放。
 
-- **畅聊模式**：`client/voice/`（VadCapture/VadSegmenter/FreeChatController/GateMeter/PcmWav）、
-  `chat/freechat/`（FreeChatGate/FreeChatDecision/SelfEchoMatcher/FreeChatContext）、
-  `compat/ai/stt/BufferedSTTClient`、网络版本 21（ID 30 speech stop、31 C2S utterance、
-  32 S2C feedback）、STT 配置页门控仪表盘；按下 STT 键先停女仆说话（`SpeechMute`）。
-- **流式 TTS**：`StepFunTTSStream`（官方 WS 会话、PCM 转发、空闲看门狗、代际门控）+
-  `StepFunStreamingReply`（逐句增量合成 + HTTP 兜底）、`TTSCallbackAccessor`、`ChatLineDedup`、
-  `[tts].stepfunStreaming`。
-- **战斗反射**：`maid/combat/`（规则/数据/策略/反射三层/状态/提示词/CORE 行为/事件）+
-  `MaidCombatTargetMixin`、`combat_target`/`combat_control` 工具、`[combat]` 配置、`docs/combat.md`。
-- **任务公告与阶段决策**：`[agentRuntimeV1].taskAnnouncements`（detailed/brief/silent）、
-  `TaskAnnouncements`/`TaskAnnouncementPhrasing`/`TaskAnnouncementPrefetch`、`TaskStageChoices` 与
-  `TaskDecisionRouter` 阶段迁移、`drop_items_to_owner` 工具（`MaidOwnerDropAction`/`MaidBackpackSpace`）。
-- **QA**：`QaConfigScope`、`aifun_native_decision_test`/`aifun_combat_test`/
-  `aifun_observation_regression_test`/`aifun_observation_live_test`/`aifun_stage_live_test`、
-  `scripts/stage-decision-live-report.py`，`build.gradle` 对应 `-P...` 开关。
+## 最近提交与验证状态（2026-10-19）
 
-`gradlew build` / `gradlew test` 通过；GameTest 与真实服务商 API 的端到端行为仍需实机/真实 key 复验
-（前置与坑见上文各功能小节）。
+工作区目前干净（`git status` 无改动）。最近一批提交（2026-10-19）包含：
+
+- **畅聊修正**：门控起音即打断（`freeChatBargeIn=immediate` 默认）、目标门槛分级
+  （`freeChatSightMinConfidence` / `freeChatQuestionFollowUpMinConfidence`）、相关概率质量与
+  ignore 概率判定、`player_view` 起音快照与 `lookHitsBox` 视线命中、`FreeChatNotifier` HUD
+  通知队列（`[stt].freeChatNotice`）、VadCapture 音频线程改造（open/close/枚举移出渲染线程）。
+- **流式 TTS 卡顿修复**：`AIFunPcmAudioStream.read()` 永不阻塞（静音帧填充，上限 8s），
+  `AIFunStreamSoundManager` 30s 无数据清理；`scripts/freeze-watchdog.ps1`。
+- **任务执行修正**：`amendAutoResume` 自动恢复、改单有效目标 `effectiveGoal`/`announcementGoal`、
+  `query_recipes` 模糊物品解析（`ItemNameMatcher`/`RegisteredItemSearch`）、执行器中间正文
+  `TaskNarration` + `read_task_result(task_narration)`。
+- **公告去重**：`TTSCallbackMixin` 负 bubbleId 不再二次 `addLLMChatText`（TTS 回调延迟 >15s）。
+- **测试/文档**：畅聊决策、通知队列、任务状态/改单/正文、物品名解析等新增单测；
+  `docs/free-chat.md` 与 `docs/agent-runtime.md` 同步更新。
+
+`gradlew build` / `gradlew test` 通过；GameTest、真实 Perplexity/JEV 标定与实机听感/手感仍需复验。

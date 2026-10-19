@@ -34,10 +34,10 @@ public final class GuiCraftingService {
     }
 
     public static JsonObject query(EntityMaid maid, JsonObject request) {
-        String item = MaidGuiSessionManager.string(request, "item", "");
+        String requestedItem = MaidGuiSessionManager.string(request, "item", "");
+        String item = requestedItem;
         String recipeId = MaidGuiSessionManager.string(request, "recipe_id", "");
         if (item.isBlank() && recipeId.isBlank()) throw new IllegalArgumentException("item_or_recipe_id_required");
-        if (!item.isBlank() && !ForgeRegistries.ITEMS.containsKey(new ResourceLocation(item))) throw new IllegalArgumentException("unknown_item");
         int offset = MaidGuiSessionManager.number(request, "offset", 0, 0, Integer.MAX_VALUE);
         int limit = MaidGuiSessionManager.number(request, "limit", 4, 1, 8);
         int count = MaidGuiSessionManager.number(request, "count", 1, 1, 4096);
@@ -51,17 +51,40 @@ public final class GuiCraftingService {
         }
         if (!Set.of("all", "minecraft:crafting", "minecraft:smelting", "minecraft:blasting", "minecraft:smoking", "minecraft:campfire_cooking").contains(requestedType))
             throw new IllegalArgumentException("unsupported_recipe_type");
-        var recipes = candidates.stream()
-                .filter(recipe -> recipeId.isBlank() || recipe.getId().toString().equals(recipeId))
-                .filter(recipe -> item.isBlank() || MaidGuiSession.itemId(recipe.getResultItem(level.registryAccess())).equals(item))
-                .sorted(Comparator.comparing(recipe -> recipe.getId().toString())).toList();
+        ItemResolution resolution = resolveItem(maid, item, candidates);
+        item = resolution.item();
         JsonObject result = new JsonObject();
         result.addProperty("status", "ok");
         result.addProperty("source", "live_server_recipe_manager");
         result.addProperty("recipe_type", requestedType);
         result.addProperty("requested_count", count);
+        if (!requestedItem.isBlank()) result.addProperty("requested_item", requestedItem);
+        if (resolution.ambiguous()) {
+            result.add("item_candidates", resolution.candidates());
+            result.add("recipes", new JsonArray());
+            result.addProperty("total_recipes", 0);
+            result.addProperty("has_more", false);
+            result.addProperty("notice", "Multiple registered items match the owner's phrase. Choose one item_id from item_candidates and query again; no recipe was guessed.");
+            return result;
+        }
+        if (resolution.fuzzy()) {
+            result.addProperty("resolved_item", resolution.item());
+            result.addProperty("resolved_from", "fuzzy_name");
+            result.add("item_candidates", resolution.candidates());
+        }
+        String resolvedItem = item;
+        var recipes = candidates.stream()
+                .filter(recipe -> recipeId.isBlank() || recipe.getId().toString().equals(recipeId))
+                .filter(recipe -> resolvedItem.isBlank() || MaidGuiSession.itemId(recipe.getResultItem(level.registryAccess())).equals(resolvedItem))
+                .sorted(Comparator.comparing(recipe -> recipe.getId().toString())).toList();
         result.addProperty("total_recipes", recipes.size());
-        result.addProperty("notice", "Current loaded crafting and cooking recipes, including mod/datapack replacements. Each row identifies recipe_type and station. Cooking recipes require the actual furnace/smoker/blast furnace/campfire; craft_recipe is workbench-only. Fuel is separate from ingredients. Inventory availability is live. Query again after a recipe reload.");
+        String notice = "Current loaded crafting and cooking recipes, including mod/datapack replacements. Each row identifies recipe_type and station. Cooking recipes require the actual furnace/smoker/blast furnace/campfire; craft_recipe is workbench-only. Fuel is separate from ingredients. Inventory availability is live. Query again after a recipe reload.";
+        if (resolution.fuzzy() && recipes.isEmpty()) {
+            notice += " The fuzzy owner phrase resolved to " + resolution.item() + ", but it has no loaded crafting or cooking recipe; inspect another source or use the exact item id.";
+        } else if (resolution.fuzzy()) {
+            notice += " The requested item id was resolved from the owner's fuzzy phrase; verify resolved_item before crafting.";
+        }
+        result.addProperty("notice", notice);
         JsonArray rows = new JsonArray();
         int end = Math.min(offset, recipes.size());
         for (; end < recipes.size() && rows.size() < limit; end++) {
@@ -134,6 +157,59 @@ public final class GuiCraftingService {
         result.addProperty("has_more", end < recipes.size());
         if (end < recipes.size()) result.addProperty("next_offset", end);
         return result;
+    }
+
+    /**
+     * Resolves an exact item id or a fuzzy owner phrase against the loaded registry. A fuzzy phrase
+     * is auto-accepted only when exactly one matching registered item has a currently loaded recipe
+     * (or only one item matches at all); several equally plausible items return candidates instead
+     * of guessing, so the executor can ask or choose explicitly.
+     */
+    private static ItemResolution resolveItem(EntityMaid maid, String item, List<Recipe<?>> candidates) {
+        if (item == null || item.isBlank()) {
+            return new ItemResolution("", false, false, null);
+        }
+        ResourceLocation exact = ResourceLocation.tryParse(item);
+        if (exact != null && ForgeRegistries.ITEMS.containsKey(exact)) {
+            return new ItemResolution(item, false, false, null);
+        }
+        Set<String> outputIds = new HashSet<>();
+        for (Recipe<?> recipe : candidates) {
+            ItemStack output = recipe.getResultItem(maid.level().registryAccess());
+            if (!output.isEmpty()) outputIds.add(MaidGuiSession.itemId(output));
+        }
+        List<RegisteredItemSearch.Match> matches = RegisteredItemSearch.search(item, 8);
+        if (matches.isEmpty()) {
+            throw new IllegalArgumentException("unknown_item");
+        }
+        JsonArray rows = itemCandidateRows(matches, outputIds);
+        List<RegisteredItemSearch.Match> craftable = matches.stream()
+                .filter(match -> outputIds.contains(match.id().toString())).toList();
+        if (craftable.size() == 1) {
+            return new ItemResolution(craftable.get(0).id().toString(), true, false, rows);
+        }
+        if (craftable.size() > 1) {
+            return new ItemResolution("", true, true, rows);
+        }
+        if (matches.size() == 1) {
+            return new ItemResolution(matches.get(0).id().toString(), true, false, rows);
+        }
+        return new ItemResolution("", true, true, rows);
+    }
+
+    private static JsonArray itemCandidateRows(List<RegisteredItemSearch.Match> matches, Set<String> outputIds) {
+        JsonArray rows = new JsonArray();
+        for (RegisteredItemSearch.Match match : matches) {
+            JsonObject row = new JsonObject();
+            row.addProperty("item_id", match.id().toString());
+            row.addProperty("display_name", match.displayName());
+            row.addProperty("has_recipe", outputIds.contains(match.id().toString()));
+            rows.add(row);
+        }
+        return rows;
+    }
+
+    private record ItemResolution(String item, boolean fuzzy, boolean ambiguous, JsonArray candidates) {
     }
 
     private static CraftingRecipe recipe(EntityMaid maid, String id) {

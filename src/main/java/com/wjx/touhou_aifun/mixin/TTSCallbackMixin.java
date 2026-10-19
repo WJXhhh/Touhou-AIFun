@@ -33,7 +33,12 @@ public abstract class TTSCallbackMixin {
             level.getServer().execute(() -> {
                 AIFunNetwork.sendMaidTtsAudio(this.maid,
                         new TTSAudioToClientMessage(this.maid.getId(), data));
-                this.maid.getChatBubbleManager().addLLMChatText(this.chatText, this.waitingChatBubbleId);
+                // A negative id is an announcement (or an empty streaming chunk): the announcement
+                // text and bubble were already added before TTS started. Re-adding them here was the
+                // +17..25 s duplicate chat line with no audio. Positive ids keep TLM's reply flow.
+                if (this.waitingChatBubbleId >= 0) {
+                    this.maid.getChatBubbleManager().addLLMChatText(this.chatText, this.waitingChatBubbleId);
+                }
             });
         }
         ci.cancel();

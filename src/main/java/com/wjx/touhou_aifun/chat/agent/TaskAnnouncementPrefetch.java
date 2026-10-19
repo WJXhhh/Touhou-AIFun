@@ -45,19 +45,20 @@ public final class TaskAnnouncementPrefetch {
             return;
         }
         prime(maid.getUUID(), task,
-                () -> TaskAnnouncementPhrasing.phrase(maid, manager, true, task.goal, 0));
+                () -> TaskAnnouncementPhrasing.phrase(maid, manager, true, task.announcementGoal(), 0));
     }
 
     static void prime(UUID maidId, AgentTaskState task, Supplier<CompletableFuture<String>> request) {
         if (maidId == null || task == null || request == null
-                || task.goal == null || task.goal.isBlank()) {
+                || task.announcementGoal() == null || task.announcementGoal().isBlank()) {
             return;
         }
+        String goal = task.announcementGoal();
         long now = System.currentTimeMillis();
         prune(now);
         PENDING.compute(key(maidId, task.id), (ignored, existing) -> {
             if (existing != null && existing.goalVersion() == task.goalVersion
-                    && existing.goal().equals(task.goal)) {
+                    && existing.goal().equals(goal)) {
                 return existing;
             }
             CompletableFuture<String> future;
@@ -66,7 +67,7 @@ public final class TaskAnnouncementPrefetch {
             } catch (RuntimeException error) {
                 future = CompletableFuture.failedFuture(error);
             }
-            return new Prepared(future, task.goal, task.goalVersion, now);
+            return new Prepared(future, goal, task.goalVersion, now);
         });
     }
 
@@ -87,7 +88,8 @@ public final class TaskAnnouncementPrefetch {
         if (prepared == null) {
             return null;
         }
-        if (prepared.goalVersion() != task.goalVersion || !prepared.goal().equals(task.goal)) {
+        if (prepared.goalVersion() != task.goalVersion
+                || !prepared.goal().equals(task.announcementGoal())) {
             return null;
         }
         if (System.currentTimeMillis() - prepared.createdAtMillis() > MAX_AGE_MILLIS) {

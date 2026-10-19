@@ -13,16 +13,28 @@ import javax.sound.sampled.Mixer;
 import javax.sound.sampled.TargetDataLine;
 import java.io.ByteArrayOutputStream;
 import java.util.Arrays;
+import java.util.Objects;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * Owns one 16 kHz microphone line for free chat and the inline level meter. Free chat must not use
  * TLM's static {@code MicrophoneManager.startRecord} session because that state is shared with the
  * push-to-talk key; this class only reuses the same device-selection rules.
+ *
+ * <p>All JavaSound device work happens on the capture thread. Opening, closing and even
+ * {@link AudioSystem#getMixerInfo()} can block for seconds on Windows audio drivers, and this class
+ * is driven from the client tick thread: a blocking close there freezes the whole game window.
+ * {@link #start} and {@link #stop} therefore only flip flags and hand the device over
+ * asynchronously; {@link #retune} switches between meter-only and VAD mode without reopening the
+ * line at all.</p>
  */
 @OnlyIn(Dist.CLIENT)
 public final class VadCapture {
     public interface Listener {
+        /** A new speech segment started; used to snapshot the player's view at onset. */
+        default void onSpeechStart() {
+        }
+
         void onSegment(byte[] wav, int speechMillis, int peak);
 
         void onFailure(String reason);
@@ -41,50 +53,43 @@ public final class VadCapture {
     private volatile boolean ttsActive;
     private volatile boolean speechActive;
     private volatile TargetDataLine line;
-    private String deviceName = "";
-    private VadSegmenter segmenter;
-    private Listener listener;
+    private volatile String deviceName = "";
+    private volatile VadSegmenter segmenter;
+    private volatile Listener listener;
+    private volatile boolean wasSpeaking;
 
     public void start(String deviceName, VadSegmenter segmenter, Listener listener) {
+        TargetDataLine previous;
+        long capturedGeneration;
         synchronized (lock) {
-            stopLocked();
+            previous = line;
+            line = null;
             this.deviceName = deviceName == null ? "" : deviceName;
             this.segmenter = segmenter;
             this.listener = listener;
-            long capturedGeneration = this.generation.incrementAndGet();
-            this.running = true;
-            this.status = "";
-            this.latestLevel = 0;
-            this.speechActive = false;
-            Thread worker = new Thread(() -> run(capturedGeneration), "AIFun-FreeChat-Mic");
-            worker.setDaemon(true);
-            worker.start();
+            capturedGeneration = generation.incrementAndGet();
+            running = true;
+            status = "";
+            latestLevel = 0;
+            speechActive = false;
+            wasSpeaking = false;
         }
+        Thread worker = new Thread(() -> run(capturedGeneration, previous), "AIFun-FreeChat-Mic");
+        worker.setDaemon(true);
+        worker.start();
     }
 
     public void stop() {
+        TargetDataLine current;
         synchronized (lock) {
-            stopLocked();
+            generation.incrementAndGet();
+            running = false;
+            current = line;
+            line = null;
+            speechActive = false;
             status = "";
         }
-    }
-
-    private void stopLocked() {
-        generation.incrementAndGet();
-        running = false;
-        TargetDataLine current = line;
-        if (current != null) {
-            try {
-                current.stop();
-            } catch (RuntimeException ignored) {
-            }
-            try {
-                current.close();
-            } catch (RuntimeException ignored) {
-            }
-        }
-        line = null;
-        speechActive = false;
+        closeAsync(current);
     }
 
     public boolean isRunning() {
@@ -93,6 +98,29 @@ public final class VadCapture {
 
     public void setMonitorMode(boolean monitorMode) {
         this.monitorMode = monitorMode;
+    }
+
+    /**
+     * Switches the already open line between the level meter and volume-gated VAD mode without
+     * touching the audio device. This is what keeps opening/closing the STT settings screen (or a
+     * quick GUI pause) from repeatedly re-opening the microphone on the render thread.
+     *
+     * @return false when the line is not running on this device and a real {@link #start} is needed
+     */
+    public boolean retune(String deviceName, VadSegmenter segmenter, Listener listener,
+                          boolean monitorMode) {
+        synchronized (lock) {
+            String requested = deviceName == null ? "" : deviceName;
+            if (!running || line == null || !Objects.equals(this.deviceName, requested)) {
+                return false;
+            }
+            this.segmenter = segmenter;
+            this.listener = listener;
+            this.monitorMode = monitorMode;
+            this.speechActive = false;
+            this.status = "listening";
+            return true;
+        }
     }
 
     public void setActiveThreshold(int threshold, boolean ttsActive) {
@@ -112,7 +140,9 @@ public final class VadCapture {
         return status;
     }
 
-    private void run(long capturedGeneration) {
+    private void run(long capturedGeneration, TargetDataLine previous) {
+        // The previous line is closed here, on the capture thread, never on the caller thread.
+        closeQuietly(previous);
         TargetDataLine dataLine = null;
         try {
             dataLine = openDevice(deviceName);
@@ -120,18 +150,21 @@ public final class VadCapture {
                 fail(capturedGeneration, "mic_missing");
                 return;
             }
-            if (generation.get() != capturedGeneration) {
-                return;
+            synchronized (lock) {
+                if (generation.get() != capturedGeneration) {
+                    return;
+                }
+                line = dataLine;
             }
-            line = dataLine;
             dataLine.open(FORMAT);
             if (generation.get() != capturedGeneration) {
                 return;
             }
             dataLine.start();
-            if (generation.get() == capturedGeneration) {
-                status = "listening";
+            if (generation.get() != capturedGeneration) {
+                return;
             }
+            status = "listening";
             byte[] readBuffer = new byte[Math.max(1024, DEFAULT_FRAME_BYTES * 8)];
             ByteArrayOutputStream pending = new ByteArrayOutputStream(readBuffer.length * 2);
             while (running && generation.get() == capturedGeneration) {
@@ -158,18 +191,12 @@ public final class VadCapture {
         } catch (RuntimeException error) {
             fail(capturedGeneration, "mic_error");
         } finally {
-            if (dataLine != null) {
-                try {
-                    dataLine.stop();
-                } catch (RuntimeException ignored) {
+            closeQuietly(dataLine);
+            wasSpeaking = false;
+            synchronized (lock) {
+                if (line == dataLine) {
+                    line = null;
                 }
-                try {
-                    dataLine.close();
-                } catch (RuntimeException ignored) {
-                }
-            }
-            if (line == dataLine) {
-                line = null;
             }
             if (generation.get() == capturedGeneration) {
                 running = false;
@@ -178,6 +205,30 @@ public final class VadCapture {
                     status = "";
                 }
             }
+        }
+    }
+
+    /** Device operations only ever run on a helper thread, never on the render thread. */
+    private static void closeAsync(TargetDataLine target) {
+        if (target == null) {
+            return;
+        }
+        Thread closer = new Thread(() -> closeQuietly(target), "AIFun-FreeChat-Mic-Close");
+        closer.setDaemon(true);
+        closer.start();
+    }
+
+    private static void closeQuietly(TargetDataLine target) {
+        if (target == null) {
+            return;
+        }
+        try {
+            target.stop();
+        } catch (RuntimeException ignored) {
+        }
+        try {
+            target.close();
+        } catch (RuntimeException ignored) {
         }
     }
 
@@ -204,7 +255,23 @@ public final class VadCapture {
         }
         int threshold = GateMeterMath.activeThreshold(activeThreshold, ttsActive);
         VadSegmenter.Segment segment = local.accept(frame, threshold);
-        speechActive = local.isSpeaking();
+        boolean speakingNow = local.isSpeaking();
+        speechActive = speakingNow;
+        if (speakingNow && !wasSpeaking) {
+            Listener starter = listener;
+            if (starter != null && running) {
+                Minecraft minecraft = Minecraft.getInstance();
+                try {
+                    minecraft.execute(() -> {
+                        if (running && generation.get() == capturedGeneration && listener == starter) {
+                            starter.onSpeechStart();
+                        }
+                    });
+                } catch (RuntimeException ignored) {
+                }
+            }
+        }
+        wasSpeaking = speakingNow;
         if (segment == null) {
             return;
         }

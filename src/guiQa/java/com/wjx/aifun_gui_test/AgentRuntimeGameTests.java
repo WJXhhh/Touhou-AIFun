@@ -608,7 +608,7 @@ public final class AgentRuntimeGameTests {
             helper.assertTrue(fallbackLine.contains("这个先卡住啦") && !fallbackLine.contains("final_inventory_below_required_count")
                     && !fallbackLine.contains("fallback task"),"Fallback keeps the short fixed line without details: "+fallbackLine);
             // Any announcement mode still answers "why did it fail" with the recorded reason.
-            var facts=new ForegroundTaskStatus(failedState.id,failedState.status,failedState.goal,failedState.verifiedCount,failedState.outcome);
+            var facts=new ForegroundTaskStatus(failedState.id,failedState.status,failedState.goal,failedState.verifiedCount,failedState.outcome,java.util.List.of());
             helper.assertTrue(ForegroundTaskStatus.asksFailureReason("任务为什么失败了？"),"Failure-reason question is recognized");
             String reason=facts.failureReply(false);
             helper.assertTrue(reason.contains("sort the four labelled chests") && reason.contains("final_inventory_below_required_count"),

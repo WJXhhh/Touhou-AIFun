@@ -102,6 +102,8 @@ Choice 使用返回的 `confidence`（不等同于最大概率），Noul 默认 
 
 独立的版本化女仆 NBT 保存任务与队列。世界 SavedData `touhou_aifun_agent_archive_v1.dat` 保存有界完整记录和原始结果，采用字节数组避免 NBT 字符串长度限制。记录包括模型步骤、调用、结果、取消和真实物品转移。归档有容量限制，活动记录无法继续保存时安全暂停。原始结果淘汰后保留摘要并明确报告引用失效，不重新执行原操作。
 
+**执行器中间正文可查（2026-10-19）**：后台执行器每轮 assistant 正文（工具调用同轮的 content + 收尾正文）写入该任务档案的 `narration`（最多 24 条、每条 ≤1000 字；附加字段，旧档案缺省为空），同时每轮留一条 `assistant_text` 记录（全文存 result ref，摘要 ≤200 字）以便超出窗口后仍可追溯。执行器系统提示 `AgentTaskInstructions.NARRATION_POLICY` 要求**每轮响应先写 1–3 句事实性执行情况**（含上一批工具结果的真实数量/物品/位置/失败摘要），最终回复必须是事实性执行报告；某轮只有工具调用而没有正文时，下一轮 checkpoint 会带 `intermediate_narration_required` 提醒并记 `narration_missing` 诊断（缺正文不会暂停任务）。前台主模型有两条查看通道：① 每次前台请求注入的 `## Runtime task status for foreground` 携带最近 2 条正文（`ForegroundTaskStatus.narration`，每条 ≤200 字）；② 按需调用 `read_task_result(result_ref="task_narration")`，从最新往回分页（`offset`/`next_offset`，单次 ≤8 条、≤4000 字），带 `task_id` 可读已离开队列的归档任务，仅实际主人可读；更早的单轮正文用 `task_trace` 记录里的 result ref 再读。执行器正文仍然不画气泡、不朗读、不写入聊天历史或长期记忆：它只是可检查，不会被重新播放。
+
 GUI 原子动作首先登记真实净转移，再提交模型结果。游标拾取不等于收货，实际落入女仆库存才登记；返还来源不重复计数，反向转移抵扣。GUI 关闭或卸载时的迟到游标结算进入世界归档，恢复时按事实版本与较旧实体检查点核对，避免重复搬运。
 
 完成验证支持 transfer、inventory、position，以及最多 16 项原子条件的 all 组合。转移条件核对物品、维度、容器位置、方向和真实累计净数量；库存、位置条件读取当前服务器状态。补充数量后重新计算条件，现场未重新观察、条件缺失或未满足时不能凭模型文本标记成功。模型过早宣称完成时允许一次基于真实证据的纠正规划，仍不满足则暂停；不会自动重放世界修改。尚无领域验证器的开放任务保守暂停。
@@ -942,3 +944,33 @@ COMMON `[agentRuntimeV1].taskAnnouncements` 是新增的单一配置，控制任
 诊断日志：`AIFun task announcement ... source=prefetched` 表示使用了预取措辞，`source=model` / `source=fallback` 与之前一致。`notification_wait` span 会从一次模型往返（本会话 1106.7 ms）降到下一个服务器 tick。每个开始执行的任务最多增加一条小请求（中途修改目标会重新预取一次）；`detailed`/`silent` 模式和未开始执行的任务不增加请求。
 
 本轮验证：Java 17 / Forge 47.2.0 下 `test build` 通过 491 项 JUnit（新增 7 项 `TaskAnnouncementPrefetchTest`：同目标只请求一次并可复用一次、重复预取不重复发请求、目标文本或 `goalVersion` 变化即作废、失败预取仍会回退固定短句、按女仆清理不影响其他女仆、未预取任务不受影响），`runGameTestServer -PguiQa -PguiQaRunId=tailprefetch20261018` 在全新测试世界通过 147 项必需 GameTest，新增场景 `preparedAnnouncementWordingIsDeliveredWithoutAnotherRequest` 让按需措辞请求永远不会完成，仍能在外播 tick 直接送出预取措辞，证明完成通知不再依赖收尾模型请求。日志中可见 `AIFun task announcement ... source=prefetched`。本轮没有发起真实付费模型回放：1.1 秒等待来自 20:23 客户端日志的既有测量，预取把 `notification_wait` 降到一次 tick 的结论需要下次客户端实测确认；语音首块仍受 StepFun 流式会话建立影响。
+
+## 2026-10-19：物品模糊解析、改单生效与完成播报去重
+
+玩家整合包日志（12:16–12:27）暴露三处任务执行问题，均已在服务端修正：
+
+- **物品名模糊解析**：`query_recipes` 现在接受精确 item id 或模糊显示名。模糊名称由
+  `ItemNameMatcher`/`RegisteredItemSearch` 对当前加载的物品注册表排序；唯一强匹配且有配方时自动
+  作为 `resolved_item` 返回配方，多个匹配则返回 `item_candidates`（含 `has_recipe`）而不猜。
+  任务检查点还会附带 `goal_item_candidates`（目标/约束中字面出现的物品 id、显示名、堆叠上限），
+  首个模型轮次即可拿到正确 id。提示词明确禁止用 `web_search` 查整合包物品名。实测中
+  「软板的刷子」连续 `unknown_item` + 13.8s 网页搜索，档案实际合成的是 `minecraft:brush`
+  （名称“刷子”）；新路径应由模糊搜索直接解析出该 id 和羽毛+铜锭配方。
+- **改单有效目标**：`AgentTaskState.amend` 仍只追加约束、不改原始 `goal`，但新增
+  `effectiveGoal()`（原目标 + 最新修正，用于日志/状态/前台）与 `announcementGoal()`（最新修正
+  在前，用于完成/失败措辞，512 字上限）。`TaskAnnouncementPrefetch` 按 `announcementGoal`
+  缓存和校验，`TaskAnnouncementPhrasing` 增加“更正优先、不复述被取代旧名称”的规则；因此完成
+  播报会使用 `minecraft:brush`/刷子，而不是旧的「软板的刷子」。
+- **amend 自动继续**：`[agentRuntimeV1].amendAutoResume`（默认 `true`）在队列因运行时失败/
+  歧义暂停、且任务不是主人显式暂停（`paused_by_owner`）时，收到主人补充后自动恢复队列，回执
+  dispatch 变为 `starting_now`/`waiting`，不再要求额外说一次“继续”。显式暂停、停止、清空仍
+  保持原语义；配置关闭可恢复旧行为。
+- **完成播报去重**：`TTSCallbackMixin` 对 `waitingChatBubbleId < 0` 不再调用
+  `addLLMChatText`。公告文本/气泡在 TTS 前已由 `deliverNotification` 写入；实测 TTS 成功回调
+  在 17–25s 后才到，超过 `ChatLineDedup` 的 15s 公告窗口，曾造成同一条完成台词出现两次，且
+  第二次只有文字没有语音。正数回复气泡逻辑不变。
+
+相关单元测试：`ItemNameMatcherTest`、`ExplicitItemCatalogTest`、`AgentTaskStateGoalTest`、
+`TaskAmendmentPolicyTest`、`TaskAnnouncementPrefetchTest`（补充约束变化）、
+`TaskAnnouncementPhrasingTest`（更正规则）、`FreeChatDecisionTest`（sight/追问门槛）。
+`gradlew build` 全量通过（583 项 JUnit，0 失败）。

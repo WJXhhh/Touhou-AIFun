@@ -1,10 +1,14 @@
 package com.wjx.touhou_aifun.chat.agent;
 
+import java.util.List;
 import java.util.regex.Pattern;
 
 /** Immutable published facts; network/stream threads never read the mutable task queue. */
 public record ForegroundTaskStatus(String taskId, AgentTaskState.Status status, String goal,
-                                   long movedCount, String outcome) {
+                                   long movedCount, String outcome, List<String> narration) {
+    public ForegroundTaskStatus {
+        narration = narration == null ? List.of() : List.copyOf(narration);
+    }
     public static final String PROMPT_HEADER="## Runtime task status for foreground\n";
     private static final Pattern QUESTION=Pattern.compile("进度|(?:做完|干完|完成|结束|搞定|弄完)(?:了)?(?:吗|没|没有|了吗|了没|了吧)|(?:放|送|取|搬)(?:进|出|好|完)(?:去|来)?(?:了)?(?:吗|没|了没|吧)|\\b(?:task|job|work)\\b.{0,30}(?:done|finished|complete|progress|status)",Pattern.CASE_INSENSITIVE);
     private static final Pattern TASK_SUBJECT=Pattern.compile("任务|这活|工作|箱子|东西|物品|背包|进度|你|\\b(?:task|job|work)\\b",Pattern.CASE_INSENSITIVE);

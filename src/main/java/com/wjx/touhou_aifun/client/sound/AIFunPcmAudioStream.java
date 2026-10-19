@@ -8,20 +8,35 @@ import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.LinkedBlockingQueue;
-import java.util.concurrent.TimeUnit;
 
+/**
+ * PCM stream for StepFun's streaming TTS.
+ *
+ * <p>Minecraft calls {@link #read} from the <b>sound engine thread</b> (see
+ * {@code Channel.pumpBuffers}). While the render thread calls {@code SoundEngine.play}, it blocks
+ * in {@code ChannelAccess.createHandle(...).join()} and waits for that same single-threaded sound
+ * engine, so a blocking read freezes the whole game window. Upstream data arrives in
+ * sentence-sized bursts with real network gaps, therefore this stream never waits: a missing
+ * chunk is filled with a short run of silence so OpenAL keeps running, and the real audio is
+ * queued as soon as it arrives.</p>
+ */
 public final class AIFunPcmAudioStream implements AudioStream {
-    private static final long CHUNK_TIMEOUT_SECONDS = 15;
+    /** How long the virtual stream may insert silence while the network is still producing. */
+    private static final long SILENCE_LIMIT_MILLIS = 8000L;
 
     private final AudioFormat format;
     private final BlockingQueue<byte[]> chunks = new LinkedBlockingQueue<>();
+    private final long silenceLimitBytes;
     private volatile boolean finished;
     private volatile boolean closed;
     private byte[] currentChunk;
     private int currentOffset;
+    private long silentBytes;
 
     public AIFunPcmAudioStream(int sampleRate) {
         this.format = new AudioFormat(sampleRate, 16, 1, true, false);
+        // 16-bit mono: bytes per second = sampleRate * 2.
+        this.silenceLimitBytes = Math.max(1, (long) sampleRate * 2L) * SILENCE_LIMIT_MILLIS / 1000L;
     }
 
     public void append(byte[] data) {
@@ -32,7 +47,6 @@ public final class AIFunPcmAudioStream implements AudioStream {
 
     public void finish() {
         finished = true;
-        chunks.offer(new byte[0]);
     }
 
     @Override
@@ -42,36 +56,39 @@ public final class AIFunPcmAudioStream implements AudioStream {
 
     @Override
     public ByteBuffer read(int size) throws IOException {
-        ByteBuffer output = BufferUtils.createByteBuffer(size);
-        try {
-            while (output.hasRemaining() && !closed) {
-                if (currentChunk == null || currentOffset >= currentChunk.length) {
-                    currentChunk = nextChunk(output.position() == 0);
-                    currentOffset = 0;
-                    if (currentChunk == null || currentChunk.length == 0) {
-                        break;
-                    }
-                }
-                int length = Math.min(output.remaining(), currentChunk.length - currentOffset);
-                output.put(currentChunk, currentOffset, length);
-                currentOffset += length;
-            }
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            throw new IOException("Interrupted while waiting for streamed TTS audio", e);
-        }
-        output.flip();
-        return output;
-    }
-
-    private byte[] nextChunk(boolean waitForFirstChunk) throws InterruptedException {
-        if (finished && chunks.isEmpty()) {
+        if (closed) {
             return null;
         }
-        if (waitForFirstChunk) {
-            return chunks.poll(CHUNK_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+        ByteBuffer output = BufferUtils.createByteBuffer(size);
+        while (output.hasRemaining()) {
+            if (currentChunk == null || currentOffset >= currentChunk.length) {
+                currentChunk = chunks.poll();
+                currentOffset = 0;
+                if (currentChunk == null || currentChunk.length == 0) {
+                    currentChunk = null;
+                    currentOffset = 0;
+                    break;
+                }
+            }
+            int length = Math.min(output.remaining(), currentChunk.length - currentOffset);
+            output.put(currentChunk, currentOffset, length);
+            currentOffset += length;
         }
-        return chunks.poll();
+        if (output.position() > 0) {
+            silentBytes = 0;
+            output.flip();
+            return output;
+        }
+        // Nothing buffered right now. Never block the sound engine thread; pad with silence while
+        // the stream is still being produced so OpenAL does not stop between sentence chunks.
+        if (finished || silentBytes >= silenceLimitBytes) {
+            return null;
+        }
+        silentBytes += size;
+        ByteBuffer silence = BufferUtils.createByteBuffer(size);
+        silence.position(size);
+        silence.flip();
+        return silence;
     }
 
     @Override

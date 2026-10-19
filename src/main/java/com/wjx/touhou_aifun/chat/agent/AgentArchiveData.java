@@ -48,6 +48,16 @@ public final class AgentArchiveData extends SavedData {
         }
         return "result_expired: reference is unknown or its task archive has been retired; actions must not be replayed automatically.";
     }
+    /** The executor's own written text for one task, oldest first; empty when no archive exists. */
+    public List<String> narration(String maidId,String taskId) {
+        AgentTaskArchive archive=archives.get(taskId);
+        if(archive==null || !archive.maidId.equals(maidId)) return List.of();
+        return List.copyOf(archive.narration);
+    }
+    /** Newest bounded narration lines for the published foreground status facts. */
+    public List<String> narrationTail(String maidId,String taskId,int limit,int maxChars) {
+        return TaskNarration.tail(narration(maidId,taskId),limit,maxChars);
+    }
     public static AgentArchiveData load(CompoundTag tag) {
         if (tag.getInt("version") != 1) throw new IllegalArgumentException("unsupported_agent_archive");
         AgentArchiveData data = new AgentArchiveData();

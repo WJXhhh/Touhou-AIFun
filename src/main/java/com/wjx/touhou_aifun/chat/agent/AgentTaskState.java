@@ -329,6 +329,46 @@ public final class AgentTaskState {
             refreshTransferProgress(); }
     }
     public void clearActionPlan() { actionSteps=new com.google.gson.JsonArray();actionStep=0;actionPlanGoalVersion=0; }
+    /**
+     * Original goal plus the latest owner amendment; used by logs, status queries and the
+     * foreground model. The raw {@link #goal} stays untouched so the executor keeps the original
+     * instruction and the ordered {@link #constraints} list, while user-facing text reflects the
+     * latest correction (for example a corrected item name).
+     */
+    public String effectiveGoal() {
+        String latest = latestOwnerAmendment();
+        if (latest.isBlank()) {
+            return bounded(goal, 4096);
+        }
+        if (goal == null || goal.isBlank()) {
+            return bounded(latest, 4096);
+        }
+        return bounded(goal + "\nLatest owner correction: " + latest, 4096);
+    }
+
+    /**
+     * Goal text for the completion/failure announcement. The latest correction is placed first so
+     * the bounded phrasing prompt keeps it even when the original goal is long.
+     */
+    public String announcementGoal() {
+        String latest = latestOwnerAmendment();
+        if (latest.isBlank()) {
+            return bounded(goal, 512);
+        }
+        if (goal == null || goal.isBlank()) {
+            return bounded(latest, 512);
+        }
+        return bounded("Latest owner correction (supersedes conflicting earlier wording): "
+                + latest + "\nOriginal task: " + goal, 512);
+    }
+
+    private String latestOwnerAmendment() {
+        if (!pendingAmendment.isBlank()) {
+            return pendingAmendment;
+        }
+        return constraints.isEmpty() ? "" : constraints.get(constraints.size() - 1);
+    }
+
     public static String bounded(String value, int max) {
         if (value == null) return "";
         int n = value.codePointCount(0, value.length());

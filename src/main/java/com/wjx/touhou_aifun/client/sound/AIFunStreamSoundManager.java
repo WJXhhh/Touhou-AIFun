@@ -19,6 +19,9 @@ import java.util.UUID;
 @OnlyIn(Dist.CLIENT)
 @Mod.EventBusSubscriber(modid = TouhouAIFun.MOD_ID, value = Dist.CLIENT)
 public final class AIFunStreamSoundManager {
+    /** Drop a playback that stopped receiving chunks without an END frame. */
+    private static final long STALL_TIMEOUT_MILLIS = 30000L;
+
     private static final Map<UUID, Playback> PLAYBACKS = new HashMap<>();
 
     private AIFunStreamSoundManager() {
@@ -71,6 +74,7 @@ public final class AIFunStreamSoundManager {
     private static void append(UUID streamId, byte[] data) {
         Playback playback = PLAYBACKS.get(streamId);
         if (playback != null) {
+            playback.lastDataAt = System.currentTimeMillis();
             playback.stream.append(data);
         }
     }
@@ -93,12 +97,18 @@ public final class AIFunStreamSoundManager {
             interrupt();
             return false;
         }
+        long now = System.currentTimeMillis();
         boolean active = false;
         Iterator<Map.Entry<UUID, Playback>> iterator = PLAYBACKS.entrySet().iterator();
         while (iterator.hasNext()) {
             Playback playback = iterator.next().getValue();
             if (playback.finished && !minecraft.getSoundManager().isActive(playback.instance)) {
                 playback.stream.close();
+                iterator.remove();
+            } else if (!playback.finished && now - playback.lastDataAt > STALL_TIMEOUT_MILLIS) {
+                // The server stopped sending chunks without an END (interrupted or disconnected).
+                playback.stream.close();
+                minecraft.getSoundManager().stop(playback.instance);
                 iterator.remove();
             } else {
                 active = true;
@@ -119,6 +129,7 @@ public final class AIFunStreamSoundManager {
         private final AIFunPcmAudioStream stream;
         private final AIFunStreamingSoundInstance instance;
         private boolean finished;
+        private volatile long lastDataAt = System.currentTimeMillis();
 
         private Playback(AIFunPcmAudioStream stream, AIFunStreamingSoundInstance instance) {
             this.stream = stream;

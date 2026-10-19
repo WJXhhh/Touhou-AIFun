@@ -46,7 +46,7 @@ class AgentCompletionRulesTest {
         assertFalse(ForegroundTaskStatus.claimsCompletion("我会把全部物品放好。"));assertFalse(ForegroundTaskStatus.claimsCompletion("任务还没有完成。"));
         assertFalse(ForegroundTaskStatus.isQuestion("今天的天气怎么样？"));
         assertFalse(ForegroundTaskStatus.isQuestion("这部电影结束了吗？"));assertFalse(ForegroundTaskStatus.isQuestion("Is my homework completed?"));
-        var running=new ForegroundTaskStatus("task",AgentTaskState.Status.running,"sort",63,"");
+        var running=new ForegroundTaskStatus("task",AgentTaskState.Status.running,"sort",63,"",List.of());
         assertFalse(running.reply(false).contains("核验完成"));assertTrue(running.reply(false).contains("尚未通过"));
     }
 }

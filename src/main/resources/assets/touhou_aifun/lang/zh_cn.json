@@ -117,6 +117,7 @@
   "gui.touhou_aifun.free_chat.status.stt_failed": "畅聊：语音识别失败",
   "gui.touhou_aifun.free_chat.status.empty": "畅聊：没有识别到内容",
   "gui.touhou_aifun.free_chat.status.busy": "畅聊：识别排队已满",
+  "gui.touhou_aifun.free_chat.status.no_response": "畅聊：服务端没有响应，请查看日志",
   "gui.touhou_aifun.free_chat.status.listening": "畅聊：聆听中",
   "gui.touhou_aifun.free_chat.status.paused": "畅聊：已暂停",
   "gui.touhou_aifun.stt_site.empty": "空",

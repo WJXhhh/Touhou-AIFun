@@ -20,14 +20,14 @@ class AgentRuntimeTest {
     }
     @Test void failureReplyStatesTheRecordedReasonExplicitly() {
         var paused = new ForegroundTaskStatus("id", AgentTaskState.Status.paused, "put five iron away",
-                5, "未通过完成验证或遇到阻塞：final_inventory_below_required_count");
+                5, "未通过完成验证或遇到阻塞：final_inventory_below_required_count", List.of());
         String zh = paused.failureReply(false);
         assertTrue(zh.contains("put five iron away") && zh.contains("暂停"), zh);
         assertTrue(zh.contains("final_inventory_below_required_count"), zh);
         String en = paused.failureReply(true);
         assertTrue(en.contains("put five iron away") && en.contains("paused"), en);
         assertTrue(en.contains("final_inventory_below_required_count"), en);
-        var failed = new ForegroundTaskStatus("id", AgentTaskState.Status.failed, "goal", 0, "");
+        var failed = new ForegroundTaskStatus("id", AgentTaskState.Status.failed, "goal", 0, "", List.of());
         assertTrue(failed.failureReply(false).contains("没有记录到具体失败原因"));
         assertTrue(failed.failureReply(true).contains("no failure reason was recorded"));
     }

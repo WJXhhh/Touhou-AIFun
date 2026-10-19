@@ -70,6 +70,21 @@ class TaskAnnouncementPrefetchTest {
     }
 
     @Test
+    void ownerConstraintChangesThePreparedTextEvenWithoutEditingTheRawGoal() {
+        UUID maid = UUID.randomUUID();
+        AgentTaskState task = new AgentTaskState("craft the soft-board brush");
+        TaskAnnouncementPrefetch.prime(maid, task, CompletableFuture::new);
+        task.amend("Actually the vanilla brush: minecraft:brush, feather and copper ingot");
+        task.applyAmendment();
+
+        assertNull(TaskAnnouncementPrefetch.take(maid, task),
+                "The wording prepared for the old goal must not be spoken after a correction");
+        CompletableFuture<String> corrected = new CompletableFuture<>();
+        TaskAnnouncementPrefetch.prime(maid, task, () -> corrected);
+        assertSame(corrected, TaskAnnouncementPrefetch.take(maid, task));
+    }
+
+    @Test
     void goalVersionChangeWithoutTextChangeIsStillStale() {
         UUID maid = UUID.randomUUID();
         AgentTaskState task = new AgentTaskState("receive two iron");

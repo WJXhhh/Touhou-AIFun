@@ -117,6 +117,7 @@
   "gui.touhou_aifun.free_chat.status.stt_failed": "Free chat: speech recognition failed",
   "gui.touhou_aifun.free_chat.status.empty": "Free chat: no content recognized",
   "gui.touhou_aifun.free_chat.status.busy": "Free chat: recognition queue is full",
+  "gui.touhou_aifun.free_chat.status.no_response": "Free chat: the server did not answer; check the log",
   "gui.touhou_aifun.free_chat.status.listening": "Free chat: listening",
   "gui.touhou_aifun.free_chat.status.paused": "Free chat: paused",
   "gui.touhou_aifun.stt_site.empty": "Empty",

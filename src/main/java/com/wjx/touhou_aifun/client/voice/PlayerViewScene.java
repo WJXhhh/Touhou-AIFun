@@ -142,21 +142,27 @@ public final class PlayerViewScene {
                 && player.distanceToSqr(crosshair) <= 16.0D * 16.0D) {
             return crosshair;
         }
+        Vec3 eye = player.getEyePosition(1.0F);
+        Vec3 view = player.getViewVector(1.0F);
         Entity best = null;
         double bestDot = LOOK_COS;
         for (Entity entity : visible) {
             double dot = dot(player, entity);
-            if (dot >= bestDot && player.hasLineOfSight(entity)
-                    && player.distanceToSqr(entity) <= 16.0D * 16.0D) {
-                bestDot = dot;
-                best = entity;
+            if (dot < bestDot || !player.hasLineOfSight(entity)
+                    || player.distanceToSqr(entity) > 16.0D * 16.0D) {
+                continue;
             }
+            if (!VisionDirectionMath.lookHitsBox(eye, view, entity.getBoundingBox(), 16.0D)) {
+                continue;
+            }
+            bestDot = dot;
+            best = entity;
         }
         return best;
     }
 
     private static String describe(Entity entity, LocalPlayer player, List<EntityMaid> candidates) {
-        StringBuilder line = new StringBuilder(140);
+        StringBuilder line = new StringBuilder(180);
         line.append(category(entity)).append(" \"")
                 .append(FreeChatDecision.sanitize(entity.getName().getString(), 32)).append("\" ")
                 .append(String.format(Locale.ROOT, "%.1f", player.distanceTo(entity))).append("m ")
@@ -167,9 +173,16 @@ public final class PlayerViewScene {
             if (index >= 0) {
                 line.append(", candidate=").append(index);
             }
-        }
-        if (entity instanceof LivingEntity) {
-            line.append(", looking_at_player=").append(lookingAtPlayer(entity, player));
+            // Unambiguous labels: "player_looking_at_her" is the owner's gaze, "maid_looking_at_player"
+            // is the maid's own facing. The old shared "looking_at_player" label was easy to misread
+            // and made the decider doubt that the owner was addressing her.
+            line.append(", player_looking_at_her=").append(playerLookingAt(player, entity));
+            line.append(", maid_looking_at_player=").append(lookingAtPlayer(entity, player));
+        } else if (entity instanceof LivingEntity) {
+            line.append(", player_looking_at=").append(playerLookingAt(player, entity));
+            line.append(", entity_looking_at_player=").append(lookingAtPlayer(entity, player));
+        } else {
+            line.append(", player_looking_at=").append(playerLookingAt(player, entity));
         }
         line.append(", in_view=").append(inView(player, entity))
                 .append(", line_of_sight=").append(player.hasLineOfSight(entity));
@@ -218,5 +231,12 @@ public final class PlayerViewScene {
             return true;
         }
         return entity.getViewVector(1.0F).normalize().dot(toPlayer.scale(1.0D / length)) > 0.45D;
+    }
+
+    /** Whether the owner's own view ray actually hits the entity's bounding box. */
+    private static boolean playerLookingAt(LocalPlayer player, Entity entity) {
+        return VisionDirectionMath.lookHitsBox(player.getEyePosition(1.0F),
+                player.getViewVector(1.0F), entity.getBoundingBox(),
+                Math.max(1.0D, player.distanceTo(entity) + 2.0D));
     }
 }

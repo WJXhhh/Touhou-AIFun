@@ -5,6 +5,7 @@ import com.github.tartaricacid.touhoulittlemaid.client.gui.entity.maid.ai.settin
 import com.github.tartaricacid.touhoulittlemaid.client.input.STTChatKey;
 import com.github.tartaricacid.touhoulittlemaid.config.subconfig.AIConfig;
 import com.github.tartaricacid.touhoulittlemaid.entity.passive.EntityMaid;
+import com.wjx.touhou_aifun.TouhouAIFun;
 import com.wjx.touhou_aifun.chat.freechat.FreeChatDecision;
 import com.wjx.touhou_aifun.client.sound.AIFunStreamSoundManager;
 import com.wjx.touhou_aifun.client.sound.QueuedTTSPlaybackManager;
@@ -35,6 +36,9 @@ public final class FreeChatController {
     private static final int MAX_IN_FLIGHT_ASR = 2;
     private static final long NOTICE_THROTTLE_MILLIS = 1500L;
     private static final long MIC_RETRY_MILLIS = 5000L;
+    private static final long NO_FEEDBACK_TIMEOUT_MILLIS = 20000L;
+    /** Brief GUI/pause transitions keep the line open instead of re-opening the audio device. */
+    private static final long CAPTURE_STOP_GRACE_MILLIS = 2000L;
     private static final int NEARBY_SCAN_TICKS = 10;
 
     private static final VadCapture CAPTURE = new VadCapture();
@@ -52,6 +56,11 @@ public final class FreeChatController {
     private static volatile long monitorStartedAt;
     private static volatile boolean nearbyMaid;
     private static volatile boolean immediateBargeInSent;
+    private static volatile boolean awaitingFeedback;
+    private static volatile long awaitingSince;
+    private static volatile long captureStopDeadline;
+    private static volatile PlayerViewScene.Capture pendingScene;
+    private static volatile long pendingSceneAt;
 
     private static VadSegmenter segmenter;
     private static int segmenterSignature;
@@ -67,12 +76,23 @@ public final class FreeChatController {
         if (minecraft == null) {
             return;
         }
+        if (awaitingFeedback
+                && System.currentTimeMillis() - awaitingSince > NO_FEEDBACK_TIMEOUT_MILLIS) {
+            awaitingFeedback = false;
+            TouhouAIFun.LOGGER.warn("Free chat: the server sent no verdict within {} ms",
+                    NO_FEEDBACK_TIMEOUT_MILLIS);
+            notice("status.no_response", true);
+        }
         if (minecraft.level == null || minecraft.player == null) {
             monitorActive = false;
+            captureStopDeadline = 0L;
+            pendingScene = null;
+            pendingSceneAt = 0L;
             CAPTURE.stop();
             captureDevice = "";
             captureMonitor = false;
             HISTORY.clear();
+            FreeChatNotifier.clear();
             return;
         }
         if (monitorActive && System.currentTimeMillis() - monitorStartedAt > 500L
@@ -80,6 +100,7 @@ public final class FreeChatController {
             stopMonitor();
         }
         if (monitorActive) {
+            captureStopDeadline = 0L;
             ensureMonitor(minecraft);
             return;
         }
@@ -90,9 +111,20 @@ public final class FreeChatController {
         }
         pushToTalkReleaseSeen = !STTChatKey.STT_CHAT_KEY.isDown();
         if (!chatConditions(minecraft)) {
-            stopCapture();
+            // Keep the microphone open across brief transitions (chat screen, ESC menu, hotbar
+            // focus): closing and re-opening a JavaSound line is expensive and can block the
+            // render thread for seconds on Windows audio drivers.
+            long now = System.currentTimeMillis();
+            if (captureStopDeadline == 0L) {
+                captureStopDeadline = now + CAPTURE_STOP_GRACE_MILLIS;
+            }
+            if (now >= captureStopDeadline) {
+                captureStopDeadline = 0L;
+                stopCapture();
+            }
             return;
         }
+        captureStopDeadline = 0L;
         ensureChatCapture(minecraft);
     }
 
@@ -102,6 +134,7 @@ public final class FreeChatController {
         monitorStartedAt = System.currentTimeMillis();
         monitorDevice = deviceName == null ? "" : deviceName;
         lastMonitorAttemptAt = 0L;
+        captureStopDeadline = 0L;
         Minecraft minecraft = Minecraft.getInstance();
         if (minecraft != null) {
             ensureMonitor(minecraft);
@@ -112,9 +145,8 @@ public final class FreeChatController {
     public static void stopMonitor() {
         monitorActive = false;
         monitorDevice = "";
-        captureDevice = "";
-        captureMonitor = false;
-        CAPTURE.stop();
+        // Keep the line open: the next client tick retunes it from meter mode back to VAD mode,
+        // which avoids a costly JavaSound device close/open cycle.
     }
 
     public static boolean monitorActive() {
@@ -152,13 +184,18 @@ public final class FreeChatController {
     private static void maybeImmediateBargeIn(Minecraft minecraft) {
         if (!CAPTURE.isSpeechActive()) {
             immediateBargeInSent = false;
-            return;
         }
-        if (!isTtsActive()) {
-            immediateBargeInSent = false;
-            return;
-        }
-        if (immediateBargeInSent || !isFreeChatEnabled()
+        tryImmediateBargeIn(minecraft);
+    }
+
+    /**
+     * Interrupts the maid as soon as the volume gate reports a speech onset. This deliberately does
+     * not wait for ASR or the decision service: whether the words turn out to be usable is judged
+     * afterwards, but the maid must stop talking the moment the player starts.
+     */
+    private static void tryImmediateBargeIn(Minecraft minecraft) {
+        if (immediateBargeInSent || !CAPTURE.isSpeechActive() || !isTtsActive()
+                || !isFreeChatEnabled()
                 || !"immediate".equals(TouhouAIFunConfig.freeChatBargeIn())) {
             return;
         }
@@ -168,21 +205,25 @@ public final class FreeChatController {
         if (minecraft.level == null || minecraft.player == null) {
             return;
         }
+        int stopped = 0;
         try {
             double range = Math.max(1.0D, Math.min(256.0D, AIConfig.MAID_CAN_CHAT_DISTANCE.get()));
             for (EntityMaid maid : minecraft.level.getEntitiesOfClass(EntityMaid.class,
                     minecraft.player.getBoundingBox().inflate(range),
                     maid -> maid.isAlive() && maid.isOwnedBy(minecraft.player))) {
                 AIFunNetwork.sendMaidSpeechStop(maid.getId());
+                stopped++;
             }
         } catch (RuntimeException ignored) {
         }
+        TouhouAIFun.LOGGER.info("Free chat barge-in: gate onset stopped maid TTS (maids={})", stopped);
     }
 
     public static void suspendForPushToTalk() {
         pushToTalkSuspended = true;
         pushToTalkReleaseSeen = false;
         immediateBargeInSent = false;
+        captureStopDeadline = 0L;
         if (!monitorActive) {
             stopCapture();
         }
@@ -194,7 +235,12 @@ public final class FreeChatController {
     }
 
     public static void onFeedback(String status, int maidId) {
-        if (status == null || status.isBlank() || !isFreeChatEnabled()) {
+        awaitingFeedback = false;
+        if (status == null || status.isBlank()) {
+            return;
+        }
+        TouhouAIFun.LOGGER.info("Free chat verdict from server: status={} maidId={}", status, maidId);
+        if (!isFreeChatEnabled()) {
             return;
         }
         if ("superseded".equals(status)) {
@@ -202,7 +248,7 @@ public final class FreeChatController {
         }
         if ("self_echo".equals(status)) {
             HISTORY.removeLast();
-            notice("status.self_echo", false);
+            notice("status.self_echo", true);
             return;
         }
         if ("accepted".equals(status)) {
@@ -215,7 +261,7 @@ public final class FreeChatController {
             notice("status.accepted", true, name);
             return;
         }
-        notice("status." + status, false);
+        notice("status." + status, true);
     }
 
     private static boolean chatConditions(Minecraft minecraft) {
@@ -285,15 +331,24 @@ public final class FreeChatController {
                 device = configured == null ? "" : configured;
             } catch (RuntimeException ignored) {
             }
-            boolean needsStart = !CAPTURE.isRunning() || captureMonitor
-                    || !Objects.equals(captureDevice, device);
-            if (!needsStart) {
+            if (!CAPTURE.isRunning() || !Objects.equals(captureDevice, device)) {
+                CAPTURE.setMonitorMode(false);
+                CAPTURE.start(device, segmenter, chatListener());
+                captureDevice = device;
+                captureMonitor = false;
+                TouhouAIFun.LOGGER.info("Free chat listening: device=\"{}\" threshold={} silenceMs={}",
+                        device, threshold, TouhouAIFunConfig.FREE_CHAT_SILENCE_MILLIS.get());
                 return;
             }
-            CAPTURE.setMonitorMode(false);
-            CAPTURE.start(device, segmenter, chatListener());
-            captureDevice = device;
-            captureMonitor = false;
+            if (captureMonitor) {
+                // Coming back from the STT meter: reuse the open line instead of re-opening it.
+                if (!CAPTURE.retune(device, segmenter, chatListener(), false)) {
+                    CAPTURE.start(device, segmenter, chatListener());
+                    TouhouAIFun.LOGGER.info("Free chat listening: device=\"{}\" threshold={} silenceMs={}",
+                            device, threshold, TouhouAIFunConfig.FREE_CHAT_SILENCE_MILLIS.get());
+                }
+                captureMonitor = false;
+            }
         } catch (RuntimeException unavailable) {
             lastMicFailureAt = System.currentTimeMillis();
         }
@@ -308,22 +363,32 @@ public final class FreeChatController {
             if (System.currentTimeMillis() - lastMonitorAttemptAt < MIC_RETRY_MILLIS) {
                 return;
             }
-            boolean needsStart = !CAPTURE.isRunning() || !captureMonitor
-                    || !Objects.equals(captureDevice, monitorDevice);
-            if (!needsStart) {
+            if (!CAPTURE.isRunning() || !Objects.equals(captureDevice, monitorDevice)) {
+                lastMonitorAttemptAt = System.currentTimeMillis();
+                CAPTURE.setMonitorMode(true);
+                CAPTURE.start(monitorDevice, null, monitorListener());
+                captureDevice = monitorDevice;
+                captureMonitor = true;
                 return;
             }
-            lastMonitorAttemptAt = System.currentTimeMillis();
-            CAPTURE.setMonitorMode(true);
-            CAPTURE.start(monitorDevice, null, monitorListener());
-            captureDevice = monitorDevice;
-            captureMonitor = true;
+            if (!captureMonitor) {
+                // Entering the STT meter from free chat: reuse the open line.
+                lastMonitorAttemptAt = System.currentTimeMillis();
+                if (!CAPTURE.retune(monitorDevice, null, monitorListener(), true)) {
+                    CAPTURE.setMonitorMode(true);
+                    CAPTURE.start(monitorDevice, null, monitorListener());
+                }
+                captureMonitor = true;
+            }
         } catch (RuntimeException unavailable) {
             lastMonitorAttemptAt = System.currentTimeMillis();
         }
     }
 
     private static void stopCapture() {
+        captureStopDeadline = 0L;
+        pendingScene = null;
+        pendingSceneAt = 0L;
         if (CAPTURE.isRunning()) {
             CAPTURE.stop();
         }
@@ -331,8 +396,36 @@ public final class FreeChatController {
         captureMonitor = false;
     }
 
+    /** The onset snapshot is preferred; the end-of-silence snapshot is only a fallback. */
+    @Nullable
+    private static PlayerViewScene.Capture takePendingScene(Minecraft minecraft) {
+        PlayerViewScene.Capture onset = pendingScene;
+        long at = pendingSceneAt;
+        pendingScene = null;
+        pendingSceneAt = 0L;
+        if (onset != null && System.currentTimeMillis() - at <= 30000L) {
+            return onset;
+        }
+        return PlayerViewScene.capture(minecraft);
+    }
+
     private static VadCapture.Listener chatListener() {
         return new VadCapture.Listener() {
+            @Override
+            public void onSpeechStart() {
+                Minecraft minecraft = Minecraft.getInstance();
+                if (minecraft == null || minecraft.player == null || minecraft.level == null) {
+                    return;
+                }
+                // Barge-in reacts to the gate onset itself, before ASR or the decision service:
+                // whether the words turn out to be useful is decided later.
+                tryImmediateBargeIn(minecraft);
+                // Snapshot the view when the owner starts speaking, not after the trailing silence:
+                // people often look at the maid while talking and look away when they stop.
+                pendingScene = PlayerViewScene.capture(minecraft);
+                pendingSceneAt = System.currentTimeMillis();
+            }
+
             @Override
             public void onSegment(byte[] wav, int speechMillis, int peak) {
                 handleSegment(wav, speechMillis, peak);
@@ -341,13 +434,14 @@ public final class FreeChatController {
             @Override
             public void onFailure(String reason) {
                 lastMicFailureAt = System.currentTimeMillis();
+                TouhouAIFun.LOGGER.warn("Free chat microphone unavailable: {}", reason);
                 if (!monitorActive) {
                     if ("mic_busy".equals(reason)) {
-                        notice("status.mic_busy", false);
+                        notice("status.mic_busy", true);
                     } else if ("mic_error".equals(reason)) {
-                        notice("status.mic_error", false);
+                        notice("status.mic_error", true);
                     } else {
-                        notice("status.mic_missing", false);
+                        notice("status.mic_missing", true);
                     }
                 }
             }
@@ -369,33 +463,41 @@ public final class FreeChatController {
 
     private static void handleSegment(byte[] wav, int speechMillis, int peak) {
         Minecraft minecraft = Minecraft.getInstance();
-        if (monitorActive || !isFreeChatEnabled() || minecraft.level == null
-                || minecraft.player == null) {
+        if (captureStopDeadline != 0L || monitorActive || !isFreeChatEnabled()
+                || minecraft.level == null || minecraft.player == null) {
             return;
         }
         if (inFlightAsr >= MAX_IN_FLIGHT_ASR) {
-            notice("status.busy", false);
+            TouhouAIFun.LOGGER.info("Free chat speech captured but {} recognitions are still in flight", inFlightAsr);
+            notice("status.busy", true);
             return;
         }
         var site = SttSiteSelection.resolveBuffered();
         if (site == null) {
-            notice("status.stt_unsupported", false);
+            TouhouAIFun.LOGGER.warn("Free chat speech captured but no buffered STT site is selected");
+            notice("status.stt_unsupported", true);
             return;
         }
-        PlayerViewScene.Capture scene = PlayerViewScene.capture(minecraft);
+        PlayerViewScene.Capture scene = takePendingScene(minecraft);
         if (scene == null) {
-            notice("status.no_maid", false);
+            TouhouAIFun.LOGGER.warn("Free chat speech captured but no owned maid is nearby");
+            notice("status.no_maid", true);
             return;
         }
+        TouhouAIFun.LOGGER.info("Free chat speech captured: speechMs={} peak={} candidates={}",
+                speechMillis, peak, scene.candidateMaidIds().size());
         BufferedSTTClient client;
         try {
             if (!(site.client() instanceof BufferedSTTClient buffered)) {
-                notice("status.stt_unsupported", false);
+                TouhouAIFun.LOGGER.warn("Free chat speech captured but the STT site cannot buffer audio");
+                notice("status.stt_unsupported", true);
                 return;
             }
             client = buffered;
         } catch (RuntimeException unavailable) {
-            notice("status.stt_failed", false);
+            TouhouAIFun.LOGGER.warn("Free chat could not build the STT client: {}",
+                    unavailable.getClass().getSimpleName());
+            notice("status.stt_failed", true);
             return;
         }
         inFlightAsr++;
@@ -405,7 +507,10 @@ public final class FreeChatController {
                 public void onFailure(@Nullable HttpRequest request, Throwable throwable, int errorCode) {
                     minecraft.execute(() -> {
                         inFlightAsr = Math.max(0, inFlightAsr - 1);
-                        notice("status.stt_failed", false);
+                        TouhouAIFun.LOGGER.warn("Free chat speech recognition failed: {} status={}",
+                                throwable == null ? "unknown" : throwable.getClass().getSimpleName(),
+                                errorCode);
+                        notice("status.stt_failed", true);
                     });
                 }
 
@@ -413,13 +518,18 @@ public final class FreeChatController {
                 public void onSuccess(String chatText) {
                     minecraft.execute(() -> {
                         inFlightAsr = Math.max(0, inFlightAsr - 1);
+                        int chars = chatText == null ? 0 : chatText.codePointCount(0, chatText.length());
+                        TouhouAIFun.LOGGER.info("Free chat speech recognized: chars={} speechMs={}",
+                                chars, speechMillis);
                         handleTranscript(chatText, speechMillis, scene);
                     });
                 }
             });
         } catch (RuntimeException unavailable) {
             inFlightAsr = Math.max(0, inFlightAsr - 1);
-            notice("status.stt_failed", false);
+            TouhouAIFun.LOGGER.warn("Free chat could not start the STT request: {}",
+                    unavailable.getClass().getSimpleName());
+            notice("status.stt_failed", true);
         }
     }
 
@@ -430,7 +540,8 @@ public final class FreeChatController {
         }
         String transcript = FreeChatDecision.sanitize(chatText, 2000);
         if (transcript.isBlank()) {
-            notice("status.empty", false);
+            TouhouAIFun.LOGGER.info("Free chat speech recognized but the text was blank");
+            notice("status.empty", true);
             return;
         }
         List<String> recent = HISTORY.recent();
@@ -446,10 +557,20 @@ public final class FreeChatController {
                     sequence++, scene.candidateMaidIds(), transcript, scene.summary(), recent,
                     language, Math.max(0, speechMillis)));
         } catch (RuntimeException unavailable) {
+            TouhouAIFun.LOGGER.warn("Free chat could not send the utterance packet: {}",
+                    unavailable.getClass().getSimpleName());
+            notice("status.stt_failed", true);
             return;
         }
+        awaitingFeedback = true;
+        awaitingSince = System.currentTimeMillis();
+        TouhouAIFun.LOGGER.info("Free chat utterance sent: sequence={} candidates={} transcriptChars={} "
+                        + "sceneChars={} recent={} language={} speechMs={}",
+                sequence - 1, scene.candidateMaidIds().size(), transcript.codePointCount(0, transcript.length()),
+                scene.summary().codePointCount(0, scene.summary().length()), recent.size(), language,
+                Math.max(0, speechMillis));
         String preview = FreeChatDecision.sanitize(transcript, 48);
-        notice("heard", false, preview);
+        notice("heard", true, preview);
     }
 
     private static void notice(String key, boolean force, Object... args) {
@@ -462,7 +583,7 @@ public final class FreeChatController {
             return;
         }
         lastNoticeAt = now;
-        minecraft.player.displayClientMessage(
-                Component.translatable("gui.touhou_aifun.free_chat." + key, args), true);
+        FreeChatNotifier.show(
+                Component.translatable("gui.touhou_aifun.free_chat." + key, args));
     }
 }

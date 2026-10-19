@@ -10,6 +10,7 @@ import com.mojang.serialization.JsonOps;
 import com.wjx.touhou_aifun.config.LLMRuntimeBudget;
 import com.wjx.touhou_aifun.chat.context.AIFunMemoryManager;
 import com.wjx.touhou_aifun.compat.ai.openai.ToolContextSelector;
+import com.wjx.touhou_aifun.chat.agent.decision.ExplicitItemCatalog;
 import com.wjx.touhou_aifun.chat.agent.decision.TaskDecisionRouter;
 import java.net.http.HttpRequest;
 import java.util.*;
@@ -40,6 +41,8 @@ public final class TaskCallback extends LLMCallback {
     private Set<String> batchAllowedTools;
     private volatile TaskToolSelection.Context toolSelection = new TaskToolSelection.Context(false, false, false, false, false, Set.of());
     private String lastResultRef;
+    private int goalItemHintVersion = -1;
+    private JsonArray goalItemHint = new JsonArray();
     private final long generation;
     private final boolean buffered;
     private String bufferedResult;
@@ -60,6 +63,9 @@ public final class TaskCallback extends LLMCallback {
     private final AgentProgressGuard progress = new AgentProgressGuard();
     private final List<String> batchResults = new ArrayList<>();
     private int noProgress;
+    /** Whether the latest model response carried the required status narration. */
+    private boolean lastResponseNarrated = true;
+    private int narrationMisses;
     public TaskCallback(MaidAIChatManager manager, List<LLMMessage> messages, AgentTaskState task) {
         this(manager, messages, task, null);
     }
@@ -71,6 +77,7 @@ public final class TaskCallback extends LLMCallback {
         int policyIndex = 0;
         while (policyIndex < this.messages.size() && this.messages.get(policyIndex).role() == Role.SYSTEM) policyIndex++;
         this.messages.add(policyIndex, LLMMessage.systemChat(maid, AgentTaskInstructions.POLICY));
+        this.messages.add(policyIndex+1, LLMMessage.systemChat(maid, AgentTaskInstructions.NARRATION_POLICY));
         this.task = task; generation = task.generation; operations = new AgentOperations(); buffered = false;
         AgentExecution.bind(this,0,task.id,generation,AgentExecution.Purpose.TASK_EXECUTION);
         executionTiming=AgentTelemetry.root(this,"task_execution");AgentTelemetry.bindTask(this,executionTiming);
@@ -83,8 +90,8 @@ public final class TaskCallback extends LLMCallback {
         // facts instead of replaying an old one-shot template in a new callback generation.
         task.clearActionPlan();
         decisionRouter=new TaskDecisionRouter(this);
-        if(decisionRouter.enabled()) this.messages.add(policyIndex+1,LLMMessage.systemChat(maid,AgentTaskInstructions.DECISION_HINT));
-        if(decisionRouter.enabled() && task.loadedTools.contains("group:task_actions")) this.messages.add(policyIndex+2,LLMMessage.systemChat(maid,AgentTaskInstructions.DECISION_POLICY));
+        if(decisionRouter.enabled()) this.messages.add(policyIndex+2,LLMMessage.systemChat(maid,AgentTaskInstructions.DECISION_HINT));
+        if(decisionRouter.enabled() && task.loadedTools.contains("group:task_actions")) this.messages.add(policyIndex+3,LLMMessage.systemChat(maid,AgentTaskInstructions.DECISION_POLICY));
         task.loadedTools.add("scan_surroundings");
         startedTick = maid.level().getGameTime();
         com.wjx.touhou_aifun.vision.scan.VisionScanCache.invalidate(maid);
@@ -141,6 +148,31 @@ public final class TaskCallback extends LLMCallback {
         if(!ids.isEmpty() && ToolContextSelector.snapshot(maid,this).restrictionSavesSchema(ids))restrictTools(ids);
         else synchronized(this) { allowedTools=null; }
     }
+    /**
+     * Bounded registry hints for item names literally present in the goal and owner amendments.
+     * They are candidates, not proof of a recipe or stock; the model still calls query_recipes.
+     */
+    private JsonArray goalItemHints() {
+        if (goalItemHintVersion == task.goalVersion) {
+            return goalItemHint;
+        }
+        goalItemHintVersion = task.goalVersion;
+        StringBuilder text = new StringBuilder(task.goal == null ? "" : task.goal);
+        if (!task.constraints.isEmpty()) {
+            text.append('\n').append(String.join("\n", task.constraints));
+        }
+        JsonArray rows = new JsonArray();
+        for (ExplicitItemCatalog.NamedItem item : ExplicitItemCatalog.namedItems(text.toString(), 12)) {
+            JsonObject row = new JsonObject();
+            row.addProperty("item_id", item.id());
+            row.addProperty("display_name", item.displayName());
+            row.addProperty("max_stack", item.maxStack());
+            rows.add(row);
+        }
+        goalItemHint = rows;
+        return rows;
+    }
+
     public void next(LLMClient client) {
         if (stopped()) return;
         if (initialRequest) {
@@ -182,12 +214,20 @@ public final class TaskCallback extends LLMCallback {
             }
         }
         JsonObject checkpoint = new JsonObject();
-        checkpoint.addProperty("goal",task.goal); checkpoint.addProperty("goal_version",task.goalVersion);
+        checkpoint.addProperty("goal",task.effectiveGoal()); checkpoint.addProperty("goal_version",task.goalVersion);
+        JsonArray goalItems = goalItemHints();
+        if (goalItems.size() > 0) {
+            checkpoint.add("goal_item_candidates", goalItems.deepCopy());
+        }
         checkpoint.addProperty("phase",task.phase); checkpoint.addProperty("verified_count",task.verifiedCount);
         checkpoint.add("steps",new Gson().toJsonTree(task.steps)); checkpoint.addProperty("current_step",task.currentStep);
         checkpoint.add("recent_failures",new Gson().toJsonTree(task.failures.subList(Math.max(0,task.failures.size()-4),task.failures.size())));
         checkpoint.addProperty("execution_trace_ref", "task_trace");
         checkpoint.addProperty("fresh_world_observed",freshWorld);
+        if (!lastResponseNarrated) {
+            checkpoint.addProperty("intermediate_narration_required", AgentTaskInstructions.NARRATION_REMINDER);
+            checkpoint.addProperty("narration_misses", narrationMisses);
+        }
         var knownLandmarks = AIFunMemoryManager.landmarkJson(maid, 8);
         if (!knownLandmarks.isEmpty()) {
             checkpoint.add("known_landmarks", knownLandmarks);
@@ -286,6 +326,14 @@ public final class TaskCallback extends LLMCallback {
             batchAllowedTools=!modelResponse || allowedTools()==null?null:ToolContextSelector.selected(maid,this).stream()
                     .map(com.wjx.touhou_aifun.compat.ai.openai.ToolCatalogSnapshot.Entry::id).collect(java.util.stream.Collectors.toUnmodifiableSet());
             messages.add(LLMMessage.assistantChat(maid, message.getContent(), calls));
+            boolean narrated = recordNarration(message.getContent());
+            if (modelResponse) {
+                lastResponseNarrated = narrated;
+                if (!narrated) {
+                    narrationMisses++;
+                    if (archive.hasCapacity()) trace("narration_missing", null, null, null, null, "Tool batch dispatched without the required status narration.");
+                }
+            }
             if (archive.records.size() + calls.size() * 18 + 2 > 8192) {
                 AgentRuntime.finished(this, "task_execution_record_limit", false); return;
             }
@@ -673,6 +721,24 @@ public final class TaskCallback extends LLMCallback {
         if (archive.canRecord()) archive.append(maid.level().getGameTime(), generation, kind, callId, tool, argsRef, resultRef, summary);
         archiveData.setDirty();
     }
+    /**
+     * Preserves the executor's own assistant text so the owner (through the foreground model) can
+     * inspect what it actually said. Narration is never displayed, spoken or replayed as chat, and a
+     * failure here must never affect the task. The bounded recent window is kept for paging; older
+     * lines remain as result-ref records in the execution archive.
+     */
+    private boolean recordNarration(String text) {
+        if (text == null || text.isBlank()) return false;
+        try {
+            archive.appendNarration(text);
+            if (archive.hasCapacity()) {
+                String reference = results.put(text);
+                trace("assistant_text", null, null, null, reference, AgentTaskState.bounded(text, 200));
+            }
+            archiveData.setDirty();
+        } catch (RuntimeException ignored) { }
+        return true;
+    }
     public String readTrace(int offset) { return TaskResultStore.page(new Gson().toJson(archive.records), offset); }
     public void archiveState() {
         archive.terminal = task.terminal(); archive.updatedTick = maid.level().getGameTime();
@@ -686,6 +752,7 @@ public final class TaskCallback extends LLMCallback {
     @Override public void onSuccess(ResponseChat response) {
         runOnServerThread(() -> {
             if (!stopped()) {
+                lastResponseNarrated = recordNarration(response.getChatText());
                 if (!task.pendingAmendment.isBlank() && lastClient != null) { next(lastClient); return; }
                 var verification=executionTiming.child("completion_verification");
                 boolean verified = decisionRouter.permitsCompletion() && AgentCompletion.verify(maid,task,freshWorld);

@@ -19,6 +19,18 @@ class TaskAnnouncementPhrasingTest {
         assertTrue(prompt[1].contains("waiting_tasks"), prompt[1]);
     }
 
+    @Test void correctionGuidanceAndTheAmendedFactAreKept() {
+        String goal = "Latest owner correction (supersedes conflicting earlier wording): "
+                + "the vanilla brush minecraft:brush, not the soft-board brush\nOriginal task: craft a brush "
+                + "x".repeat(400);
+        String[] prompt = TaskAnnouncementPhrasing.buildPrompt(true, goal, 0,
+                "zh_cn", "zh_cn", "", "");
+        assertTrue(prompt[0].contains("owner correction"), prompt[0]);
+        assertTrue(prompt[0].contains("never repeat a superseded name"), prompt[0]);
+        assertTrue(prompt[1].contains("minecraft:brush"), prompt[1]);
+        assertTrue(prompt[1].length() < 2000, "The bounded task context must stay compact");
+    }
+
     @Test void differentChatAndTtsLanguagesAskForJsonTranslation() {
         String[] prompt = TaskAnnouncementPhrasing.buildPrompt(true, "sort chests", 0,
                 "zh_cn", "en_us", "", "");
