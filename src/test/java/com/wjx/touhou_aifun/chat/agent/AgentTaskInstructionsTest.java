@@ -28,4 +28,12 @@ class AgentTaskInstructionsTest {
         assertTrue(foreground.contains("result_ref=\"task_narration\""), foreground);
         assertTrue(foreground.contains("intermediate narration"), foreground);
     }
+
+    @Test void foregroundPromptSeparatesGuidanceFromARequirementChange() {
+        String foreground = AgentPrompts.FOREGROUND;
+        assertTrue(foreground.contains("task_control(action=guide)"), foreground);
+        assertTrue(foreground.contains("never use guide to bypass a needed amendment"), foreground);
+        assertTrue(AgentTaskInstructions.POLICY.contains("Owner guidance messages are advisory context, not requirements"),
+                AgentTaskInstructions.POLICY);
+    }
 }

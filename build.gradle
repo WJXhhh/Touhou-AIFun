@@ -107,6 +107,16 @@ dependencies {
     compileOnly fg.deobf("maven.modrinth:oculus:${oculus_version}")
     // Optional ProjectE integration; never bundled or required for ordinary installations.
     compileOnly fg.deobf('curse.maven:projecte-226410:4901949')
+    // SlashBlade remains optional. Compile against the user's CR1.13 baseline.
+    def bladeArtifacts = [cr113: 'slashblade-resharped-sword-strange-tales-1467861:8582017',
+                          cr115: 'slashblade-resharped-sword-strange-tales-1467861:8805540',
+                          upstream: 'slashblade-resharped-1022428:8090912']
+    def bladeVersion = project.hasProperty('slashbladeQa') ? (project.findProperty('slashbladeVersion') ?: 'cr113') : 'cr113'
+    if (!bladeArtifacts.containsKey(bladeVersion)) throw new GradleException('Unknown slashbladeVersion')
+    compileOnly fg.deobf("curse.maven:${bladeArtifacts[bladeVersion]}")
+    if (project.hasProperty('slashbladeQa')) {
+        runtimeOnly fg.deobf("curse.maven:${bladeArtifacts[bladeVersion]}")
+    }
     if (project.hasProperty('projecteQa')) runtimeOnly fg.deobf('curse.maven:projecte-226410:4901949')
     if (project.hasProperty('machineQa')) {
         runtimeOnly fg.deobf('maven.modrinth:iron-furnaces:KHAcRQwi')
@@ -184,6 +194,10 @@ tasks.withType(JavaCompile).configureEach {
 // The compatibility fixture is opt-in and never included in the release jar.
 if (project.hasProperty('guiQa')) {
     def guiQa = sourceSets.create('guiQa')
+    if (project.hasProperty('slashbladeQa')) {
+        guiQa.java.srcDir('src/slashbladeQa/java')
+        guiQa.java.destinationDirectory.set(layout.buildDirectory.dir("classes/java/slashbladeQa-${project.findProperty('slashbladeVersion') ?: 'cr113'}"))
+    }
     if (project.hasProperty('machineQa')) guiQa.java.srcDir('src/machineQa/java')
     if (project.hasProperty('projecteQa')) {
         guiQa.java.srcDir('src/projecteQa/java')
@@ -213,7 +227,7 @@ if (project.hasProperty('guiQa')) {
             workingDirectory project.file(chestQaDirectory)
         }
         property 'forge.enabledGameTestNamespaces', (project.hasProperty('fourChestQa') || project.hasProperty('fourChestLiveQa') || project.hasProperty('foregroundLiveQa'))
-                ? 'aifun_gui_test,aifun_four_chest_test,aifun_observation_regression_test,aifun_native_decision_test' : 'aifun_gui_test,aifun_observation_regression_test,aifun_native_decision_test'
+                ? 'aifun_gui_test,aifun_four_chest_test,aifun_observation_regression_test,aifun_native_decision_test,aifun_build_test' : 'aifun_gui_test,aifun_observation_regression_test,aifun_native_decision_test,aifun_build_test'
         if (project.hasProperty('nativeDecisionQa')) {
             workingDirectory project.file(chestQaDirectory)
             property 'forge.enabledGameTestNamespaces', 'aifun_native_decision_test'
@@ -223,11 +237,19 @@ if (project.hasProperty('guiQa')) {
             workingDirectory project.file(chestQaDirectory)
             property 'forge.enabledGameTestNamespaces', 'aifun_combat_test'
         }
+        if (project.hasProperty('slashbladeQa')) {
+            workingDirectory project.file("build/slashblade-qa-${project.findProperty('slashbladeVersion') ?: 'cr113'}")
+            property 'forge.enabledGameTestNamespaces', 'aifun_slashblade_test'
+        }
         if (project.hasProperty('observationRegressionQa')) {
             workingDirectory project.file(chestQaDirectory)
             property 'forge.enabledGameTestNamespaces', 'aifun_observation_regression_test'
         }
         if (project.hasProperty('projecteQa')) property 'forge.enabledGameTestNamespaces', 'aifun_projecte_test'
+        if (project.hasProperty('buildQa')) {
+            workingDirectory project.file(chestQaDirectory)
+            property 'forge.enabledGameTestNamespaces', 'aifun_build_test'
+        }
         if (project.hasProperty('agentLiveQa')) property 'aifun.agentQa.sites', file('run/config/touhou_little_maid/sites/llm.json').absolutePath
         if (project.hasProperty('craftingLiveQa')) property 'aifun.craftingQa.sites', file('run/config/touhou_little_maid/sites/llm.json').absolutePath
         if (project.hasProperty('projecteLiveQa')) property 'aifun.projecteQa.sites', file('run/config/touhou_little_maid/sites/llm.json').absolutePath
@@ -274,6 +296,11 @@ if (project.hasProperty('guiQa')) {
         if (project.hasProperty('foregroundAmendLiveQa')) property 'aifun.foregroundQa.amend', 'true'
     }
     tasks.named('processGuiQaResources').configure {
+        if (project.hasProperty('slashbladeQa')) {
+            from('src/guiQa/resources/data/aifun_gui_test/structures/empty.nbt') {
+                into 'data/aifun_slashblade_test/structures'
+            }
+        }
         from('src/guiQa/resources/data/aifun_gui_test/structures/empty.nbt') {
             into 'data/aifun_native_decision_test/structures'
         }
@@ -293,8 +320,12 @@ if (project.hasProperty('guiQa')) {
             include 'four_chests.nbt', 'empty.nbt'
             into 'data/aifun_observation_regression_test/structures'
         }
+        from('src/guiQa/resources/data/aifun_gui_test/structures') {
+            include 'four_chests.nbt', 'empty.nbt'
+            into 'data/aifun_build_test/structures'
+        }
     }
-    if (project.hasProperty('fourChestQa') || project.hasProperty('fourChestLiveQa') || project.hasProperty('foregroundLiveQa') || project.hasProperty('allowedToolsLiveQa') || project.hasProperty('observationLiveQa') || project.hasProperty('observationRegressionQa') || project.hasProperty('nativeDecisionQa') || project.hasProperty('combatQa') || project.hasProperty('stageDecisionLiveQa')) {
+    if (project.hasProperty('fourChestQa') || project.hasProperty('fourChestLiveQa') || project.hasProperty('foregroundLiveQa') || project.hasProperty('allowedToolsLiveQa') || project.hasProperty('observationLiveQa') || project.hasProperty('observationRegressionQa') || project.hasProperty('nativeDecisionQa') || project.hasProperty('combatQa') || project.hasProperty('stageDecisionLiveQa') || project.hasProperty('buildQa')) {
         tasks.matching { it.name == 'runGameTestServer' }.configureEach {
             doFirst {
                 def fixtureDirectory = file(chestQaDirectory)
@@ -347,6 +378,21 @@ level-name=world
         tasks.matching { it.name == 'runClient' }.configureEach {
             doFirst { file('build/gui-qa-client/gui-qa-client-result.txt').delete() }
             finalizedBy 'verifyGuiQaClient'
+        }
+    }
+    if (project.hasProperty('slashbladeQa')) {
+        def bladeQaStarted = 0L
+        tasks.matching { it.name == 'runGameTestServer' }.configureEach {
+            doFirst { bladeQaStarted = System.currentTimeMillis() }
+            doLast {
+                // Forge can return exit code 0 on an early mod-loading failure. Require actual tests.
+                def log = new File(minecraft.runs.gameTestServer.workingDirectory, 'logs/latest.log')
+                def results = log.exists() ? (log.getText('UTF-8') =~ /All (\d+) required tests passed/) : null
+                if (!log.exists() || log.lastModified() < bladeQaStarted || results == null || !results.find()
+                        || Integer.parseInt(results.group(1)) < 7) {
+                    throw new GradleException('SlashBlade server did not complete the required integration tests; inspect its latest.log')
+                }
+            }
         }
     }
 }

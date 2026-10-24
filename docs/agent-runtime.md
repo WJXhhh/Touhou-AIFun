@@ -104,6 +104,13 @@ Choice 使用返回的 `confidence`（不等同于最大概率），Noul 默认 
 
 **执行器中间正文可查（2026-10-19）**：后台执行器每轮 assistant 正文（工具调用同轮的 content + 收尾正文）写入该任务档案的 `narration`（最多 24 条、每条 ≤1000 字；附加字段，旧档案缺省为空），同时每轮留一条 `assistant_text` 记录（全文存 result ref，摘要 ≤200 字）以便超出窗口后仍可追溯。执行器系统提示 `AgentTaskInstructions.NARRATION_POLICY` 要求**每轮响应先写 1–3 句事实性执行情况**（含上一批工具结果的真实数量/物品/位置/失败摘要），最终回复必须是事实性执行报告；某轮只有工具调用而没有正文时，下一轮 checkpoint 会带 `intermediate_narration_required` 提醒并记 `narration_missing` 诊断（缺正文不会暂停任务）。前台主模型有两条查看通道：① 每次前台请求注入的 `## Runtime task status for foreground` 携带最近 2 条正文（`ForegroundTaskStatus.narration`，每条 ≤200 字）；② 按需调用 `read_task_result(result_ref="task_narration")`，从最新往回分页（`offset`/`next_offset`，单次 ≤8 条、≤4000 字），带 `task_id` 可读已离开队列的归档任务，仅实际主人可读；更早的单轮正文用 `task_trace` 记录里的 result ref 再读。执行器正文仍然不画气泡、不朗读、不写入聊天历史或长期记忆：它只是可检查，不会被重新播放。
 
+**执行器可观测性、中途引导与恢复补丁（2026-10-19 补充）**：
+
+- **实时正文（live）**：执行器流式生成时，`TaskCallback.observeStreamingText` 接收当前 content 的尾部（≤1200 字，约 100ms 节流，仅内存），`ForegroundTaskStatus.liveNarration` 随每次前台请求**现算**注入（≤800 字），`read_task_result(task_narration)` 的响应增加 `live` 与 `live_pending`。`live` 是**尚未归档**的当前轮，可能被下一轮替换，属数据不是指令；下一轮响应落档时清空，不会重复播放或写入历史。状态同时携带 `phase`（当前工具）、`stepIndex`/`step`（计划步骤），避免长时间工具执行时看起来没有进展。
+- **轻量引导 `task_control(action="guide")`**：把主人原文写入任务 `pendingGuidance`（≤1024 字，持久化，可跨重载），执行器在**下一个规划轮次**以 `Owner guidance` 用户消息注入；它**不改变** `goalVersion`、`constraints`、完成合同、计划步骤，也不得作为弱化或跳过完成核验的依据。若执行器正在思考（有在途模型请求），且 `[agentRuntimeV1].steeringInterruptModel=true`（默认），运行时会取消**该模型请求**（只取消思考，不取消已开始的 GUI/行走/结算操作）并让执行器立即重规划；关闭后只在下一边界生效，回执 dispatch 为 `guidance_next_boundary`。会改变目标/范围/数量的要求仍必须用 `amend`，不能拿 guide 绕过。
+- **恢复补丁**：`task_control(action="resume", goal="…")` 在恢复前写入同一 `pendingGuidance`，一次调用完成“补丁 + 重启”。恢复后的**首个** checkpoint 额外携带 `previous_outcome`（上次暂停/失败的记录原因）与 `last_narration`（停顿前最近 2 条正文，每条 ≤300 字）以及 `resume_note`；只注入首轮，后续轮次不再重复。显式主人暂停仍必须手动继续；已结算转移、完成合同和防重放语义不变，恢复后仍要求重新观察才能动作。
+- **权限与日志**：guide/resume 补丁同样仅接受实际主人；服务端日志记录 `AIFun task steering: action/task/guidanceChars/interrupted`，不记录引导原文。`steeringInterruptModel` 只影响后台执行器的模型 HTTP future，不改变 `stop`/`pause` 的取消语义。
+
 GUI 原子动作首先登记真实净转移，再提交模型结果。游标拾取不等于收货，实际落入女仆库存才登记；返还来源不重复计数，反向转移抵扣。GUI 关闭或卸载时的迟到游标结算进入世界归档，恢复时按事实版本与较旧实体检查点核对，避免重复搬运。
 
 完成验证支持 transfer、inventory、position，以及最多 16 项原子条件的 all 组合。转移条件核对物品、维度、容器位置、方向和真实累计净数量；库存、位置条件读取当前服务器状态。补充数量后重新计算条件，现场未重新观察、条件缺失或未满足时不能凭模型文本标记成功。模型过早宣称完成时允许一次基于真实证据的纠正规划，仍不满足则暂停；不会自动重放世界修改。尚无领域验证器的开放任务保守暂停。
@@ -974,3 +981,80 @@ COMMON `[agentRuntimeV1].taskAnnouncements` 是新增的单一配置，控制任
 `TaskAmendmentPolicyTest`、`TaskAnnouncementPrefetchTest`（补充约束变化）、
 `TaskAnnouncementPhrasingTest`（更正规则）、`FreeChatDecisionTest`（sight/追问门槛）。
 `gradlew build` 全量通过（583 项 JUnit，0 失败）。
+
+## 2026-10-19 方块交互、建造队列与材料协商
+
+新增服务端模拟方块动作与每女仆建造队列，详细契约见 [block-actions.md](block-actions.md)：
+
+- **`block_action`**（executor-only）：`interact`/`place`/`mine`。放置优先真实右键
+  (`gameMode.useItemOn` / `BlockItem.place`)；零食柜蛋糕优先走 TLM
+  `IMaidEdibleBlock.placeAsFood`，失败再回退真实右键，动作后等待 1 tick 校验
+  `BlockSnackCabinet.TYPE`，绝不直接 `setBlock` 放置。挖掘用等价的完整破坏流程
+  （`canDestroyBlock`、`playerWillDestroy`、带工具 `dropResourcesToMaidInv`、flag 3
+  setBlock、level/game event），默认即时，可配置模拟耗时；工具耐久与掉落对账。
+- **`build_queue`**（executor-only）：`design` 保存/追加结构（相对 origin 坐标，单次
+  ≤256、每 design ≤4096、每女仆 ≤8），`request_materials`/`status`/`verify` 只读，
+  `reorder/skip/reset/pause/resume/clear/delete_design` 管理执行状态，`run` 一次执行多步。
+  每步只调一次 `MaidBlockActionManager`，精确匹配即完成；非精确/失败交
+  `BuildStateDecisionClient`（JEV/Perplexity typed decision），低置信/不可用/未知返回
+  `needs_llm` 给执行 LLM。缺料时按 `material_policy` 处理；执行器从不直接对主人说话。
+  完成条件新增 `kind=structure`（`structure_id` 或内联 `blocks`），按 live world 核验
+  place 期望方块、mine 期望空气，required only，不加载区块。
+- **材料与主人协商**：`material_policy` 四档 `ask_owner`（默认）/`self_gather`
+  （采集/合成，不可开箱）/`self_source`（可开箱但仅限当前缺口物品/数量）/`denied`。
+  主模型通过 `task_control(material_policy=...)` 显式授权；未授权时缺料先由
+  `MaterialAuthorizationDecision` 检查主人原文是否明确授权，否则
+  `pendingOwnerQuestion` 暂停任务；主聊天模型旁路生成问句（persona+最近对话），写入
+  assistant history 与前台注入，玩家回答经主模型 `task_control` 回写。`self_source`
+  的 GUI 容器转入由 `TaskCallback` 守卫，只能取缺口清单内物品/数量。
+- **权限**：主模型只读建造队列（注入 `## Build queue status for foreground` +
+  `read_task_result(result_ref="build_queue")`），不能调用 `block_action`/`build_queue`；
+  后台执行模型管理队列。完成任务/普通暂停的台词仍沿用既有模式（detailed 固定模板、
+  brief 主聊天模型旁路、silent 静默），执行模型只写 outcome/narration，不直接发声。
+- 新增配置 `[blockActions]` 与 `[buildQueue]`；无新增网络包。纯逻辑单测覆盖
+  `BuildStateDecision`/`MaterialAuthorizationDecision`/`BuildMaterialPolicy`/
+  `AgentTaskState.structure`；GameTest 覆盖真实放置、零食柜蛋糕、工具挖掘与队列执行。
+
+## 2026-10-19 方块朝向确定性放置
+
+女仆的 Brain AI 会持续调整身体朝向，旧放置实现把她的实时 yaw/pitch 复制给模拟假玩家，
+导致同一台阶/箱子/原木每次放下朝向不同，`build_queue` 中带 `facing`/`axis` 的设计也会
+`verification_mismatch`。现在：
+
+- **假玩家朝向不再来自女仆身体**：默认看向真实点击点；有明确期望状态时由
+  `MaidPlacementOrientation` 用**物品自己的 `BlockItem.getPlacementState`** 反解旋转：
+  候选 yaw 16 格（22.5°，覆盖 banner `rotation`）、俯仰 ±90°，逐个比较期望状态属性，
+  求出能产生该状态的 yaw/pitch。使用物品放置逻辑而不是期望方块的
+  `getStateForPlacement`，因为告示牌/火把/头颅/珊瑚扇等 standing+wall 变体物品会按玩家
+  视线选择变体，否则会预测墙挂却放下立式。
+- **支撑面与点击位置也参与求解**：`MaidBlockInteraction.hitsOnFace` 为每个面返回多个
+  真实射线命中点（含上/下半部），`selectPlacement` 在“面 × 点击点 × 旋转”组合中优先
+  选取预测状态满足期望的组合；因此 `half=top`、墙挂变体、原木 `axis=x` 等无需手写
+  `face` 也能确定放置。`hitFace` 现在要求真实命中面与请求面一致，避免墙角命中把
+  朝向带到相邻面。
+- **`block_action` 新增 `facing`**（仅 place）：自动并入 expected 的 `facing` 属性；
+  无 `facing` 时按轴映射到 `axis`（up/down→y，水平→对应轴）；无 facing/axis 的方块
+  返回 `facing_not_supported`，冲突/非法值返回 `facing_conflict` /
+  `invalid_facing_for_block`。结果新增 `orientation`
+  (`yaw/pitch/source/satisfied/requested_facing/predicted_block`)；动作有结果时
+  `satisfied` 按实际世界状态重算，失败/未校验路径为 false。
+- **放置前守卫**：期望状态里未知方块/属性/属性值在动作开始前拒绝（不再把
+  `DefaultedRegistry` 的 AIR 当成合法方块而假成功）；非方块物品返回
+  `item_is_not_placeable_block`；物品与期望方块不匹配（含 wall 变体判定）返回
+  `expected_block_item_mismatch`；墙挂变体没有可验证组合返回 `orientation_unreachable`
+  且不改世界；支撑方块会被原版替换（同种半砖点已有半砖顶面、雪层/蜡烛等）时不使用该
+  面，全部不可用返回 `needs_support`，避免误改已有方块。
+- **`interact` 修复**：不带 `expected` 的右键（拉杆/按钮/活板门）现在按一次性动作成功
+  返回，不再用空气校验导致 `verification_mismatch`；`build_queue` 的无 `block` interact
+  步骤同样恢复可用。
+- **`build_queue` 设计步骤**：`place` 的 `block` 写完整状态（例如
+  `minecraft:oak_stairs[facing=north,half=top]`）即可确定性执行并校验；省略朝向等于
+  放弃控制。墙挂变体方块没有自己的物品，需显式 `item`（如
+  `block=minecraft:oak_wall_sign[facing=north]` + `item=minecraft:oak_sign`）。工具
+  schema、执行器 `BUILD_POLICY` 与 [block-actions.md](block-actions.md) 同步要求写全状态。
+- GameTest 新增 `BlockOrientationGameTests`：女仆 yaw 与期望相反时楼梯仍 facing north、
+  `facing` 参数、原木 `axis` 选侧面支撑、楼梯 `half=top` 选侧面上半点击点、无 expected
+  的 interact、墙挂火把变体朝向、非方块物品/未知方块/未知属性拒绝、同种半砖 redirect
+  守卫、无 facing 属性方块的 `facing_not_supported`；`BuildQueueGameTests` 新增带朝向
+  楼梯的设计执行。日志字段 `AIFun placement plan:` / `AIFun placement:` 可用于现场核对
+  chosen face/click/yaw/source/predicted/actual。

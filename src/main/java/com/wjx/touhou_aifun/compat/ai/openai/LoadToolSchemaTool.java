@@ -45,7 +45,7 @@ public final class LoadToolSchemaTool implements ITool<String> {
         StringParameter value = StringParameter.create();
         // The immutable per-turn directory is authoritative. Avoid rebuilding every third-party
         // trigger/schema here merely to duplicate a potentially huge enum in the meta-tool schema.
-        value.setDescription("Exact missing extension tool id, group:gui for GUI tools, or group:task_actions for optional executor action-plan syntax.");
+        value.setDescription("Exact missing extension tool id, group:gui for GUI tools, group:build for block/build tools, or group:task_actions for optional executor action-plan syntax.");
         root.addProperties("tool_name", value);
         return root;
     }
@@ -85,6 +85,15 @@ public final class LoadToolSchemaTool implements ITool<String> {
             for (String id : com.wjx.touhou_aifun.compat.ai.action.GuiTool.IDS)
                 if (ToolContextSelector.optionalAvailable(callback.getMaid(), callback, id)) ChatFlowManager.requestToolSchema(callback.getMaid().getUUID(), callback, id);
             return callback.addToolResult("GUI schemas loaded. Invoke directly; do not load again in this task.", toolId);
+        }
+        if ("group:build".equals(result)) {
+            if (callback instanceof com.wjx.touhou_aifun.chat.agent.TaskCallback task) {
+                task.task.loadedTools.add("block_action");
+                task.task.loadedTools.add("build_queue");
+                task.task.loadedTools.add("request_owner_input");
+                return callback.addToolResult("Build schemas loaded: block_action, build_queue, request_owner_input. Design and register a structure completion before build_queue(run); never speak to the owner yourself.", toolId);
+            }
+            return callback.addToolResult("foreground_action_boundary: build tools belong to the background executor.", toolId);
         }
         if (callback instanceof com.wjx.touhou_aifun.chat.agent.TaskCallback task) {
             if (ToolContextSelector.selected(callback.getMaid(), callback).stream().anyMatch(entry -> entry.id().equals(result)))

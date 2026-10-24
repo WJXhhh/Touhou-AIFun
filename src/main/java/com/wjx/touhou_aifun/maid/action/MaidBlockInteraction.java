@@ -13,31 +13,67 @@ import net.minecraft.world.phys.HitResult;
 import net.minecraft.world.phys.Vec3;
 import net.minecraft.world.phys.shapes.CollisionContext;
 
+import javax.annotation.Nullable;
+import java.util.ArrayList;
+import java.util.List;
+
 /** Shared server-side reach/visibility rule for planning and performing block actions. */
 public final class MaidBlockInteraction {
     private static final double EPSILON = 1.0e-5;
     private static final double[] FACE_SAMPLES = {0.5, 0.15, 0.85};
+    /** Vertical click positions first, so half/top state candidates are not cut off by limits. */
+    private static final double[] VERTICAL_SAMPLES = {0.5, 0.85, 0.15};
 
     private MaidBlockInteraction() { }
 
     public static BlockHitResult hit(EntityMaid maid, BlockPos target) {
-        return hitFromEyes(maid, target, maid.getEyePosition());
+        List<BlockHitResult> hits = hitsFromEyes(maid, target, maid.getEyePosition(), null, 1);
+        return hits.isEmpty() ? null : hits.get(0);
+    }
+
+    /** Real outline hit on one specific face; used for placing a block on an exact side. */
+    public static BlockHitResult hitFace(EntityMaid maid, BlockPos target, Direction requiredFace) {
+        if (requiredFace == null) return hit(maid, target);
+        List<BlockHitResult> hits = hitsFromEyes(maid, target, maid.getEyePosition(), requiredFace, 1);
+        return hits.isEmpty() ? null : hits.get(0);
+    }
+
+    /**
+     * Up to {@code limit} distinct real outline hits on one required face, ordered from the
+     * natural nearest point to sampled lower/upper points. Placement state such as slab/stairs/
+     * trapdoor {@code half} depends on the click position, so the placement planner needs more
+     * than one canonical hit point per face.
+     */
+    public static List<BlockHitResult> hitsOnFace(EntityMaid maid, BlockPos target, Direction requiredFace,
+                                                  int limit) {
+        if (requiredFace == null) {
+            BlockHitResult value = hit(maid, target);
+            return value == null ? List.of() : List.of(value);
+        }
+        return hitsFromEyes(maid, target, maid.getEyePosition(), requiredFace, Math.max(1, limit));
     }
 
     public static boolean canInteractFrom(EntityMaid maid, BlockPos target, BlockPos standing) {
+        return canInteractFrom(maid, target, standing, null);
+    }
+
+    public static boolean canInteractFrom(EntityMaid maid, BlockPos target, BlockPos standing,
+                                          Direction requiredFace) {
         // Navigation nodes use integral Y even on slabs/chests. Use their actual floor height.
         Vec3 eyes = new Vec3(standing.getX() + 0.5,
                 WalkNodeEvaluator.getFloorLevel(maid.level(), standing) + maid.getEyeHeight(),
                 standing.getZ() + 0.5);
-        return hitFromEyes(maid, target, eyes) != null;
+        return !hitsFromEyes(maid, target, eyes, requiredFace, 1).isEmpty();
     }
 
-    private static BlockHitResult hitFromEyes(EntityMaid maid, BlockPos target, Vec3 eyes) {
+    private static List<BlockHitResult> hitsFromEyes(EntityMaid maid, BlockPos target, Vec3 eyes,
+                                                     Direction requiredFace, int limit) {
         var level = maid.level();
-        if (!level.hasChunkAt(target)) return null;
+        if (!level.hasChunkAt(target)) return List.of();
         double reach = TouhouAIFunConfig.BLOCK_INTERACTION_REACH.get();
         double reachSqr = reach * reach;
         var shape = level.getBlockState(target).getShape(level, target, CollisionContext.of(maid));
+        List<BlockHitResult> hits = new ArrayList<>();
         // Try the closest point on each face before sampling around partial obstructions.
         // The actual world ray must hit this block first; a synthetic centre hit is never used.
         for (AABB local : shape.toAabbs()) {
@@ -46,21 +82,34 @@ public final class MaidBlockInteraction {
                     Mth.clamp(eyes.y, box.minY, box.maxY), Mth.clamp(eyes.z, box.minZ, box.maxZ));
             if (eyes.distanceToSqr(closest) > reachSqr) continue;
             for (Direction face : Direction.values()) {
+                if (requiredFace != null && face != requiredFace) continue;
                 Vec3 point = onFace(box, face, closest.x, closest.y, closest.z);
-                BlockHitResult hit = trace(maid, target, eyes, point, reachSqr);
-                if (hit != null) return hit;
+                addHit(hits, trace(maid, target, eyes, point, reachSqr, requiredFace), limit);
+                if (hits.size() >= limit) return hits;
             }
             for (Direction face : Direction.values()) {
-                for (double u : FACE_SAMPLES) for (double v : FACE_SAMPLES) {
+                if (requiredFace != null && face != requiredFace) continue;
+                for (double vertical : VERTICAL_SAMPLES) for (double horizontal : FACE_SAMPLES) {
+                    double u = face.getAxis() == Direction.Axis.X ? vertical : horizontal;
+                    double v = face.getAxis() == Direction.Axis.X ? horizontal : vertical;
                     double x = Mth.lerp(u, box.minX, box.maxX);
                     double y = Mth.lerp(face.getAxis() == Direction.Axis.X ? u : v, box.minY, box.maxY);
                     double z = Mth.lerp(v, box.minZ, box.maxZ);
-                    BlockHitResult hit = trace(maid, target, eyes, onFace(box, face, x, y, z), reachSqr);
-                    if (hit != null) return hit;
+                    addHit(hits, trace(maid, target, eyes, onFace(box, face, x, y, z), reachSqr, requiredFace), limit);
+                    if (hits.size() >= limit) return hits;
                 }
             }
         }
-        return null;
+        return hits;
+    }
+
+    private static void addHit(List<BlockHitResult> hits, @Nullable BlockHitResult hit, int limit) {
+        if (hit == null || hits.size() >= limit) return;
+        for (BlockHitResult existing : hits) {
+            if (existing.getDirection() == hit.getDirection()
+                    && existing.getLocation().distanceToSqr(hit.getLocation()) < 1.0E-6) return;
+        }
+        hits.add(hit);
     }
 
     private static Vec3 onFace(AABB box, Direction face, double x, double y, double z) {
@@ -74,7 +123,8 @@ public final class MaidBlockInteraction {
         };
     }
 
-    private static BlockHitResult trace(EntityMaid maid, BlockPos target, Vec3 eyes, Vec3 point, double reachSqr) {
+    private static BlockHitResult trace(EntityMaid maid, BlockPos target, Vec3 eyes, Vec3 point, double reachSqr,
+                                        @Nullable Direction requiredFace) {
         Vec3 ray = point.subtract(eyes);
         if (ray.lengthSqr() < EPSILON * EPSILON || ray.lengthSqr() > reachSqr + EPSILON) return null;
         Vec3 end = point.add(ray.normalize().scale(EPSILON));
@@ -85,7 +135,10 @@ public final class MaidBlockInteraction {
                 if (!maid.level().hasChunk(x, z)) return null;
         BlockHitResult hit = maid.level().clip(new ClipContext(eyes, end, ClipContext.Block.OUTLINE,
                 ClipContext.Fluid.NONE, maid));
+        // Exact face matters: placement orientation (wall attachments, log axis, half) and
+        // face-specific interactions must click the face they planned, not a corner/adjacent face.
         return hit.getType() == HitResult.Type.BLOCK && hit.getBlockPos().equals(target) && !hit.isInside()
+                && (requiredFace == null || hit.getDirection() == requiredFace)
                 && eyes.distanceToSqr(hit.getLocation()) <= reachSqr + EPSILON ? hit : null;
     }
 }

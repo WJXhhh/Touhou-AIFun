@@ -64,11 +64,13 @@ public final class AIFunStreamSoundManager {
         AIFunPcmAudioStream stream = new AIFunPcmAudioStream(message.sampleRate());
         stream.append(message.data());
         AIFunStreamingSoundInstance instance = new AIFunStreamingSoundInstance(maid, stream);
-        Playback previous = PLAYBACKS.put(message.streamId(), new Playback(stream, instance));
+        Playback playback = new Playback(stream, instance);
+        Playback previous = PLAYBACKS.put(message.streamId(), playback);
         if (previous != null) {
             previous.stream.close();
+            minecraft.getSoundManager().stop(previous.instance);
         }
-        minecraft.getSoundManager().play(instance);
+        tryStartPlayback(playback);
     }
 
     private static void append(UUID streamId, byte[] data) {
@@ -76,6 +78,7 @@ public final class AIFunStreamSoundManager {
         if (playback != null) {
             playback.lastDataAt = System.currentTimeMillis();
             playback.stream.append(data);
+            tryStartPlayback(playback);
         }
     }
 
@@ -84,6 +87,14 @@ public final class AIFunStreamSoundManager {
         if (playback != null) {
             playback.finished = true;
             playback.stream.finish();
+            tryStartPlayback(playback);
+        }
+    }
+
+    private static void tryStartPlayback(Playback playback) {
+        if (!playback.started && playback.stream.isReadyToPlay()) {
+            playback.started = true;
+            Minecraft.getInstance().getSoundManager().play(playback.instance);
         }
     }
 
@@ -121,6 +132,7 @@ public final class AIFunStreamSoundManager {
     public static void interrupt() {
         for (Playback playback : PLAYBACKS.values()) {
             playback.stream.close();
+            Minecraft.getInstance().getSoundManager().stop(playback.instance);
         }
         PLAYBACKS.clear();
     }
@@ -129,6 +141,7 @@ public final class AIFunStreamSoundManager {
         private final AIFunPcmAudioStream stream;
         private final AIFunStreamingSoundInstance instance;
         private boolean finished;
+        private boolean started;
         private volatile long lastDataAt = System.currentTimeMillis();
 
         private Playback(AIFunPcmAudioStream stream, AIFunStreamingSoundInstance instance) {

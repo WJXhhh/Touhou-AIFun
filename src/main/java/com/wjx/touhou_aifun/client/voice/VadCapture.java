@@ -15,6 +15,8 @@ import java.io.ByteArrayOutputStream;
 import java.util.Arrays;
 import java.util.Objects;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.Consumer;
+import java.util.function.Function;
 
 /**
  * Owns one 16 kHz microphone line for free chat and the inline level meter. Free chat must not use
@@ -42,9 +44,12 @@ public final class VadCapture {
 
     public static final AudioFormat FORMAT = new AudioFormat(16000.0F, 16, 1, true, false);
     private static final int DEFAULT_FRAME_BYTES = 640; // 20 ms, 16 kHz, mono, 16-bit
+    private static final int CAPTURE_BUFFER_BYTES = DEFAULT_FRAME_BYTES * 4; // 80 ms
 
     private final Object lock = new Object();
     private final AtomicLong generation = new AtomicLong();
+    private final Function<String, TargetDataLine> deviceOpener;
+    private final Consumer<Runnable> clientDispatch;
     private volatile boolean running;
     private volatile boolean monitorMode;
     private volatile int latestLevel;
@@ -57,6 +62,15 @@ public final class VadCapture {
     private volatile VadSegmenter segmenter;
     private volatile Listener listener;
     private volatile boolean wasSpeaking;
+
+    public VadCapture() {
+        this(VadCapture::openDevice, task -> Minecraft.getInstance().execute(task));
+    }
+
+    VadCapture(Function<String, TargetDataLine> deviceOpener, Consumer<Runnable> clientDispatch) {
+        this.deviceOpener = deviceOpener;
+        this.clientDispatch = clientDispatch;
+    }
 
     public void start(String deviceName, VadSegmenter segmenter, Listener listener) {
         TargetDataLine previous;
@@ -118,6 +132,7 @@ public final class VadCapture {
             this.listener = listener;
             this.monitorMode = monitorMode;
             this.speechActive = false;
+            this.wasSpeaking = false;
             this.status = "listening";
             return true;
         }
@@ -145,7 +160,7 @@ public final class VadCapture {
         closeQuietly(previous);
         TargetDataLine dataLine = null;
         try {
-            dataLine = openDevice(deviceName);
+            dataLine = deviceOpener.apply(deviceName);
             if (dataLine == null) {
                 fail(capturedGeneration, "mic_missing");
                 return;
@@ -156,7 +171,9 @@ public final class VadCapture {
                 }
                 line = dataLine;
             }
-            dataLine.open(FORMAT);
+            // JavaSound's DirectAudioDevice polls at 1/4 of the device buffer duration. Its default
+            // buffer can therefore hide multiple VAD frames even when read() requests only one.
+            dataLine.open(FORMAT, CAPTURE_BUFFER_BYTES);
             if (generation.get() != capturedGeneration) {
                 return;
             }
@@ -165,7 +182,9 @@ public final class VadCapture {
                 return;
             }
             status = "listening";
-            byte[] readBuffer = new byte[Math.max(1024, DEFAULT_FRAME_BYTES * 8)];
+            // TargetDataLine.read blocks until the requested bytes have arrived. Request only one
+            // 20 ms frame: the old eight-frame read delayed every onset by up to 160 ms.
+            byte[] readBuffer = new byte[DEFAULT_FRAME_BYTES];
             ByteArrayOutputStream pending = new ByteArrayOutputStream(readBuffer.length * 2);
             while (running && generation.get() == capturedGeneration) {
                 int read = dataLine.read(readBuffer, 0, readBuffer.length);
@@ -260,10 +279,11 @@ public final class VadCapture {
         if (speakingNow && !wasSpeaking) {
             Listener starter = listener;
             if (starter != null && running) {
-                Minecraft minecraft = Minecraft.getInstance();
                 try {
-                    minecraft.execute(() -> {
+                    clientDispatch.accept(() -> {
                         if (running && generation.get() == capturedGeneration && listener == starter) {
+                            // Deliver the captured edge even if later frames have already ended
+                            // this utterance before the render thread executes this task.
                             starter.onSpeechStart();
                         }
                     });
@@ -280,9 +300,8 @@ public final class VadCapture {
         if (target == null || !running) {
             return;
         }
-        Minecraft minecraft = Minecraft.getInstance();
         try {
-            minecraft.execute(() -> {
+            clientDispatch.accept(() -> {
                 if (running && generation.get() == capturedGeneration && listener == target) {
                     target.onSegment(wav, segment.speechMillis(), segment.peak());
                 }
@@ -300,9 +319,8 @@ public final class VadCapture {
         if (target == null) {
             return;
         }
-        Minecraft minecraft = Minecraft.getInstance();
         try {
-            minecraft.execute(() -> {
+            clientDispatch.accept(() -> {
                 if (generation.get() == capturedGeneration) {
                     target.onFailure(reason);
                 }

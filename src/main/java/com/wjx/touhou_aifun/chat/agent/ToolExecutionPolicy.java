@@ -12,6 +12,7 @@ public record ToolExecutionPolicy(ThreadKind thread, String resource, boolean pa
         return switch (id) {
             case "web_fetch", "web_search" -> new ToolExecutionPolicy(ThreadKind.ASYNC, "network", true, true, 2048);
             case "open_gui", "inspect_gui", "inspect_containers", "query_recipes" -> new ToolExecutionPolicy(ThreadKind.SERVER,"maid_gui",false,true,16384);
+            case "block_action", "build_queue", "request_owner_input" -> new ToolExecutionPolicy(ThreadKind.SERVER,"maid_build",false,true,8192);
             default -> new ToolExecutionPolicy(ThreadKind.SERVER, "maid_world", false, false, 2048);
         };
     }

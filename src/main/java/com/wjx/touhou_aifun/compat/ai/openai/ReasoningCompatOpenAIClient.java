@@ -197,7 +197,8 @@ public class ReasoningCompatOpenAIClient extends LLMOpenAIClient {
         // would type the result into the chat bubble instead of saving it as the setting.
         StreamingTtsReply ttsReply = null;
         StreamingDisplay display = null;
-        if (com.wjx.touhou_aifun.chat.agent.AgentExecution.managed(callback)) {
+        if (com.wjx.touhou_aifun.chat.agent.AgentExecution.managed(callback)
+                && !com.wjx.touhou_aifun.chat.agent.AgentExecution.task(callback)) {
             boolean singleSegment = this.singleSegmentMode(maid);
             boolean showMarkerInChat = !this.stripChatMarker(maid);
             // When emotion control is on for an emotion-aware provider, carry the leading (emotion)
@@ -264,6 +265,8 @@ public class ReasoningCompatOpenAIClient extends LLMOpenAIClient {
                             && line.startsWith("data:") && com.wjx.touhou_aifun.vision.MultimodalTurnContext.tryFallback(
                                     callback, this, 200, line.substring(5).trim())) return;
                     this.acceptStreamLine(line, accumulator, ttsReply, display);
+                    if (callback instanceof com.wjx.touhou_aifun.chat.agent.TaskCallback task)
+                        task.observeStreamingText(accumulator.currentContent());
                     timing.output(accumulator.hasEffectiveOutput());
                     if ("data: [DONE]".equals(line.strip())) { done = true; break; }
                 }

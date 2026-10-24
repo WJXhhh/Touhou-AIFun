@@ -43,7 +43,8 @@ public abstract class PapiReplacerMixin {
 
         // web_search is an addon-owned ordinary function tool backed by a provider-neutral seam.
         // The guidance applies to every LLM capable of receiving tools, not one wire protocol.
-        if (com.wjx.touhou_aifun.chat.agent.AgentRuntime.enabled(maid)) result += com.wjx.touhou_aifun.chat.agent.AgentPrompts.FOREGROUND;
+        if (com.wjx.touhou_aifun.chat.agent.AgentRuntime.enabled(maid)) result += com.wjx.touhou_aifun.chat.agent.AgentPrompts.FOREGROUND
+                + com.wjx.touhou_aifun.chat.agent.AgentPrompts.FOREGROUND_BUILD;
         result += touhouAIFun$webSearchGuidance();
         result += touhouAIFun$currentDateTimeGuidance();
         result += touhouAIFun$physicalActionGuidance();

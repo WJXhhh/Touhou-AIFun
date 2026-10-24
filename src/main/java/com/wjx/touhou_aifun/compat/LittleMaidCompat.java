@@ -49,6 +49,9 @@ public final class LittleMaidCompat implements ILittleMaid {
     @Override
     public void registerAITool(com.github.tartaricacid.touhoulittlemaid.ai.agent.tool.ToolRegister register) {
         register.register(new EatFoodBlockTool());
+        register.register(new com.wjx.touhou_aifun.compat.ai.action.BlockActionTool());
+        register.register(new com.wjx.touhou_aifun.compat.ai.action.RequestOwnerInputTool());
+        register.register(new com.wjx.touhou_aifun.compat.ai.action.BuildQueueTool());
         register.register(new com.wjx.touhou_aifun.compat.ai.action.DropItemsToOwnerTool());
         for (String id : com.wjx.touhou_aifun.compat.ai.action.GuiTool.IDS) register.register(new com.wjx.touhou_aifun.compat.ai.action.GuiTool(id));
         register.register(new LoadToolSchemaTool());

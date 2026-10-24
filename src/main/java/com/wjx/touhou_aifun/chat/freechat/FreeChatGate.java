@@ -95,7 +95,8 @@ public final class FreeChatGate {
             feedback(sender, "empty", -1);
             return;
         }
-        String scene = FreeChatDecision.sanitizePrompt(packet.playerScene(), 2000);
+        FreeChatCapturedFocus.Scene capturedScene = FreeChatCapturedFocus.decode(packet.playerScene());
+        String scene = capturedScene.summary();
         List<String> recent = new ArrayList<>();
         for (String value : packet.recentUtterances()) {
             String sanitized = FreeChatDecision.sanitize(value, 200);
@@ -104,7 +105,9 @@ public final class FreeChatGate {
             }
         }
 
-        List<Candidate> candidates = candidates(sender, packet.candidateMaidIds());
+        List<Candidate> candidates = candidates(sender, packet.candidateMaidIds()).stream()
+                .map(candidate -> new Candidate(candidate.index(), candidate.maid(),
+                        capturedScene.apply(candidate.view()), candidate.recentReplies())).toList();
         if (candidates.isEmpty()) {
             TouhouAIFun.LOGGER.info("Free chat request rejected: reason=no_maid (none of {} client "
                     + "candidates is a nearby owned maid)", packet.candidateMaidIds().size());
@@ -174,6 +177,8 @@ public final class FreeChatGate {
                     .append(":d=").append(Math.round(candidateView.distance() * 10.0D) / 10.0D)
                     .append(",in_view=").append(candidateView.inView())
                     .append(",looked_at=").append(candidateView.beingLookedAt())
+                    .append(",focus_source=").append(capturedScene.focus().containsKey(candidateView.maidId())
+                            ? "onset" : "receipt")
                     .append(",busy=").append(candidateView.busy());
         }
         TouhouAIFun.LOGGER.info("Free chat asking the decision service: provider={} requestedModel={} "

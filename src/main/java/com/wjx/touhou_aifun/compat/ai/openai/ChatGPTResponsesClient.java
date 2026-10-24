@@ -125,7 +125,8 @@ public final class ChatGPTResponsesClient extends ReasoningCompatOpenAIClient {
             ChatGPTResponsesCodec.Events events = new ChatGPTResponsesCodec.Events();
             StreamingDisplay display = null;
             // The wire stream is mandatory even when the user disables progressive display.
-            if (com.wjx.touhou_aifun.chat.agent.AgentExecution.managed(callback) && TouhouAIFunConfig.LLM_STREAMING.get()) {
+            if (com.wjx.touhou_aifun.chat.agent.AgentExecution.managed(callback) && TouhouAIFunConfig.LLM_STREAMING.get()
+                    && !com.wjx.touhou_aifun.chat.agent.AgentExecution.task(callback)) {
                 var maid = callback.getMaid();
                 boolean single = maid.getAiChatManager().getChatLanguage().equals(maid.getAiChatManager().getTTSLanguage());
                 boolean markers = !(TouhouAIFunConfig.TTS_EMOTION_CONTROL.get() && !TouhouAIFunConfig.TTS_EMOTION_IN_TEXT.get()
@@ -144,6 +145,8 @@ public final class ChatGPTResponsesClient extends ReasoningCompatOpenAIClient {
                     if (events.partial().currentContent().isBlank() && events.partial().currentReasoning().isBlank()
                             && com.wjx.touhou_aifun.vision.MultimodalTurnContext.tryFallback(callback, this, 200, data.toString())) return;
                     events.accept(JsonParser.parseString(data.toString()).getAsJsonObject());
+                    if (callback instanceof com.wjx.touhou_aifun.chat.agent.TaskCallback task)
+                        task.observeStreamingText(events.partial().currentContent());
                     timing.output(events.partial().hasEffectiveOutput() || events.hasTools());
                     data.setLength(0);
                     if (events.isCompleted()) break;

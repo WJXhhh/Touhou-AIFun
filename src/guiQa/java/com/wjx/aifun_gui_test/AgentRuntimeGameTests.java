@@ -485,7 +485,11 @@ public final class AgentRuntimeGameTests {
             helper.assertTrue(requests[0]==0 && old.status==AgentTaskState.Status.paused && queue.paused,"Historical missing contract pauses before any model request or tool");
             helper.assertTrue(queue.tasks.get(4).generation==0,"New retrieval remains unexecuted");
             var amended=AgentRuntime.control(ownerTurn(maid,owner,"review old task"),command("amend","Verify the already sorted items from fresh observations"));
-            helper.assertTrue(!amended.has("error") && !old.pendingAmendment.isBlank() && queue.paused,"Owner can amend paused current task without resuming implicitly");
+            // amendAutoResume (documented in [agentRuntimeV1]) continues a runtime-paused task;
+            // an explicit owner pause would still require a separate continue.
+            helper.assertTrue(!amended.has("error") && !old.pendingAmendment.isBlank(),"Owner can amend paused current task");
+            helper.assertTrue(!queue.paused && old.status==AgentTaskState.Status.queued,"amendAutoResume continues the runtime-paused task without a second continue");
+            helper.assertTrue(queue.current()==old,"The amended old task still blocks the new retrieval");
             AgentRuntime.control(ownerTurn(maid,owner,"continue after review"),command("resume",null));queue.next();
             var reviewed=new TaskCallback(maid.getAiChatManager(),new ArrayList<>(),old);callbackField.set(entry,reviewed);
             reviewed.next(ignored->requests[0]++);
@@ -497,6 +501,114 @@ public final class AgentRuntimeGameTests {
             helper.succeed();
         } finally {AgentRuntime.stop(maid,true);TouhouAIFunConfig.AGENT_RUNTIME.set(previous);}
     }
+    @GameTest(batch="isolated_ownerGuidanceInterruptsThinkingWithoutChangingGoal",template="empty",templateNamespace="aifun_gui_test")
+    public static void ownerGuidanceInterruptsThinkingWithoutChangingGoal(GameTestHelper helper) throws Exception {
+        boolean previous=TouhouAIFunConfig.AGENT_RUNTIME.get();boolean steering=TouhouAIFunConfig.AGENT_STEERING_INTERRUPT.get();
+        TouhouAIFunConfig.AGENT_RUNTIME.set(true);TouhouAIFunConfig.AGENT_STEERING_INTERRUPT.set(true);
+        var maid=helper.spawn(InitEntities.MAID.get(),new BlockPos(2,1,2));maid.setNoAi(true);
+        UUID owner=UUID.randomUUID();maid.setOwnerUUID(owner);
+        var state=new AgentTaskState("sort five iron");state.status=AgentTaskState.Status.running;
+        state.completion=JsonParser.parseString("{\"kind\":\"inventory\",\"item\":\"minecraft:iron_ingot\",\"count\":5,\"dimension\":\"minecraft:overworld\"}").getAsJsonObject();
+        var task=new TaskCallback(maid.getAiChatManager(),new ArrayList<>(),state);
+        var entryMethod=AgentRuntime.class.getDeclaredMethod("entry",EntityMaid.class);entryMethod.setAccessible(true);Object entry=entryMethod.invoke(null,maid);
+        var queueField=entry.getClass().getDeclaredField("queue");queueField.setAccessible(true);((AgentTaskQueue)queueField.get(entry)).tasks.add(state);
+        var callbackField=entry.getClass().getDeclaredField("callback");callbackField.setAccessible(true);callbackField.set(entry,task);
+        try {
+            var thinking=new java.util.concurrent.CompletableFuture<String>();
+            task.trackModelRequest(thinking);
+            var receipt=AgentRuntime.control(ownerTurn(maid,owner,"北边的箱子在墙后面，绕过去"),command("guide","北边的箱子在墙后面，绕过去"));
+            helper.assertTrue(!receipt.has("error"),"Guidance accepted: "+receipt);
+            helper.assertTrue("guidance_applied".equals(receipt.get("controlled_task_dispatch").getAsString()),"A running executor reports immediate guidance: "+receipt);
+            helper.assertTrue(receipt.get("accepted_owner_guidance").getAsString().contains("墙后面"),"Receipt echoes the accepted guidance");
+            helper.assertTrue(thinking.isCancelled(),"Only the in-flight model request is cancelled by steering");
+            helper.assertTrue(state.goalVersion==1 && state.constraints.isEmpty() && state.completion!=null,"Guidance never changes goal, constraints or completion");
+            helper.assertTrue(state.pendingGuidance.contains("墙后面"),"Guidance is queued for the next planning turn");
+            var lastClientField=TaskCallback.class.getDeclaredField("lastClient");lastClientField.setAccessible(true);
+            lastClientField.set(task,(LLMClient)ignored->{});
+            task.onFailure(null,new java.util.concurrent.CancellationException("owner steering"),0);
+            helper.assertTrue(state.status==AgentTaskState.Status.running,"An interrupted thought replans instead of pausing the task");
+            helper.assertTrue(state.pendingGuidance.isBlank(),"The next planning turn consumes the queued guidance");
+            helper.assertTrue(task.getMessages().stream().anyMatch(m->m.role()==Role.USER && m.message()!=null
+                    && m.message().contains("Owner guidance") && m.message().contains("墙后面")),"The guidance reaches the executor's next request");
+            helper.assertTrue(task.readTrace(0).contains("steering_interrupt"),"Steering is recorded as guidance, not a provider failure");
+            helper.assertTrue(state.goalVersion==1 && state.completion!=null,"Replanning keeps the original contract");
+
+            TouhouAIFunConfig.AGENT_STEERING_INTERRUPT.set(false);
+            var notInterrupted=new java.util.concurrent.CompletableFuture<String>();
+            task.trackModelRequest(notInterrupted);
+            var deferred=AgentRuntime.control(ownerTurn(maid,owner,"第二个提示"),command("guide","第二个提示"));
+            helper.assertTrue("guidance_next_boundary".equals(deferred.get("controlled_task_dispatch").getAsString()),"Disabled steering applies at the next boundary: "+deferred);
+            helper.assertTrue(!notInterrupted.isCancelled(),"Disabled steering never cancels the model request");
+            helper.assertTrue(state.pendingGuidance.contains("第二个提示"),"Deferred guidance stays queued");
+            helper.succeed();
+        } finally {state.status=AgentTaskState.Status.cancelled;task.archiveState();AgentRuntime.stop(maid,true);ChatFlowManager.forgetMaid(maid.getUUID());maid.discard();TouhouAIFunConfig.AGENT_RUNTIME.set(previous);TouhouAIFunConfig.AGENT_STEERING_INTERRUPT.set(steering);}
+    }
+
+    @GameTest(batch="isolated_liveNarrationIsReadableWhileGenerating",template="empty",templateNamespace="aifun_gui_test")
+    public static void liveNarrationIsReadableWhileGenerating(GameTestHelper helper) throws Exception {
+        boolean previous=TouhouAIFunConfig.AGENT_RUNTIME.get();TouhouAIFunConfig.AGENT_RUNTIME.set(true);
+        var maid=helper.spawn(InitEntities.MAID.get(),new BlockPos(2,1,2));maid.setNoAi(true);
+        UUID owner=UUID.randomUUID();maid.setOwnerUUID(owner);
+        var state=new AgentTaskState("sort five iron");state.status=AgentTaskState.Status.running;
+        state.completion=JsonParser.parseString("{\"kind\":\"inventory\",\"item\":\"minecraft:iron_ingot\",\"count\":5,\"dimension\":\"minecraft:overworld\"}").getAsJsonObject();
+        var task=new TaskCallback(maid.getAiChatManager(),new ArrayList<>(),state);
+        var entryMethod=AgentRuntime.class.getDeclaredMethod("entry",EntityMaid.class);entryMethod.setAccessible(true);Object entry=entryMethod.invoke(null,maid);
+        var queueField=entry.getClass().getDeclaredField("queue");queueField.setAccessible(true);((AgentTaskQueue)queueField.get(entry)).tasks.add(state);
+        var callbackField=entry.getClass().getDeclaredField("callback");callbackField.setAccessible(true);callbackField.set(entry,task);
+        try {
+            task.observeStreamingText("正在检查北边箱子里还有三个铁锭");
+            var caller=ownerTurn(maid,owner,"做到哪了");
+            AgentRuntime.prepareForeground(caller);
+            var statusMessage=caller.getMessages().stream().filter(m->m.role()==Role.SYSTEM && m.message()!=null
+                    && m.message().startsWith(ForegroundTaskStatus.PROMPT_HEADER)).reduce((a,b)->b).orElseThrow();
+            helper.assertTrue(statusMessage.message().contains("liveNarration"),"Foreground status publishes the live field");
+            helper.assertTrue(statusMessage.message().contains("正在检查北边箱子"),"Foreground status carries the live streaming text");
+            var narration=JsonParser.parseString(AgentRuntime.readTaskNarration(caller,state.id,0)).getAsJsonObject();
+            helper.assertTrue(narration.get("live_pending").getAsBoolean(),"On-demand narration exposes live_pending while generating");
+            helper.assertTrue(narration.get("live").getAsString().contains("三个铁锭"),"On-demand narration returns the current streaming text");
+            task.clearLiveNarration();
+            var cleared=JsonParser.parseString(AgentRuntime.readTaskNarration(caller,state.id,0)).getAsJsonObject();
+            helper.assertTrue(!cleared.get("live_pending").getAsBoolean(),"Live text disappears once the turn is archived or cleared");
+            helper.succeed();
+        } finally {state.status=AgentTaskState.Status.cancelled;task.archiveState();AgentRuntime.stop(maid,true);ChatFlowManager.forgetMaid(maid.getUUID());maid.discard();TouhouAIFunConfig.AGENT_RUNTIME.set(previous);}
+    }
+
+    @GameTest(batch="isolated_resumeWithGuidanceCarriesOutcomeAndNarrationOnce",template="empty",templateNamespace="aifun_gui_test")
+    public static void resumeWithGuidanceCarriesOutcomeAndNarrationOnce(GameTestHelper helper) throws Exception {
+        boolean previous=TouhouAIFunConfig.AGENT_RUNTIME.get();TouhouAIFunConfig.AGENT_RUNTIME.set(true);
+        var maid=helper.spawn(InitEntities.MAID.get(),new BlockPos(2,1,2));maid.setNoAi(true);
+        UUID owner=UUID.randomUUID();maid.setOwnerUUID(owner);
+        var state=new AgentTaskState("sort five iron");state.status=AgentTaskState.Status.paused;state.generation=1;state.outcome="request_failed:402";
+        state.completion=JsonParser.parseString("{\"kind\":\"inventory\",\"item\":\"minecraft:iron_ingot\",\"count\":5,\"dimension\":\"minecraft:overworld\"}").getAsJsonObject();
+        var entryMethod=AgentRuntime.class.getDeclaredMethod("entry",EntityMaid.class);entryMethod.setAccessible(true);Object entry=entryMethod.invoke(null,maid);
+        var queueField=entry.getClass().getDeclaredField("queue");queueField.setAccessible(true);var queue=(AgentTaskQueue)queueField.get(entry);
+        queue.tasks.add(state);queue.paused=true;
+        var archiveData=AgentArchiveData.get(helper.getLevel());
+        archiveData.task(maid.getUUID(),state.id).appendNarration("上次检查到北边箱子还有三个铁锭。");
+        archiveData.setDirty();
+        try {
+            var receipt=AgentRuntime.control(ownerTurn(maid,owner,"继续，北边箱子的位置在墙后"),command("resume","北边箱子的位置在墙后"));
+            helper.assertTrue("resuming".equals(receipt.get("controlled_task_dispatch").getAsString()),"Resume reports resuming: "+receipt);
+            helper.assertTrue(receipt.get("accepted_owner_guidance").getAsString().contains("墙后"),"Resume accepts the patch as guidance");
+            helper.assertTrue(queue.next()==state && state.status==AgentTaskState.Status.running && state.generation==2,"Resume creates the next execution generation");
+            var callback=new TaskCallback(maid.getAiChatManager(),new ArrayList<>(List.of(LLMMessage.userChat(maid,state.goal))),state);
+            LLMClient client=ignored->{};
+            callback.next(client);
+            String checkpoint=callback.getMessages().stream().filter(m->m.role()==Role.SYSTEM && m.message()!=null
+                    && m.message().startsWith("## Current task checkpoint")).reduce((a,b)->b).orElseThrow().message();
+            helper.assertTrue(checkpoint.contains("previous_outcome") && checkpoint.contains("request_failed:402"),"The resumed generation is told why it stopped: "+checkpoint);
+            helper.assertTrue(checkpoint.contains("last_narration") && checkpoint.contains("三个铁锭"),"The resumed generation sees its last durable narration");
+            helper.assertTrue(callback.getMessages().stream().anyMatch(m->m.role()==Role.USER && m.message()!=null
+                    && m.message().contains("Owner guidance") && m.message().contains("墙后")),"The resume patch reaches the executor as guidance");
+            helper.assertTrue(state.goalVersion==1 && state.constraints.isEmpty() && state.completion!=null,"Resume guidance does not become a requirement");
+            callback.next(client);
+            String second=callback.getMessages().stream().filter(m->m.role()==Role.SYSTEM && m.message()!=null
+                    && m.message().startsWith("## Current task checkpoint")).reduce((a,b)->b).orElseThrow().message();
+            helper.assertTrue(!second.contains("previous_outcome") && !second.contains("last_narration"),"The resume context is injected once, not every round");
+            helper.succeed();
+        } finally {state.status=AgentTaskState.Status.cancelled;AgentRuntime.stop(maid,true);ChatFlowManager.forgetMaid(maid.getUUID());maid.discard();TouhouAIFunConfig.AGENT_RUNTIME.set(previous);}
+    }
+
     private static LLMCallback ownerTurn(EntityMaid maid,UUID owner,String message) {
         AgentRuntime.speaker(maid,new ChatSpeakerContext.Snapshot(owner,"owner",owner,"owner","owner",true,false),message);
         return new LLMCallback(maid.getAiChatManager(),new ArrayList<>(),true);

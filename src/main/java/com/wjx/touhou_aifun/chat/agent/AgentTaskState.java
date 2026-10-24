@@ -4,6 +4,14 @@ import java.util.*;
 
 /** Durable facts only: no callback, world, GUI session, image or future is serialized. */
 public final class AgentTaskState {
+    /** Upper bound for one or more accumulated owner guidance notes. */
+    public static final int MAX_GUIDANCE_CHARS = 1024;
+    public static final String MATERIAL_ASK_OWNER = "ask_owner";
+    public static final String MATERIAL_SELF_GATHER = "self_gather";
+    public static final String MATERIAL_SELF_SOURCE = "self_source";
+    public static final String MATERIAL_DENIED = "denied";
+    public static final int MAX_OWNER_QUESTION_CHARS = 2048;
+    public static final int MAX_OWNER_QUESTION_TEXT_CHARS = 512;
     public enum Status { queued, running, waiting, paused, completed, failed, cancelled }
     public String id = UUID.randomUUID().toString();
     public String goal;
@@ -23,6 +31,20 @@ public final class AgentTaskState {
     public List<String> evidence = new ArrayList<>();
     public Set<String> loadedTools = new LinkedHashSet<>();
     public String pendingAmendment = "";
+    /**
+     * Advisory owner text for the executor's next planning turn. Unlike an amendment it does not
+     * change the goal, constraints or completion contract; it is consumed once and may survive a
+     * pause/reload so the patch is delivered after the task resumes.
+     */
+    public String pendingGuidance = "";
+    /** Owner authorization for obtaining missing build materials. */
+    public String materialPolicy = MATERIAL_ASK_OWNER;
+    /** Structured facts for a foreground owner question; never spoken verbatim by the executor. */
+    public String pendingOwnerQuestion = "";
+    /** Exact line that was already delivered by the foreground phrasing path, if any. */
+    public String ownerQuestionText = "";
+    public boolean awaitingOwnerInput;
+    public int materialRounds;
     public com.google.gson.JsonObject pendingCompletion;
     public com.google.gson.JsonObject completion;
     public com.google.gson.JsonObject amendmentBaseCompletion;
@@ -38,6 +60,21 @@ public final class AgentTaskState {
     public Map<String,Long> completionTransferBase = new LinkedHashMap<>();
     public Map<String,String> initialContainerSnapshots = new LinkedHashMap<>();
     public void validatePhaseCheckpoint() {
+        // Additive field: older checkpoints deserialize it as null.
+        if (pendingGuidance == null) pendingGuidance = "";
+        if (pendingGuidance.codePointCount(0, pendingGuidance.length()) > MAX_GUIDANCE_CHARS)
+            pendingGuidance = bounded(pendingGuidance, MAX_GUIDANCE_CHARS);
+        if (materialPolicy == null || !Set.of(MATERIAL_ASK_OWNER, MATERIAL_SELF_GATHER,
+                MATERIAL_SELF_SOURCE, MATERIAL_DENIED).contains(materialPolicy)) {
+            materialPolicy = MATERIAL_ASK_OWNER;
+        }
+        if (pendingOwnerQuestion == null) pendingOwnerQuestion = "";
+        if (ownerQuestionText == null) ownerQuestionText = "";
+        if (pendingOwnerQuestion.length() > MAX_OWNER_QUESTION_CHARS) pendingOwnerQuestion = "";
+        if (ownerQuestionText.length() > MAX_OWNER_QUESTION_TEXT_CHARS)
+            ownerQuestionText = bounded(ownerQuestionText, MAX_OWNER_QUESTION_TEXT_CHARS);
+        if (materialRounds < 0 || materialRounds > 100) materialRounds = 0;
+        if (pendingOwnerQuestion.isBlank()) awaitingOwnerInput = false;
         int stages=completion!=null && completionKind(completion).equals("sequence")?completion.getAsJsonArray("phases").size():1;
         if(completionStage<0 || completionStage>=stages || completionTransferBase==null || completionTransferBase.size()>512
                 || completionTransferBase.values().stream().anyMatch(Objects::isNull) || initialContainerSnapshots==null || initialContainerSnapshots.size()>128
@@ -186,6 +223,42 @@ public final class AgentTaskState {
                 return spec.deepCopy();
             }
             if(kind.equals("backpack_empty")) return spec.deepCopy();
+            if(kind.equals("structure")) {
+                boolean hasId = spec.has("structure_id") && spec.get("structure_id").isJsonPrimitive()
+                        && spec.get("structure_id").getAsJsonPrimitive().isString();
+                if(hasId) {
+                    String id=spec.get("structure_id").getAsString();
+                    if(id.isBlank() || id.length()>128) throw new IllegalArgumentException();
+                }
+                var blocks=spec.has("blocks") ? spec.get("blocks") : null;
+                if(hasId && blocks!=null) throw new IllegalArgumentException();
+                if(!hasId) {
+                    if(blocks==null || !blocks.isJsonArray() || blocks.getAsJsonArray().isEmpty()
+                            || blocks.getAsJsonArray().size()>64) throw new IllegalArgumentException();
+                    for(var value:blocks.getAsJsonArray()) {
+                        if(!value.isJsonObject()) throw new IllegalArgumentException();
+                        var row=value.getAsJsonObject();
+                        for(String axis:List.of("x","y","z")) {
+                            if(!row.has(axis) || !row.get(axis).isJsonPrimitive() || row.get(axis).getAsDouble()!=row.get(axis).getAsInt())
+                                throw new IllegalArgumentException();
+                        }
+                        boolean air=row.has("expect") && row.get("expect").isJsonPrimitive()
+                                && "air".equalsIgnoreCase(row.get("expect").getAsString());
+                        if(!air && (!row.has("block") || !row.get("block").isJsonPrimitive()
+                                || row.get("block").getAsString().isBlank() || row.get("block").getAsString().length()>256))
+                            throw new IllegalArgumentException();
+                        if(row.has("strict")) {
+                            var strict=row.get("strict");
+                            if(!strict.isJsonPrimitive() || !strict.getAsJsonPrimitive().isBoolean()) throw new IllegalArgumentException();
+                        }
+                    }
+                }
+                if(spec.has("strict")) {
+                    var strict=spec.get("strict");
+                    if(!strict.isJsonPrimitive() || !strict.getAsJsonPrimitive().isBoolean()) throw new IllegalArgumentException();
+                }
+                return spec.deepCopy();
+            }
             if(kind.equals("container_unchanged")) {
                 if(spec.getAsJsonArray("position").size()!=3)throw new IllegalArgumentException();
                 spec.getAsJsonArray("position").forEach(v->{if(v.getAsDouble()!=v.getAsInt())throw new IllegalArgumentException();});return spec.deepCopy();
@@ -314,6 +387,64 @@ public final class AgentTaskState {
         String combined = pendingAmendment.isBlank() ? text : pendingAmendment + "\n" + text;
         if (combined == null || combined.length() > 4096) throw new IllegalArgumentException("pending_constraint_limit");
         pendingAmendment = combined; pendingCompletion = validated;
+    }
+    /**
+     * Records advisory owner text for the next planning turn. It deliberately does not touch
+     * {@link #constraints}, {@link #completion} or {@link #goalVersion}: the executor keeps the
+     * same goal and completion contract, and only adjusts how it proceeds.
+     */
+    public void guide(String text) {
+        if (text == null || text.isBlank()) throw new IllegalArgumentException("guidance_required");
+        String note = text.strip();
+        String current = pendingGuidance == null ? "" : pendingGuidance;
+        String combined = current.isBlank() ? note : current + "\n" + note;
+        if (combined.codePointCount(0, combined.length()) > MAX_GUIDANCE_CHARS)
+            throw new IllegalArgumentException("guidance_limit");
+        pendingGuidance = combined;
+    }
+    /** Returns the pending guidance once and clears it; empty when nothing is queued. */
+    public String takeGuidance() {
+        String value = pendingGuidance == null ? "" : pendingGuidance;
+        pendingGuidance = "";
+        return value;
+    }
+    public boolean hasGuidance() {
+        return pendingGuidance != null && !pendingGuidance.isBlank();
+    }
+
+    public static String normalizeMaterialPolicy(String value) {
+        if (value == null || value.isBlank()) return MATERIAL_ASK_OWNER;
+        String normalized = value.trim().toLowerCase(java.util.Locale.ROOT);
+        if (!Set.of(MATERIAL_ASK_OWNER, MATERIAL_SELF_GATHER, MATERIAL_SELF_SOURCE, MATERIAL_DENIED)
+                .contains(normalized)) throw new IllegalArgumentException("invalid_material_policy");
+        return normalized;
+    }
+
+    public void setMaterialPolicy(String value) {
+        materialPolicy = normalizeMaterialPolicy(value);
+    }
+
+    public void raiseOwnerQuestion(String questionJson, boolean awaiting) {
+        if (questionJson == null || questionJson.isBlank() || questionJson.length() > MAX_OWNER_QUESTION_CHARS)
+            throw new IllegalArgumentException("invalid_owner_question");
+        pendingOwnerQuestion = questionJson;
+        ownerQuestionText = "";
+        awaitingOwnerInput = awaiting;
+    }
+
+    public void markOwnerQuestionDelivered(String text) {
+        ownerQuestionText = bounded(text == null ? "" : text, MAX_OWNER_QUESTION_TEXT_CHARS);
+    }
+
+    /** Clears the question and its delivered text; the caller decides whether to resume. */
+    public void clearOwnerQuestion() {
+        pendingOwnerQuestion = "";
+        ownerQuestionText = "";
+        awaitingOwnerInput = false;
+    }
+
+    public boolean hasOwnerQuestion() {
+        return pendingOwnerQuestion != null && !pendingOwnerQuestion.isBlank();
     }
     public void applyAmendment() {
         if (!pendingAmendment.isBlank()) {

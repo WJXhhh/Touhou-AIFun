@@ -40,6 +40,21 @@ public final class MaidGuiActor extends FakePlayer {
     public byte[] openingData() { return openingData.clone(); }
     public MerchantOffers offers() { return offers; }
     public void align() { moveTo(maid.getX(), maid.getY(), maid.getZ(), maid.getYRot(), maid.getXRot()); }
+
+    /**
+     * Deterministic view rotation for simulated placement. Vanilla block orientation is derived
+     * from the fake player's yaw/pitch, so the maid's wandering Brain yaw must not leak into it.
+     */
+    public void orient(float yaw, float pitch) {
+        float wrapped = net.minecraft.util.Mth.wrapDegrees(yaw);
+        float clamped = net.minecraft.util.Mth.clamp(pitch, -90.0F, 90.0F);
+        setYRot(wrapped);
+        setXRot(clamped);
+        yRotO = wrapped;
+        xRotO = clamped;
+        setYHeadRot(wrapped);
+        setYBodyRot(wrapped);
+    }
     @Override public OptionalInt openMenu(MenuProvider provider) { return open(provider, buffer -> { }); }
     public OptionalInt open(MenuProvider provider, Consumer<FriendlyByteBuf> writer) {
         if (provider == null) return OptionalInt.empty();

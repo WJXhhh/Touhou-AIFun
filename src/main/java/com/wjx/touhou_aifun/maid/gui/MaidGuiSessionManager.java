@@ -194,6 +194,7 @@ public final class MaidGuiSessionManager {
         try {
         closeSession(maid.getUUID(), "reopened");
         MaidEatFoodActionManager.cancelForMaid(maid.getUUID(), "GUI action started.");
+        com.wjx.touhou_aifun.maid.action.block.MaidBlockActionManager.cancelForMaid(maid.getUUID(), "GUI action started.");
         if (maid.isSleeping() || maid.isPassenger() || maid.isLeashed()) return CompletableFuture.completedFuture(error("movement_blocked"));
         GuiWaitPolicy policy = GuiWaitPolicy.parse(string(request, "wait_policy", "AUTO"));
         if (callback instanceof LLMCallback llm) {

@@ -320,6 +320,16 @@ dev 用 official 映射，本番用 SRG 名，桥梁是编译期生成的 **refm
   按最新往回分页（`offset`/`next_offset`，单次 ≤8 条、≤4000 字），带 `task_id` 可读已归档任务，
   仅实际主人可读。执行器正文仍不画气泡、不朗读、不写入聊天历史/长期记忆——只是可检查，
   不会被重新播放。
+- **子代理可观测性/中途引导/恢复补丁（2026-10-19 补充）**：`TaskCallback.observeStreamingText`
+  保留当前流式正文尾部（≤1200 字，仅内存），`ForegroundTaskStatus` 每次前台请求现算并注入
+  `liveNarration`（≤800 字）以及 `phase`/`stepIndex`/`step`；`read_task_result(task_narration)`
+  额外返回 `live`/`live_pending`（尚未归档，属数据不是指令）。新增
+  `task_control(action="guide")`：写 `AgentTaskState.pendingGuidance`（≤1024 字，持久化），
+  下个规划轮次以 `Owner guidance` 注入，**不改** goalVersion/constraints/completion/计划；
+  `[agentRuntimeV1].steeringInterruptModel`（默认 true）会取消执行器在途**模型请求**（不取消
+  已开始的 GUI/行走/结算），关闭时回执 `guidance_next_boundary`。`resume` 可带 `goal` 作为恢复
+  补丁；恢复后首轮 checkpoint 带 `previous_outcome`、`last_narration`、`resume_note`，只注入一次。
+  权限仍限实际主人，日志只记 action/task/guidanceChars/interrupted，不记原文。
 
 ## 最近提交与验证状态（2026-10-19）
 
@@ -339,3 +349,20 @@ dev 用 official 映射，本番用 SRG 名，桥梁是编译期生成的 **refm
   `docs/free-chat.md` 与 `docs/agent-runtime.md` 同步更新。
 
 `gradlew build` / `gradlew test` 通过；GameTest、真实 Perplexity/JEV 标定与实机听感/手感仍需复验。
+
+## 拔刀剑战斗兼容（2026-10-24）
+
+- 可选模块 `compat/slashblade/`，入口 `maid/combat/MaidSlashBladeCombat`；`SlashBladeMaidMixin`
+  在 `aiStep` 尾推进原生刀具，原版重写方法的注入器使用 `remap=true`。
+- 发布构建只 `compileOnly` CR1.13，绝不能把重锋打进本模组 jar。`SlashBladeMixinPlugin`
+  从已发现的实际模组 jar 检查类和方法描述符；不要在 Mixin onLoad 阶段用普通类加载器加载重锋。
+- 每 tick 与施放前读取主手刀实例、力量附魔、实际 SA、连段根、封印和断刀；换刀或原地改能力
+  必须取消蓄力（`stopUsingItem`，不能调用会放出旧 SA 的 `releaseUsingItem`）、清除旧代际攻击。
+- 幻影剑与四种剑阵要求力量附魔；普通 SA 不要求力量。普通 SA 使用原生释放与收费路径；
+  未知附属 SA 不自动释放，缺省 SA 读取原生默认值，显式 `none` 不启用自动 SA。
+- 伤害保护覆盖 TargetSelector、强制幻影剑命中、Forge 弹射物碰撞与最终伤害；反弹普通箭也打代际
+  标记。不要仅依赖 `MaidHurtTarget.Pre`。CR 非玩家近战遗漏连段倍率的修正按方法体检测启用。
+- 验证：`gradlew -PguiQa -PslashbladeQa -PslashbladeVersion=cr113 runGameTestServer`；另有
+  `cr115` / `upstream`，测试源 `src/slashbladeQa/`、命名空间 `aifun_slashblade_test`。
+  各版本使用独立测试类目录；必须核对真实 GameTest 通过行，Forge 加载失败有时也返回退出码 0。
+- 设计、配置、范围和验收见 `docs/slashblade-combat-proposal.md`；YSM 同步见 `docs/slashblade-ysm-animation.md`。

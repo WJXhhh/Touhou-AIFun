@@ -1,5 +1,6 @@
 package com.wjx.touhou_aifun.network.message;
 
+import com.wjx.touhou_aifun.chat.freechat.FreeChatCapturedFocus;
 import io.netty.buffer.Unpooled;
 import net.minecraft.network.FriendlyByteBuf;
 import org.junit.jupiter.api.Test;
@@ -13,7 +14,9 @@ class AIFunFreeChatUtteranceMessageTest {
     @Test
     void utteranceSurvivesTheRoundTrip() {
         AIFunFreeChatUtteranceMessage message = new AIFunFreeChatUtteranceMessage(
-                42L, List.of(101, 202), "灵梦，过来一下", "candidate 0 maid 灵梦",
+                42L, List.of(101, 202), "灵梦，过来一下",
+                FreeChatCapturedFocus.encode("candidate 0 maid 灵梦",
+                        List.of(new FreeChatCapturedFocus.Focus(101, true, true, "front"))),
                 List.of("上一句", "再上一句"), "zh_cn", 1234);
         FriendlyByteBuf buffer = new FriendlyByteBuf(Unpooled.buffer());
         try {
@@ -23,6 +26,8 @@ class AIFunFreeChatUtteranceMessageTest {
             assertEquals(message.candidateMaidIds(), decoded.candidateMaidIds());
             assertEquals(message.transcript(), decoded.transcript());
             assertEquals(message.playerScene(), decoded.playerScene());
+            assertEquals(new FreeChatCapturedFocus.Focus(101, true, true, "front"),
+                    FreeChatCapturedFocus.decode(decoded.playerScene()).focus().get(101));
             assertEquals(message.recentUtterances(), decoded.recentUtterances());
             assertEquals(message.clientLanguage(), decoded.clientLanguage());
             assertEquals(message.speechMillis(), decoded.speechMillis());

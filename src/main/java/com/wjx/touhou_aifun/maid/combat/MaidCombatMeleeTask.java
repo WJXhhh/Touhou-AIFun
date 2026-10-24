@@ -48,6 +48,7 @@ public final class MaidCombatMeleeTask extends Behavior<EntityMaid> {
     }
 
     private static boolean canFight(EntityMaid maid) {
+        if (MaidSlashBladeCombat.controls(maid)) return false;
         LivingEntity target = MaidCombatReflex.currentTarget(maid);
         if (target == null) {
             return false;
@@ -57,6 +58,7 @@ public final class MaidCombatMeleeTask extends Behavior<EntityMaid> {
     }
 
     private static void tryAttack(EntityMaid maid) {
+        if (MaidSlashBladeCombat.controls(maid)) return;
         LivingEntity target = MaidCombatReflex.currentTarget(maid);
         if (target == null) {
             return;

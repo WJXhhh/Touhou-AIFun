@@ -5,9 +5,18 @@ import java.util.regex.Pattern;
 
 /** Immutable published facts; network/stream threads never read the mutable task queue. */
 public record ForegroundTaskStatus(String taskId, AgentTaskState.Status status, String goal,
-                                   long movedCount, String outcome, List<String> narration) {
+                                   long movedCount, String outcome, List<String> narration,
+                                   String phase, int stepIndex, String step, String liveNarration) {
     public ForegroundTaskStatus {
         narration = narration == null ? List.of() : List.copyOf(narration);
+        phase = phase == null ? "" : phase;
+        step = step == null ? "" : step;
+        liveNarration = liveNarration == null ? "" : liveNarration;
+    }
+    /** Compatibility constructor for callers that only publish the original facts. */
+    public ForegroundTaskStatus(String taskId, AgentTaskState.Status status, String goal,
+                                long movedCount, String outcome, List<String> narration) {
+        this(taskId, status, goal, movedCount, outcome, narration, "", 0, "", "");
     }
     public static final String PROMPT_HEADER="## Runtime task status for foreground\n";
     private static final Pattern QUESTION=Pattern.compile("进度|(?:做完|干完|完成|结束|搞定|弄完)(?:了)?(?:吗|没|没有|了吗|了没|了吧)|(?:放|送|取|搬)(?:进|出|好|完)(?:去|来)?(?:了)?(?:吗|没|了没|吧)|\\b(?:task|job|work)\\b.{0,30}(?:done|finished|complete|progress|status)",Pattern.CASE_INSENSITIVE);

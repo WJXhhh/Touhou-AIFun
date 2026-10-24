@@ -19,13 +19,16 @@ public final class AgentControlReply {
         String status = text(receipt, "controlled_task_status");
         boolean paused = receipt.has("paused") && receipt.get("paused").getAsBoolean();
         int position = receipt.has("controlled_task_queue_position") ? receipt.get("controlled_task_queue_position").getAsInt() : 0;
+        String guidance = AgentTaskState.bounded(text(receipt, "accepted_owner_guidance"), 120);
         String subject = goal.isBlank() ? "" : english ? " Task: " + goal + "." : "【" + goal + "】";
         if (english) return switch (action) {
             case "enqueue", "replace" -> "Task accepted." + subject + (status.equals("completed") ? " Completion has been verified."
                     : paused ? " The queue is paused; ask to continue." : status.equals("running") || status.equals("waiting")
                     ? " It is running in the background." : " Queue position: " + position + "; it has not started yet.");
             case "amend" -> "Task requirements updated." + subject + (paused ? " The task is paused; ask to continue." : " The executor will apply them at the next action boundary.");
-            case "resume" -> goal.isBlank() ? "There are no unfinished tasks to resume." : "Resuming the earlier unfinished task." + subject;
+            case "guide" -> "Guidance noted." + subject + (paused ? " The task is paused; ask to continue." : " The executor will follow it from the next step.");
+            case "resume" -> goal.isBlank() ? "There are no unfinished tasks to resume." : "Resuming the earlier unfinished task." + subject
+                    + (guidance.isBlank() ? "" : " I will also follow the new note.");
             case "clear" -> "Current and queued tasks cancelled; the queue is paused.";
             case "stop" -> "Current task cancelled; the remaining queue is paused.";
             case "pause" -> "Task queue paused; recorded progress is retained.";
@@ -36,7 +39,9 @@ public final class AgentControlReply {
                     : paused ? "队列已暂停，需要说“继续”才会执行。" : status.equals("running") || status.equals("waiting")
                     ? "正在后台执行。" : "排在第 " + position + " 位，尚未开始执行。");
             case "amend" -> "已更新任务要求" + subject + "。" + (paused ? "任务已暂停，需要说“继续”。" : "会在下一次操作边界应用。");
-            case "resume" -> goal.isBlank() ? "没有尚未完成的任务需要恢复。" : "将继续先前未完成的任务" + subject + "。";
+            case "guide" -> "已记下这条提示" + subject + "。" + (paused ? "任务已暂停，需要说“继续”。" : "执行器会在下一步按它调整。");
+            case "resume" -> goal.isBlank() ? "没有尚未完成的任务需要恢复。" : "将继续先前未完成的任务" + subject + "。"
+                    + (guidance.isBlank() ? "" : "会一并按新的补充说明执行。");
             case "clear" -> "已取消当前及排队任务，队列已暂停。";
             case "stop" -> "已取消当前任务，其余队列已暂停。";
             case "pause" -> "已暂停任务队列，保留已有进度。";

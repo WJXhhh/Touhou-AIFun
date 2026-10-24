@@ -81,4 +81,38 @@ class TaskNarrationTest {
         assertTrue(json.contains("\"narration\":[\"line 3\",\"line 4\"]"), json);
         assertEquals(List.of(), new ForegroundTaskStatus("task", AgentTaskState.Status.running, "sort", 0, "", null).narration());
     }
+
+    @Test void liveStreamingTextIsExposedSeparatelyFromArchivedPages() {
+        var page = JsonParser.parseString(TaskNarration.page("task", List.of("old line"), 0, "walking to the north chest"))
+                .getAsJsonObject();
+        assertEquals("walking to the north chest", page.get("live").getAsString());
+        assertTrue(page.get("live_pending").getAsBoolean());
+        assertEquals("old line", page.getAsJsonArray("entries").get(0).getAsJsonObject().get("text").getAsString());
+
+        var empty = JsonParser.parseString(TaskNarration.page("task", List.of(), 0, "thinking about the route"))
+                .getAsJsonObject();
+        assertEquals("empty", empty.get("status").getAsString());
+        assertEquals("thinking about the route", empty.get("live").getAsString());
+        assertFalse(empty.get("live_pending").isJsonNull());
+        assertTrue(empty.get("note").getAsString().contains("current streaming text"), empty.toString());
+
+        var archivedOnly = JsonParser.parseString(TaskNarration.page("task", List.of("old line"), 0)).getAsJsonObject();
+        assertFalse(archivedOnly.get("live_pending").getAsBoolean());
+        assertFalse(archivedOnly.has("live"));
+
+        String longLive = "x".repeat(5000);
+        var bounded = JsonParser.parseString(TaskNarration.page("task", List.of("a"), 0, longLive)).getAsJsonObject();
+        assertEquals(TaskNarration.MAX_LIVE_CHARS, bounded.get("live").getAsString().length());
+    }
+
+    @Test void foregroundStatusCarriesPhaseStepAndLiveText() {
+        var status = new ForegroundTaskStatus("task", AgentTaskState.Status.running, "sort", 3, "",
+                List.of("old line"), "gui_action", 2, "put iron away", "walking to the north chest");
+        String json = new Gson().toJson(status);
+        assertTrue(json.contains("\"phase\":\"gui_action\""), json);
+        assertTrue(json.contains("\"stepIndex\":2"), json);
+        assertTrue(json.contains("\"liveNarration\":\"walking to the north chest\""), json);
+        assertEquals("", new ForegroundTaskStatus("task", AgentTaskState.Status.running, "sort", 3, "", null).phase());
+        assertEquals(0, new ForegroundTaskStatus("task", AgentTaskState.Status.running, "sort", 3, "", null).stepIndex());
+    }
 }

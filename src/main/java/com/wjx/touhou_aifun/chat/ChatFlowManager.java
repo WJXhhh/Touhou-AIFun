@@ -232,6 +232,9 @@ public final class ChatFlowManager {
     }
 
     public static void setModelInFlight(UUID maid, Object callback, CompletableFuture<?> future) {
+        // Track the raw model future separately for the background executor so owner steering can
+        // cancel only the current thought, not its GUI/world operations.
+        if (callback instanceof com.wjx.touhou_aifun.chat.agent.TaskCallback task) task.trackModelRequest(future);
         long started = System.nanoTime();
         future.whenComplete((value,error) -> com.wjx.touhou_aifun.chat.agent.AgentTelemetry.stage("model_http_ready",started,0));
         setInFlight(maid,callback,future);

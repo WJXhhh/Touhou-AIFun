@@ -66,6 +66,11 @@ public final class TaskCallback extends LLMCallback {
     /** Whether the latest model response carried the required status narration. */
     private boolean lastResponseNarrated = true;
     private int narrationMisses;
+    /** Tail of the current streaming turn; archived text replaces this once the turn completes. */
+    private volatile String liveNarration = "";
+    private volatile long liveNarrationUpdatedMs;
+    /** Most recent model HTTP future, kept separately so owner steering can interrupt just thinking. */
+    private volatile CompletableFuture<?> modelRequest;
     public TaskCallback(MaidAIChatManager manager, List<LLMMessage> messages, AgentTaskState task) {
         this(manager, messages, task, null);
     }
@@ -78,6 +83,7 @@ public final class TaskCallback extends LLMCallback {
         while (policyIndex < this.messages.size() && this.messages.get(policyIndex).role() == Role.SYSTEM) policyIndex++;
         this.messages.add(policyIndex, LLMMessage.systemChat(maid, AgentTaskInstructions.POLICY));
         this.messages.add(policyIndex+1, LLMMessage.systemChat(maid, AgentTaskInstructions.NARRATION_POLICY));
+        this.messages.add(policyIndex+2, LLMMessage.systemChat(maid, AgentTaskInstructions.BUILD_POLICY));
         this.task = task; generation = task.generation; operations = new AgentOperations(); buffered = false;
         AgentExecution.bind(this,0,task.id,generation,AgentExecution.Purpose.TASK_EXECUTION);
         executionTiming=AgentTelemetry.root(this,"task_execution");AgentTelemetry.bindTask(this,executionTiming);
@@ -90,8 +96,8 @@ public final class TaskCallback extends LLMCallback {
         // facts instead of replaying an old one-shot template in a new callback generation.
         task.clearActionPlan();
         decisionRouter=new TaskDecisionRouter(this);
-        if(decisionRouter.enabled()) this.messages.add(policyIndex+2,LLMMessage.systemChat(maid,AgentTaskInstructions.DECISION_HINT));
-        if(decisionRouter.enabled() && task.loadedTools.contains("group:task_actions")) this.messages.add(policyIndex+3,LLMMessage.systemChat(maid,AgentTaskInstructions.DECISION_POLICY));
+        if(decisionRouter.enabled()) this.messages.add(policyIndex+3,LLMMessage.systemChat(maid,AgentTaskInstructions.DECISION_HINT));
+        if(decisionRouter.enabled() && task.loadedTools.contains("group:task_actions")) this.messages.add(policyIndex+4,LLMMessage.systemChat(maid,AgentTaskInstructions.DECISION_POLICY));
         task.loadedTools.add("scan_surroundings");
         startedTick = maid.level().getGameTime();
         com.wjx.touhou_aifun.vision.scan.VisionScanCache.invalidate(maid);
@@ -175,6 +181,11 @@ public final class TaskCallback extends LLMCallback {
 
     public void next(LLMClient client) {
         if (stopped()) return;
+        if (task.awaitingOwnerInput || task.hasOwnerQuestion()) {
+            trace("awaiting_owner_input", null, null, null, null, "owner decision required; executor does not speak to the owner");
+            return;
+        }
+        boolean firstRequest = initialRequest;
         if (initialRequest) {
             initialRequest = false;
             // Reconciled historical mutations are facts, but cannot invent a missing contract.
@@ -188,6 +199,9 @@ public final class TaskCallback extends LLMCallback {
         lastClient=client;
         int previousVersion = task.goalVersion;
         String ownerAmendment=task.pendingAmendment;
+        // Do not let guidance overtake an amendment that is applied in this same checkpoint: keep
+        // it queued so the newest owner instruction is always the last one the executor sees.
+        String ownerGuidance = ownerAmendment.isBlank() ? task.takeGuidance() : "";
         task.applyAmendment();
         if (previousVersion != task.goalVersion) {
             completionCorrections=0; completionRequested=false; inventoryBlockMessage=null; noProgress=0;
@@ -198,6 +212,11 @@ public final class TaskCallback extends LLMCallback {
             // amended goal while the task keeps running instead of paying a round trip at the end.
             if (TaskAnnouncements.mode()==TaskAnnouncements.Mode.brief)
                 TaskAnnouncementPrefetch.prime(maid,getChatManager(),task);
+        }
+        if (!ownerGuidance.isBlank()) {
+            messages.add(LLMMessage.userChat(maid,"Owner guidance for the current task, goal version "+task.goalVersion+":\n"+ownerGuidance
+                    +"\nThis is advisory context from the owner, not a new requirement. Keep the existing goal and completion contract; use it to adjust the next step. It never authorizes skipping verification, replaying completed work or weakening an existing condition."));
+            trace("guidance_applied", null, null, null, null, "goal_version="+task.goalVersion+"; chars="+ownerGuidance.length());
         }
         if(freshWorld && task.completion!=null && !AgentCompletion.supplyConflicts(maid,task,task.completion).isEmpty()) {
             AgentRuntime.finished(this,"完成条件要求保留的最终库存与转出计划冲突。"+AgentCompletion.describeUnmet(maid,task,true)+"请明确补充最终要保留的物品数量；已执行的转移记录已保留，不会重复搬运。",false);return;
@@ -215,6 +234,13 @@ public final class TaskCallback extends LLMCallback {
         }
         JsonObject checkpoint = new JsonObject();
         checkpoint.addProperty("goal",task.effectiveGoal()); checkpoint.addProperty("goal_version",task.goalVersion);
+        checkpoint.addProperty("material_policy",task.materialPolicy);
+        checkpoint.addProperty("awaiting_owner_input",task.awaitingOwnerInput);
+        if(task.hasOwnerQuestion()) {
+            try { checkpoint.add("pending_owner_question",com.google.gson.JsonParser.parseString(task.pendingOwnerQuestion)); }
+            catch(RuntimeException invalid) { checkpoint.addProperty("pending_owner_question",AgentTaskState.bounded(task.pendingOwnerQuestion,1024)); }
+        }
+        if(!task.ownerQuestionText.isBlank()) checkpoint.addProperty("owner_question_asked",AgentTaskState.bounded(task.ownerQuestionText,256));
         JsonArray goalItems = goalItemHints();
         if (goalItems.size() > 0) {
             checkpoint.add("goal_item_candidates", goalItems.deepCopy());
@@ -223,6 +249,16 @@ public final class TaskCallback extends LLMCallback {
         checkpoint.add("steps",new Gson().toJsonTree(task.steps)); checkpoint.addProperty("current_step",task.currentStep);
         checkpoint.add("recent_failures",new Gson().toJsonTree(task.failures.subList(Math.max(0,task.failures.size()-4),task.failures.size())));
         checkpoint.addProperty("execution_trace_ref", "task_trace");
+        if (firstRequest && task.generation > 1) {
+            // A resumed generation must know why it stopped and what it last said, from the durable
+            // record rather than reconstructed model history. Injected once; it is historical fact,
+            // never an authorization to replay or to skip fresh observation.
+            if (task.outcome != null && !task.outcome.isBlank())
+                checkpoint.addProperty("previous_outcome", AgentTaskState.bounded(task.outcome, 512));
+            List<String> lastNarration = TaskNarration.tail(archive.narration, 2, 300);
+            if (!lastNarration.isEmpty()) checkpoint.add("last_narration", new Gson().toJsonTree(lastNarration));
+            checkpoint.addProperty("resume_note", "This generation resumed a paused task. previous_outcome and last_narration are historical facts; re-observe before acting and never replay completed transfers.");
+        }
         checkpoint.addProperty("fresh_world_observed",freshWorld);
         if (!lastResponseNarrated) {
             checkpoint.addProperty("intermediate_narration_required", AgentTaskInstructions.NARRATION_REMINDER);
@@ -364,6 +400,7 @@ public final class TaskCallback extends LLMCallback {
                 if (task.transfers.size() > 256) { AgentRuntime.finished(this, "task_checkpoint_target_limit", false); return; }
                 if (failure != null) { AgentRuntime.finished(this, "tool_dispatch_failed", false); return; }
                 if(!task.pendingAmendment.isBlank()) { next(client); return; }
+                if(task.hasGuidance()) { next(client); return; }
                 if(inventoryBlockMessage!=null){AgentRuntime.finished(this,inventoryBlockMessage,false);return;}
                 decisionRouter.settled(recovering,freshWorld);
                 if(completionRequested) {
@@ -468,11 +505,14 @@ public final class TaskCallback extends LLMCallback {
         if (!task.pendingAmendment.isBlank()) return CompletableFuture.completedFuture("goal_updated_before_dispatch: no action started; replan from the next checkpoint");
         if (!freshWorld && ToolExecutionPolicy.requiresFreshWorld(name))
             return CompletableFuture.completedFuture("fresh_world_observation_required: run scan_surroundings in this execution generation before world actions; old evidence is historical only");
-        if(task.completion==null && (name.equals("gui_action") || name.equals("gui_batch") || name.equals("wait_gui") || name.equals("drop_items_to_owner")) && !projectEObservation(call))
+        if(task.completion==null && (name.equals("gui_action") || name.equals("gui_batch") || name.equals("wait_gui") || name.equals("drop_items_to_owner") || name.equals("block_action")) && !projectEObservation(call))
             return CompletableFuture.completedFuture("completion_contract_required_before_mutation: inspect signs, GUI and inventory, then define all user-required quantities and container positions with update_task_plan.completion. No items moved by this call.");
         if(task.completion==null && decisionRouter.enabled() && ToolExecutionPolicy.requiresFreshWorld(name)
-                && !Set.of("open_gui","inspect_gui","inspect_containers","close_gui").contains(name) && !projectEObservation(call))
+                && !Set.of("open_gui","inspect_gui","inspect_containers","close_gui","build_queue").contains(name) && !projectEObservation(call))
             return CompletableFuture.completedFuture("completion_contract_required_before_mutation: define the full state/consumption/action completion contract before this world action.");
+        if(("gui_action".equals(name) || "gui_batch".equals(name)) && hasStructureCompletion()
+                && !materialWithdrawalAllowed(call))
+            return CompletableFuture.completedFuture("build_material_withdrawal_not_authorized: structure material withdrawals require material_policy=self_source and only the current missing items/quantities. No items were moved.");
         try {
             ITool tool = ToolRegister.getTool(name);
             if (tool == null || name.equals("task_control") || !ToolContextSelector.triggers(tool, maid, this, ToolContextSelector.triggerContext(maid, this))) return CompletableFuture.completedFuture("tool_unavailable");
@@ -496,9 +536,76 @@ public final class TaskCallback extends LLMCallback {
             });
         } catch (RuntimeException e) { return CompletableFuture.completedFuture("invalid_tool_call: " + e.getClass().getSimpleName()); }
     }
+    private boolean hasStructureCompletion() {
+        return task.completion != null && containsCompletionKind(task.completion, "structure");
+    }
+
+    private static boolean containsCompletionKind(com.google.gson.JsonElement element, String kind) {
+        if (element == null || element.isJsonNull()) return false;
+        if (element.isJsonObject()) {
+            com.google.gson.JsonObject object = element.getAsJsonObject();
+            if (object.has("kind") && object.get("kind").isJsonPrimitive()
+                    && kind.equals(object.get("kind").getAsString())) return true;
+            for (var entry : object.entrySet()) if (containsCompletionKind(entry.getValue(), kind)) return true;
+            return false;
+        }
+        if (element.isJsonArray()) {
+            for (var child : element.getAsJsonArray()) if (containsCompletionKind(child, kind)) return true;
+        }
+        return false;
+    }
+
+    private boolean completionMentionsItem(String itemId) {
+        if (itemId == null || itemId.isBlank() || task.completion == null) return false;
+        for (var leaf : AgentCompletionRules.leaves(task.completion)) {
+            if (leaf.has("item") && leaf.get("item").isJsonPrimitive()
+                    && itemId.equals(leaf.get("item").getAsString())) return true;
+        }
+        return false;
+    }
+
+    /**
+     * Container withdrawals during a structure task are allowed only in self_source mode and only
+     * for items/amounts currently missing. Outbound transfers and non-item GUI actions are unaffected.
+     */
+    private boolean materialWithdrawalAllowed(ToolCall call) {
+        var session = com.wjx.touhou_aifun.maid.gui.MaidGuiSessionManager.session(maid.getUUID());
+        if (session == null) return true;
+        com.google.gson.JsonObject args;
+        try { args = JsonParser.parseString(call.getFunction().getArguments()).getAsJsonObject(); }
+        catch (RuntimeException invalid) { return false; }
+        java.util.List<com.google.gson.JsonObject> actions = new java.util.ArrayList<>();
+        if (call.getFunction().getName().equals("gui_batch")) {
+            if (args.has("actions") && args.get("actions").isJsonArray())
+                for (var value : args.getAsJsonArray("actions"))
+                    if (value.isJsonObject()) actions.add(value.getAsJsonObject());
+        } else actions.add(args);
+        for (var action : actions) {
+            String kind = action.has("action") && action.get("action").isJsonPrimitive()
+                    ? action.get("action").getAsString() : "";
+            if (!Set.of("transfer", "quick_move").contains(kind)) continue;
+            int from = action.has("slot") ? action.get("slot").getAsInt()
+                    : action.has("from_slot") ? action.get("from_slot").getAsInt() : -1;
+            if (from < 0 || from >= session.menu().slots.size()) return false;
+            var source = session.menu().getSlot(from);
+            boolean receive = source.container != session.actor.getInventory();
+            if (!receive) continue;
+            long amount;
+            if (kind.equals("quick_move")) amount = source.getItem().getCount();
+            else {
+                if (!action.has("count")) return false;
+                amount = action.get("count").getAsLong();
+            }
+            String item = com.wjx.touhou_aifun.maid.gui.MaidGuiSession.itemId(source.getItem());
+            if (completionMentionsItem(item)) continue;
+            if (!com.wjx.touhou_aifun.chat.agent.build.BuildMaterialPolicy.withdrawalAllowed(
+                    maid, task, item, amount)) return false;
+        }
+        return true;
+    }
+
     /** A semantic search can establish facts before the model defines a mutation contract. */
-    private static boolean projectEObservation(ToolCall call) {
-        if (!call.getFunction().getName().equals("gui_action")) return false;
+    private static boolean projectEObservation(ToolCall call) {        if (!call.getFunction().getName().equals("gui_action")) return false;
         try {
             var args = JsonParser.parseString(call.getFunction().getArguments()).getAsJsonObject();
             return args.has("action") && args.get("action").getAsString().equals("projecte_search")
@@ -728,6 +835,7 @@ public final class TaskCallback extends LLMCallback {
      * lines remain as result-ref records in the execution archive.
      */
     private boolean recordNarration(String text) {
+        clearLiveNarration();
         if (text == null || text.isBlank()) return false;
         try {
             archive.appendNarration(text);
@@ -739,8 +847,52 @@ public final class TaskCallback extends LLMCallback {
         } catch (RuntimeException ignored) { }
         return true;
     }
+    /**
+     * Mirrors the current streaming turn for owner inspection. This is transient: it is never
+     * persisted, displayed, spoken or replayed, and {@link #recordNarration} replaces it with the
+     * archived copy when the turn completes. Called from network stream threads, hence volatile.
+     */
+    public void observeStreamingText(String content) {
+        if (content == null) return;
+        String text = content.strip();
+        if (text.isBlank()) return;
+        long now = System.currentTimeMillis();
+        if (now - liveNarrationUpdatedMs < 100 && !liveNarration.isEmpty()) return;
+        liveNarrationUpdatedMs = now;
+        int length = text.codePointCount(0, text.length());
+        int max = 1200;
+        liveNarration = length <= max ? text : "…" + text.substring(text.offsetByCodePoints(0, length - max));
+    }
+    public String liveNarration() {
+        return liveNarration;
+    }
+    public void clearLiveNarration() {
+        liveNarration = "";
+        liveNarrationUpdatedMs = 0;
+    }
+    /** Tracks only the model HTTP future, so owner steering can cancel thinking without stopping tools. */
+    public void trackModelRequest(CompletableFuture<?> future) {
+        if (future == null) return;
+        modelRequest = future;
+        future.whenComplete((value, error) -> {
+            if (modelRequest == future) modelRequest = null;
+        });
+    }
+    /** True when an in-flight model request was actually cancelled. Never touches tool operations. */
+    boolean interruptModelRequest() {
+        CompletableFuture<?> future = modelRequest;
+        if (future == null || future.isDone()) return false;
+        boolean cancelled = future.cancel(true);
+        if (cancelled) trace("steering_interrupt_request", null, null, null, null,
+                "cancelled the in-flight model request so owner guidance/amendment applies immediately");
+        return cancelled;
+    }
+    private boolean hasPendingOwnerDirective() {
+        return !task.pendingAmendment.isBlank() || task.hasGuidance();
+    }
     public String readTrace(int offset) { return TaskResultStore.page(new Gson().toJson(archive.records), offset); }
     public void archiveState() {
+        clearLiveNarration();
         archive.terminal = task.terminal(); archive.updatedTick = maid.level().getGameTime();
         trace("state", null, null, null, null, task.status.name() + ": " + task.outcome);
     }
@@ -753,7 +905,7 @@ public final class TaskCallback extends LLMCallback {
         runOnServerThread(() -> {
             if (!stopped()) {
                 lastResponseNarrated = recordNarration(response.getChatText());
-                if (!task.pendingAmendment.isBlank() && lastClient != null) { next(lastClient); return; }
+                if (hasPendingOwnerDirective() && lastClient != null) { next(lastClient); return; }
                 var verification=executionTiming.child("completion_verification");
                 boolean verified = decisionRouter.permitsCompletion() && AgentCompletion.verify(maid,task,freshWorld);
                 verification.finish(verified?"verified":"unmet",0);
@@ -782,7 +934,13 @@ public final class TaskCallback extends LLMCallback {
     @Override public void onFailure(HttpRequest request, Throwable error, int code) {
         runOnServerThread(() -> {
             if(stopped()) return;
-            if(!task.pendingAmendment.isBlank() && lastClient!=null) {next(lastClient);return;}
+            clearLiveNarration();
+            if(hasPendingOwnerDirective() && lastClient!=null) {
+                // An owner amendment/guidance was applied while this request was in flight (the
+                // runtime may have cancelled it on purpose). Replan instead of recording a failure.
+                trace("steering_interrupt",null,null,null,null,"owner directive arrived during the model request; no failure recorded");
+                next(lastClient);return;
+            }
             trace("request_failed",null,null,null,null,"code="+code+"; type="+(error==null?"unknown":error.getClass().getSimpleName()));
             // A failed final model reply cannot undo already verified physical transfers.
             // Open menus/in-flight actions or missing evidence still require an explicit pause.

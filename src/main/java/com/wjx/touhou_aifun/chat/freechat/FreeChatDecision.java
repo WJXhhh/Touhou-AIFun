@@ -180,7 +180,9 @@ public final class FreeChatDecision {
                     + "to the maid while facing a block, a mob or another direction, so in_view=False or "
                     + "player_is_looking_at_her=False is weak evidence against choosing her. When her "
                     + "recent_reply asks the owner a question and the current utterance is plausibly the "
-                    + "short answer, prefer her. Do not choose her "
+                    + "short answer, prefer her. An item/material name, a repeated noun, or a correction "
+                    + "can answer her clarification without repeating her name or a complete command. "
+                    + "Use recent_ambient_speech to resolve these continuations. Do not choose her "
                     + "only for clear self-talk, background/media speech, or words clearly aimed at another "
                     + "visible addressee.");
         }
@@ -190,7 +192,8 @@ public final class FreeChatDecision {
         targets.put("ambient", "Self-talk, reactions to the game, background speech or media; there is no addressee.");
         targets.put("unknown", "The addressee cannot be determined.");
         questions.add("target", DecisionProtocol.choice(
-                "Who is the player speaking to? Use the current utterance, the player-view scene, and the candidate list. "
+                "Who is the player speaking to? Use the current utterance, recent_ambient_speech, "
+                        + "each candidate's recent_reply, the player-view scene, and the candidate list. "
                         + "Only [candidate N] entries that appear in the candidates list are selectable. "
                         + "The owner is the speaker and normally talks to the candidate maids he owns; when only one "
                         + "candidate maid is nearby and the words could be a command, request or remark for her, prefer "
@@ -206,7 +209,8 @@ public final class FreeChatDecision {
 
         Map<String, String> validity = new LinkedHashMap<>();
         validity.put("meaningful", "Clear words form a command, statement, answer or question, even when very short "
-                + "(for example: stop, come here, okay, wait a moment). A short but clear command is valid.");
+                + "(for example: stop, come here, okay, wait a moment). A short but clear command is valid. "
+                + "A repeated item/material name that answers the maid's clarification is a meaningful correction.");
         validity.put("too_short_incoherent", "INVALID only when the speech is both very short (about 4 characters/syllables or fewer) "
                 + "AND too disorganized: random fragments, repeated single syllables, ASR gibberish, or no recognizable word/target.");
         validity.put("background", "Recognizable speech, but it is background speech, media, or otherwise not directed at this maid.");
@@ -238,8 +242,12 @@ public final class FreeChatDecision {
         intervention.put("ignore", "Do not intervene now.");
         questions.add("intervention", DecisionProtocol.choice(
                 "Given the addressee, the maid's busy state and the conversation context, how should this maid intervene? "
-                        + "Choose ignore when the content is unrelated, the maid is already speaking and should not interrupt, "
-                        + "or the evidence is weak.",
+                        + "When the owner answers her recent question or corrects an item/material name, choose "
+                        + "answer, brief_ack or clarify even if the words are short or repeated. A game/item topic "
+                        + "addressed to her does not need to be about the maid herself. Busy means an active request, "
+                        + "not proof that she is speaking; the owner may interrupt to correct that request. "
+                        + "Choose ignore for unrelated speech aimed elsewhere, background/media speech, or when "
+                        + "there is no plausible conversational link to this maid.",
                 intervention));
         return questions;
     }

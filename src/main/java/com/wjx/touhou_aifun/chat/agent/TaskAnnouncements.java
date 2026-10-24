@@ -49,11 +49,13 @@ public final class TaskAnnouncements {
         String dispatch = text(receipt, "controlled_task_dispatch");
         String goal = AgentTaskState.bounded(text(receipt, "controlled_task_goal"), 160);
         String amendment = AgentTaskState.bounded(text(receipt, "accepted_owner_amendment"), 240);
+        String guidance = AgentTaskState.bounded(text(receipt, "accepted_owner_guidance"), 240);
         String active = AgentTaskState.bounded(text(receipt, "active_task_goal"), 160);
         StringBuilder facts = new StringBuilder(" Task-control facts: dispatch=")
                 .append(dispatch.isBlank() ? "unknown" : dispatch);
         if (!goal.isBlank()) facts.append("; accepted goal=\"").append(goal).append('"');
         if (!amendment.isBlank()) facts.append("; accepted amendment=\"").append(amendment).append('"');
+        if (!guidance.isBlank()) facts.append("; accepted guidance=\"").append(guidance).append('"');
         if (!active.isBlank()) facts.append("; executor currently busy with=\"").append(active).append('"');
         facts.append('.');
         String applied = repeated
@@ -65,7 +67,8 @@ public final class TaskAnnouncements {
                     + " Reply with ONE short, natural, in-character line in the owner's language. Match dispatch:"
                     + " starting_now = you are setting off right now; waiting = you noted it and will do it after the current work;"
                     + " paused = the queue is paused; amendment_next_boundary = briefly confirm the updated detail and that it applies at the next action boundary;"
-                    + " amendment_pending = confirm it will apply after continuing; resuming = say you are continuing;"
+                    + " amendment_pending = confirm it will apply after continuing; guidance_applied/guidance_next_boundary = briefly confirm the hint is noted and being followed without restating the goal;"
+                    + " guidance_pending = confirm it will be used when the task continues; resuming = say you are continuing;"
                     + " stopped/queue_paused = acknowledge briefly; nothing_to_resume = say there is nothing to resume."
                     + " You may restate the gist casually if it feels natural. Do not invoke world/GUI tools or repeat"
                     + " task-control changes. A new owner message is required for another change.";
@@ -79,6 +82,8 @@ public final class TaskAnnouncements {
                 + " completed -> completion is already verified;"
                 + " amendment_next_boundary -> briefly confirm the updated detail (e.g. \"了解，改成……是吧\") and that it applies at the next action boundary;"
                 + " amendment_pending -> confirm it will apply after continuing;"
+                + " guidance_applied/guidance_next_boundary -> briefly confirm the hint is noted and being followed, without restating the goal or calling it a new requirement;"
+                + " guidance_pending -> confirm it will be used when the task continues or starts;"
                 + " resuming -> say you are continuing the earlier unfinished task;"
                 + " stopped/queue_paused -> acknowledge briefly;"
                 + " nothing_to_resume -> say there is nothing to resume."
@@ -116,9 +121,47 @@ public final class TaskAnnouncements {
                 : "任务已暂停【" + AgentTaskState.bounded(goal, 80) + "】：" + outcome + queuedNote;
     }
 
+    /**
+     * Deterministic short fallback for an owner question. The normal path phrases it with the
+     * main chat model; this line is used when that side request is unavailable.
+     */
+    public static String ownerQuestion(JsonObject question, boolean english) {
+        StringBuilder line = new StringBuilder();
+        String kind = question != null && question.has("kind") ? question.get("kind").getAsString() : "other";
+        if (question != null && question.has("facts") && question.get("facts").isJsonObject()) {
+            JsonObject facts = question.getAsJsonObject("facts");
+            if (facts.has("missing_items") && facts.get("missing_items").isJsonArray()) {
+                int shown = 0;
+                for (var value : facts.getAsJsonArray("missing_items")) {
+                    if (!value.isJsonObject() || shown++ >= 3) break;
+                    JsonObject item = value.getAsJsonObject();
+                    String name = item.has("display_name") && !item.get("display_name").getAsString().isBlank()
+                            ? item.get("display_name").getAsString()
+                            : item.has("item") ? item.get("item").getAsString() : "";
+                    long need = item.has("required") ? item.get("required").getAsLong() : 0;
+                    long have = item.has("have") ? item.get("have").getAsLong() : 0;
+                    if (line.length() > 0) line.append(english ? ", " : "、");
+                    line.append(name).append(english ? " x" : "×").append(need);
+                    if (english) line.append(" (have ").append(have).append(")");
+                    else line.append("（有").append(have).append("）");
+                }
+            }
+        }
+        if (line.length() == 0) {
+            line.append(english ? "something" : "一些材料");
+        }
+        if ("materials".equals(kind)) {
+            return english
+                    ? "I'm short of " + line + ". Should I go and find them myself?"
+                    : "材料还差" + line + "，要我自己去找吗？";
+        }
+        return english
+                ? "I need your decision before continuing: " + line + ". Should I go ahead?"
+                : "继续之前需要你决定一下：" + line + "，要我继续吗？";
+    }
+
     /** Owner-facing pause announcement for a runtime-side failure (model/archive unavailable). */
-    public static String runtimePause(boolean invalidModel, boolean english, Mode mode) {
-        if (mode == Mode.silent) return null;
+    public static String runtimePause(boolean invalidModel, boolean english, Mode mode) {        if (mode == Mode.silent) return null;
         if (mode == Mode.brief) {
             if (invalidModel) return english ? "I can't get going right now; let's retry later~" : "我这边暂时使不上劲，回头再试～";
             return english ? "Something glitched on my side; let's retry later~" : "我这出了点小状况，回头再试～";

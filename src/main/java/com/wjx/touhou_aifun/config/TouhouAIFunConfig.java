@@ -9,6 +9,7 @@ public final class TouhouAIFunConfig {
     public static final ForgeConfigSpec.ConfigValue<String> AGENT_TASK_ANNOUNCEMENTS;
     public static final ForgeConfigSpec.BooleanValue AGENT_AUTOMATIC_TOOL_SELECTION;
     public static final ForgeConfigSpec.BooleanValue AGENT_AMEND_AUTO_RESUME;
+    public static final ForgeConfigSpec.BooleanValue AGENT_STEERING_INTERRUPT;
     public static final ForgeConfigSpec.IntValue AGENT_CONTEXT_INPUT_BUDGET_TOKENS;
     public static final ForgeConfigSpec.ConfigValue<String> AGENT_DECISION_MODEL;
     public static final ForgeConfigSpec.ConfigValue<String> AGENT_DEEPSEEK_EFFORT;
@@ -54,6 +55,19 @@ public final class TouhouAIFunConfig {
     public static final ForgeConfigSpec.BooleanValue SHALLOW_SCAN_ENABLED;
     public static final ForgeConfigSpec.IntValue GUI_MAX_WAIT_SECONDS;
     public static final ForgeConfigSpec.DoubleValue BLOCK_INTERACTION_REACH;
+    public static final ForgeConfigSpec.IntValue BLOCK_ACTION_TIMEOUT_SECONDS;
+    public static final ForgeConfigSpec.IntValue BLOCK_ACTION_MAX_ATTEMPTS;
+    public static final ForgeConfigSpec.BooleanValue BLOCK_ACTION_REQUIRE_CORRECT_TOOL;
+    public static final ForgeConfigSpec.BooleanValue BLOCK_ACTION_SIMULATE_TOOL_DAMAGE;
+    public static final ForgeConfigSpec.ConfigValue<String> BLOCK_ACTION_MINING_MODE;
+    public static final ForgeConfigSpec.IntValue BUILD_QUEUE_MAX_STEPS_PER_DESIGN;
+    public static final ForgeConfigSpec.IntValue BUILD_QUEUE_MAX_STEPS_PER_CALL;
+    public static final ForgeConfigSpec.IntValue BUILD_QUEUE_RUN_MAX_SECONDS;
+    public static final ForgeConfigSpec.BooleanValue BUILD_QUEUE_STATE_DECISION;
+    public static final ForgeConfigSpec.DoubleValue BUILD_QUEUE_STATE_MIN_CONFIDENCE;
+    public static final ForgeConfigSpec.DoubleValue BUILD_QUEUE_MATERIAL_AUTH_MIN_CONFIDENCE;
+    public static final ForgeConfigSpec.IntValue BUILD_QUEUE_MAX_MATERIAL_ROUNDS;
+    public static final ForgeConfigSpec.IntValue BUILD_QUEUE_MAX_DESIGNS;
     public static final ForgeConfigSpec.BooleanValue COMBAT_ENABLED;
     public static final ForgeConfigSpec.BooleanValue COMBAT_DEFEND_IN_ALL_TASKS;
     public static final ForgeConfigSpec.BooleanValue COMBAT_PROTECT_OWNER;
@@ -65,6 +79,9 @@ public final class TouhouAIFunConfig {
     public static final ForgeConfigSpec.IntValue COMBAT_AGGRO_CLEAR_TICKS;
     public static final ForgeConfigSpec.BooleanValue COMBAT_FLEE_CREEPERS;
     public static final ForgeConfigSpec.BooleanValue COMBAT_DEBUG;
+    public static final ForgeConfigSpec.BooleanValue SLASHBLADE_ENABLED;
+    public static final ForgeConfigSpec.BooleanValue SLASHBLADE_SWORDS;
+    public static final ForgeConfigSpec.BooleanValue SLASHBLADE_SUPER;
 
     static {
         ForgeConfigSpec.Builder builder = new ForgeConfigSpec.Builder();
@@ -91,6 +108,13 @@ public final class TouhouAIFunConfig {
                         "separate explicit 'continue'. An explicit owner pause is preserved and still requires",
                         "continue. Disable to keep every amendment pending until the owner resumes manually.")
                 .define("amendAutoResume", true);
+        AGENT_STEERING_INTERRUPT = builder
+                .comment("When the owner uses task_control(guide) or amend while the background executor is",
+                        "thinking, cancel that in-flight model request so the new instruction is planned",
+                        "immediately instead of after a stale turn. Already-started GUI/world operations",
+                        "still settle and are never force-interrupted; disable to apply only at the next",
+                        "action boundary.")
+                .define("steeringInterruptModel", true);
         AGENT_CONTEXT_INPUT_BUDGET_TOKENS = builder
                 .comment("Input-context budget for the background task executor only; ordinary chat keeps",
                         "[llm].contextInputBudgetTokens. Completed tool batches are compacted at 80% and trimmed",
@@ -300,6 +324,37 @@ public final class TouhouAIFunConfig {
         GUI_MAX_WAIT_SECONDS = builder.comment("Maximum cumulative UNTIL_GOAL processing wait per user task, in simulation seconds.")
                 .defineInRange("maxWaitSeconds", 900, 1, 86400);
         builder.pop();
+        builder.push("blockActions");
+        BLOCK_ACTION_TIMEOUT_SECONDS = builder.comment("Maximum walk + action time for one simulated block action, in seconds.")
+                .defineInRange("timeoutSeconds", 20, 1, 120);
+        BLOCK_ACTION_MAX_ATTEMPTS = builder.comment("How many times the build runner retries one block step after a mismatch.")
+                .defineInRange("maxAttempts", 2, 1, 5);
+        BLOCK_ACTION_REQUIRE_CORRECT_TOOL = builder.comment("Require a tool that is correct for the block's drops before mining.")
+                .define("requireCorrectToolForDrops", false);
+        BLOCK_ACTION_SIMULATE_TOOL_DAMAGE = builder.comment("Damage the selected mining tool by one durability per broken block.")
+                .define("simulateToolDamage", true);
+        BLOCK_ACTION_MINING_MODE = builder.comment("instant = break in one server tick (fast building); simulated = progress based on hardness/tool.")
+                .define("miningMode", "instant", value -> value instanceof String text
+                        && java.util.Set.of("instant", "simulated").contains(text));
+        builder.pop();
+        builder.push("buildQueue");
+        BUILD_QUEUE_MAX_STEPS_PER_DESIGN = builder.comment("Maximum stored steps in one build design.")
+                .defineInRange("maxStepsPerDesign", 4096, 1, 8192);
+        BUILD_QUEUE_MAX_STEPS_PER_CALL = builder.comment("Maximum design steps accepted in one tool call.")
+                .defineInRange("maxStepsPerCall", 256, 1, 256);
+        BUILD_QUEUE_RUN_MAX_SECONDS = builder.comment("Maximum wall time for one build_queue run call.")
+                .defineInRange("runMaxSeconds", 600, 30, 3600);
+        BUILD_QUEUE_STATE_DECISION = builder.comment("Use the native decision service for non-exact build states before falling back to the executor LLM.")
+                .define("stateDecision", true);
+        BUILD_QUEUE_STATE_MIN_CONFIDENCE = builder.comment("Minimum native-decision confidence for a build-state verdict.")
+                .defineInRange("stateMinConfidence", 0.7, 0.51, 1.0);
+        BUILD_QUEUE_MATERIAL_AUTH_MIN_CONFIDENCE = builder.comment("Minimum native-decision confidence when inferring prior owner material authorization.")
+                .defineInRange("materialAuthorizationMinConfidence", 0.8, 0.51, 1.0);
+        BUILD_QUEUE_MAX_MATERIAL_ROUNDS = builder.comment("Maximum self-sourcing rounds before the maid raises an owner question.")
+                .defineInRange("maxMaterialRounds", 3, 1, 10);
+        BUILD_QUEUE_MAX_DESIGNS = builder.comment("Maximum saved build designs per maid.")
+                .defineInRange("maxDesigns", 8, 1, 16);
+        builder.pop();
         builder.push("combat");
         COMBAT_ENABLED = builder.comment("Server-side combat reflex for maids: retaliate immediately when the maid or its owner",
                         "is hurt, instead of waiting for the 20-tick target sensor. This does not replace the base",
@@ -333,6 +388,12 @@ public final class TouhouAIFunConfig {
                 .define("fleeCreepers", true);
         COMBAT_DEBUG = builder.comment("Log reflex decisions at DEBUG level (no chat text, only entity ids and reasons).")
                 .define("debugLog", false);
+        SLASHBLADE_ENABLED = builder.comment("Use native SlashBlade combos and the held blade's SA for maid combat (optional mod).")
+                .define("slashbladeAI", true);
+        SLASHBLADE_SWORDS = builder.comment("Allow phantom swords only with a bewitched, unbroken blade carrying Power.")
+                .define("slashbladePhantomSwords", true);
+        SLASHBLADE_SUPER = builder.comment("Allow Super SA: requires an undamaged bewitched thousand-kill blade and consumes half max durability.")
+                .define("slashbladeSuperSA", false);
         builder.pop();
         SPEC = builder.build();
     }

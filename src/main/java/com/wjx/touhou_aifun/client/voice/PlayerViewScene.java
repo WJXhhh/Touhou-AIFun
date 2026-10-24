@@ -3,6 +3,7 @@ package com.wjx.touhou_aifun.client.voice;
 import com.github.tartaricacid.touhoulittlemaid.config.subconfig.AIConfig;
 import com.github.tartaricacid.touhoulittlemaid.entity.passive.EntityMaid;
 import com.wjx.touhou_aifun.chat.freechat.FreeChatDecision;
+import com.wjx.touhou_aifun.chat.freechat.FreeChatCapturedFocus;
 import com.wjx.touhou_aifun.vision.scan.VisionDirectionMath;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.player.LocalPlayer;
@@ -34,7 +35,6 @@ public final class PlayerViewScene {
     private static final double LOOK_COS = Math.cos(Math.toRadians(10.0D));
     private static final int MAX_ENTITIES = 8;
     private static final int MAX_CANDIDATES = 4;
-    private static final int MAX_SUMMARY_CODE_POINTS = 2000;
 
     public record Capture(List<Integer> candidateMaidIds, String summary) {
     }
@@ -131,7 +131,11 @@ public final class PlayerViewScene {
         if (others == 0) {
             summary.append("\n(none)");
         }
-        String text = FreeChatDecision.sanitizePrompt(summary.toString(), MAX_SUMMARY_CODE_POINTS);
+        List<FreeChatCapturedFocus.Focus> focus = candidateMaids.stream()
+                .map(maid -> new FreeChatCapturedFocus.Focus(maid.getId(), inView(player, maid),
+                        playerLookingAt(player, maid) && player.hasLineOfSight(maid),
+                        direction(player, maid))).toList();
+        String text = FreeChatCapturedFocus.encode(summary.toString(), focus);
         return new Capture(List.copyOf(candidateIds), text);
     }
 

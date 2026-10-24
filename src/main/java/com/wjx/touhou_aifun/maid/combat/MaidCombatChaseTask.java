@@ -47,6 +47,7 @@ public final class MaidCombatChaseTask extends Behavior<EntityMaid> {
     }
 
     private static boolean shouldChase(EntityMaid maid) {
+        if (MaidSlashBladeCombat.controls(maid)) return false;
         LivingEntity target = MaidCombatReflex.currentTarget(maid);
         if (target == null || !maid.canBrainMoving()) {
             return false;

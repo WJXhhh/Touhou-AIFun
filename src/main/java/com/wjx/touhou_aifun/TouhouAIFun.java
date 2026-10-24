@@ -17,6 +17,7 @@ public final class TouhouAIFun {
         ModLoadingContext.get().registerConfig(ModConfig.Type.COMMON, TouhouAIFunConfig.SPEC,
                 "touhou-aifun.toml");
         AIFunNetwork.init();
+        com.wjx.touhou_aifun.chat.agent.build.BuildStateDecisionClient.install();
         LOGGER.info("Touhou AIFun addon initialized.");
     }
 }

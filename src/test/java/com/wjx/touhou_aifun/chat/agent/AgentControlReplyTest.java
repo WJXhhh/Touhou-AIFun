@@ -22,6 +22,13 @@ class AgentControlReplyTest {
         assertFalse(reply("{\"applied_action\":\"pause\"}",false).contains("取消"));
         assertTrue(reply("{\"applied_action\":\"clear\"}",false).contains("当前及排队"));
     }
+    @Test void guidanceAndResumePatchAreAcknowledgedWithoutRestatingTheGoal() {
+        var guide=reply("{\"applied_action\":\"guide\",\"controlled_task_goal\":\"sort chests\"}",false);
+        assertTrue(guide.contains("已记下") && guide.contains("下一步"),guide);
+        assertTrue(reply("{\"applied_action\":\"guide\",\"controlled_task_goal\":\"sort chests\"}",true).contains("Guidance noted"));
+        var resume=reply("{\"applied_action\":\"resume\",\"controlled_task_goal\":\"old sorting\",\"accepted_owner_guidance\":\"use the north chest\"}",false);
+        assertTrue(resume.contains("新的补充说明"),resume);
+    }
     @Test void unsupportedLanguagesKeepTheModelTranslationPath() {
         assertTrue(AgentControlReply.supports("zh_cn"));assertTrue(AgentControlReply.supports("en_us"));
         assertFalse(AgentControlReply.supports("ja_jp"));assertFalse(AgentControlReply.supports(null));

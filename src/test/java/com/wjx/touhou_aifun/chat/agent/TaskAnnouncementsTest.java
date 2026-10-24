@@ -43,6 +43,17 @@ class TaskAnnouncementsTest {
         assertTrue(brief.contains("A new owner message is required"), brief);
     }
 
+    @Test void guidanceDispatchIsPhrasedAsAHintNotANewRequirement() {
+        String applied = notice("{\"controlled_task_dispatch\":\"guidance_applied\","
+                + "\"controlled_task_goal\":\"sort chests\",\"accepted_owner_guidance\":\"use the north chest\"}", false, Mode.brief);
+        assertTrue(applied.contains("dispatch=guidance_applied"), applied);
+        assertTrue(applied.contains("use the north chest"), applied);
+        assertTrue(applied.contains("without restating the goal"), applied);
+        String pending = notice("{\"controlled_task_dispatch\":\"guidance_pending\"}", false, Mode.silent);
+        assertTrue(pending.contains("guidance_pending"), pending);
+        assertTrue(pending.contains("when the task continues"), pending);
+    }
+
     @Test void silentNoticeAllowsANaturalReplyButForbidsStatusBroadcasts() {
         String silent = notice("{\"controlled_task_dispatch\":\"waiting\",\"controlled_task_goal\":\"sort chests\"}", false, Mode.silent);
         assertTrue(silent.contains("dispatch=waiting"), silent);

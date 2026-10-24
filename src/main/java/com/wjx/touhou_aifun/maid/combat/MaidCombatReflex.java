@@ -130,6 +130,7 @@ public final class MaidCombatReflex {
         if (!(maid.level() instanceof ServerLevel)) {
             return new ClearResult(false, "none", "none");
         }
+        MaidSlashBladeCombat.stop(maid);
         LivingEntity current = currentTarget(maid);
         Entity suppress = specified != null ? specified : current;
         UUID id = maid.getUUID();
@@ -251,6 +252,7 @@ public final class MaidCombatReflex {
     }
 
     public static void clear(EntityMaid maid) {
+        MaidSlashBladeCombat.stop(maid);
         UUID id = maid.getUUID();
         LivingEntity current = maid.getBrain().getMemory(MemoryModuleType.ATTACK_TARGET).orElse(null);
         UUID owned = OWNED_TARGETS.remove(id);

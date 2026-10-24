@@ -184,6 +184,7 @@ public final class FreeChatController {
     private static void maybeImmediateBargeIn(Minecraft minecraft) {
         if (!CAPTURE.isSpeechActive()) {
             immediateBargeInSent = false;
+            return;
         }
         tryImmediateBargeIn(minecraft);
     }
@@ -194,7 +195,7 @@ public final class FreeChatController {
      * afterwards, but the maid must stop talking the moment the player starts.
      */
     private static void tryImmediateBargeIn(Minecraft minecraft) {
-        if (immediateBargeInSent || !CAPTURE.isSpeechActive() || !isTtsActive()
+        if (immediateBargeInSent || !isTtsActive()
                 || !isFreeChatEnabled()
                 || !"immediate".equals(TouhouAIFunConfig.freeChatBargeIn())) {
             return;
@@ -419,6 +420,8 @@ public final class FreeChatController {
                 }
                 // Barge-in reacts to the gate onset itself, before ASR or the decision service:
                 // whether the words turn out to be useful is decided later.
+                // This is a captured onset event. Do not recheck CAPTURE.isSpeechActive(): a short
+                // interruption can already have ended by the time this task reaches the client.
                 tryImmediateBargeIn(minecraft);
                 // Snapshot the view when the owner starts speaking, not after the trailing silence:
                 // people often look at the maid while talking and look away when they stop.

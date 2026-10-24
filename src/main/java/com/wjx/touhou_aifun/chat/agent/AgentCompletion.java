@@ -67,6 +67,13 @@ public final class AgentCompletion {
             } else if(kind.equals("container_unchanged") || kind.equals("backpack_empty")) {
                 satisfied=kind.equals("container_unchanged")?ContainerCompletionSnapshot.verify(maid,task,condition):backpackEmpty(maid);
                 row.addProperty("reason",kind.equals("container_unchanged")?"container_changed_or_baseline_unavailable":"backpack_not_empty");
+            } else if(kind.equals("structure")) {
+                var build=BuildStructureCompletion.verify(maid,condition);
+                satisfied=build.verified();
+                row.addProperty("matched_blocks",build.matched());
+                row.addProperty("total_blocks",build.total());
+                row.add("unmet_blocks",new Gson().toJsonTree(build.unmet()));
+                row.addProperty("reason",build.reason().isBlank()?"structure_incomplete":build.reason());
             } else if(kind.equals("position")) {
                 var pos=condition.getAsJsonArray("position");double radius=condition.has("radius")?condition.get("radius").getAsDouble():2;
                 double distance=Math.sqrt(maid.distanceToSqr(pos.get(0).getAsInt()+.5,pos.get(1).getAsInt(),pos.get(2).getAsInt()+.5));
@@ -96,8 +103,11 @@ public final class AgentCompletion {
             if(kind.equals("position")) {text.append("尚未到达要求的位置 ").append(row.get("position")).append("。");continue;}
             if(kind.equals("maid_state")) {text.append("女仆状态尚未达到要求。");continue;}
             if(kind.equals("drop_to_owner")) {text.append("朝主人丢出的实际物品回执不足：").append(row.get("item")).append("，已丢 ").append(row.get("actual_count")).append("，要求 ").append(row.get("count")).append("。");continue;}
-            if(kind.equals("eat_food")) {text.append("实际食用记录尚未满足要求。");continue;}
-            if(kind.equals("container_unchanged")) {text.append("箱子的物品或槽位尚未恢复原状。");continue;}
+            if(kind.equals("eat_food")) {text.append("实际食用记录尚未满足要求。").append(failureDetail(row));continue;}
+            if(kind.equals("structure")) {text.append("建造结构尚未完成：").append(row.has("matched_blocks")?row.get("matched_blocks").getAsLong():0)
+                    .append("/").append(row.has("total_blocks")?row.get("total_blocks").getAsLong():0).append(" 个方块匹配。")
+                    .append(failureDetail(row));continue;}
+            if(kind.equals("container_unchanged")) {text.append("箱子的物品或槽位尚未恢复原状。").append(failureDetail(row));continue;}
             if(kind.equals("backpack_empty")) {text.append("背包尚未清空。");continue;}
             String item=row.get("item").getAsString();var registered=net.minecraftforge.registries.ForgeRegistries.ITEMS.getValue(new net.minecraft.resources.ResourceLocation(item));
             String name=registered==null?item:new net.minecraft.world.item.ItemStack(registered).getHoverName().getString();
@@ -105,6 +115,13 @@ public final class AgentCompletion {
                     .append("，目前 ").append(row.get("actual_count").getAsLong()).append("。");
         }
         return text.toString();
+    }
+
+    private static String failureDetail(JsonObject row) {
+        if (row == null || !row.has("reason")) return "";
+        String reason = row.get("reason").isJsonPrimitive() ? row.get("reason").getAsString() : "";
+        if (reason.isBlank() || reason.equals("structure_incomplete")) return "";
+        return "原因：" + reason + "。";
     }
     private static void collectSources(EntityMaid maid,JsonObject condition,JsonArray sources,
                                        java.util.Set<String> items,java.util.Set<String> seen) {
@@ -195,6 +212,12 @@ public final class AgentCompletion {
             satisfied = condition.has("match") && condition.get("match").getAsString().equals("exact")?count==condition.get("count").getAsLong():count>=condition.get("count").getAsLong();
         } else if(kind.equals("container_unchanged")) satisfied=ContainerCompletionSnapshot.verify(maid,task,condition);
         else if(kind.equals("backpack_empty")) satisfied=backpackEmpty(maid);
+        else if(kind.equals("structure")) {
+            var build=BuildStructureCompletion.verify(maid,condition);
+            satisfied=build.verified();
+            evidence.add("structure_evidence",BuildStructureCompletion.evidence(build,(int)maid.level().getGameTime()));
+            if(!build.reason().isBlank()) evidence.addProperty("reason",build.reason());
+        }
         else if(kind.equals("maid_state") || kind.equals("eat_food")) satisfied=additionalCondition(maid,task,condition);
         else return false;
         evidence.addProperty("completion_verified",satisfied); task.checkpoint(evidence.toString()); return satisfied;
